@@ -1,7 +1,12 @@
 {
   "name": "demo-repo",
   "version": "0.2.0",
-  "description": "A sample package.json",
+  "description": "Static Autoloom Cable OS client demo",
+  "scripts": {
+    "setup": "npm install",
+    "start": "python3 -m http.server ${PORT:-8765}",
+    "conductor:run": "python3 -m http.server ${CONDUCTOR_PORT:?CONDUCTOR_PORT is required}"
+  },
   "dependencies": {
     "@primer/css": "17.0.1"
   },
