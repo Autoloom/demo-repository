@@ -10,16 +10,15 @@
     "Ready for Dispatch": 100,
     Invoiced: 100
   };
-  const SALES_STAGES = [
-    "New",
-    "Costing",
-    "Commercial review",
-    "Spec clarification",
-    "Quote sent",
-    "Follow-up scheduled",
-    "Won",
-    "Lost"
-  ];
+  // Five calm stages keep the board scannable and mirror the order board.
+  const SALES_STAGES = ["New", "Quoting", "Quote sent", "Won", "Lost"];
+  // Map any legacy/finer-grained status onto a canonical stage.
+  const STAGE_ALIASES = {
+    Costing: "Quoting",
+    "Commercial review": "Quoting",
+    "Spec clarification": "New",
+    "Follow-up scheduled": "Quote sent"
+  };
 
   // Metal rates are derived from the (mock) MCX commodity index.
   const MCX_RATES = { Aluminium: 248, Copper: 886 };
@@ -62,6 +61,16 @@
   (state.extraCustomers || []).forEach((customer) => {
     if (!data.customers.find((item) => item.id === customer.id)) data.customers.push(customer);
   });
+  migrateInquiryStages();
+
+  function migrateInquiryStages() {
+    // Normalize legacy inquiry statuses to the current 5-stage model.
+    state.inquiries.forEach((inquiry) => {
+      if (!SALES_STAGES.includes(inquiry.status)) {
+        inquiry.status = STAGE_ALIASES[inquiry.status] || "New";
+      }
+    });
+  }
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -1541,8 +1550,9 @@
 
   function renderInquiryCard(item) {
     const canQuote = item.status !== "Lost";
+    const isWon = item.status === "Won";
     return `
-      <article class="order-card">
+      <article class="order-card ${isWon ? "won" : ""}">
         <div>
           <strong>${item.requirement}</strong>
           <p class="muted">${h.customerName(item.customerId)} / <span class="mono">${item.id}</span></p>
@@ -1551,8 +1561,8 @@
           <span class="muted">${h.money(item.value)}</span>
           <span class="badge">${item.source || "Inquiry"}</span>
         </div>
-        <p class="card-note muted">Next: ${item.nextAction}</p>
-        ${canQuote ? `<button class="primary-button block-button" type="button" data-quote-inquiry="${item.id}">Build quote →</button>` : ""}
+        <p class="card-note muted">${isWon ? "Won — build the quote to convert it into an order." : "Next: " + item.nextAction}</p>
+        ${canQuote ? `<button class="primary-button block-button" type="button" data-quote-inquiry="${item.id}">${isWon ? "Build quote & convert →" : "Build quote →"}</button>` : ""}
         <label class="card-select-label" for="inq-stage-${item.id}">Move to stage</label>
         <select id="inq-stage-${item.id}" autocomplete="off" data-inquiry-status="${item.id}" aria-label="Move ${item.id}">
           ${SALES_STAGES.map((stage) => `<option value="${stage}" ${item.status === stage ? "selected" : ""}>${stage}</option>`).join("")}
@@ -1587,7 +1597,7 @@
         state.lastQuoteInput.customerId = inquiry.customerId;
         state.quoteLines = [];
         if (inquiry.status === "New") {
-          inquiry.status = "Costing";
+          inquiry.status = "Quoting";
           inquiry.nextAction = "Finish costing and send the quote";
         }
         saveState();

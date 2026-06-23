@@ -1,11 +1,11 @@
 :root {
   color-scheme: light;
   --ink: #17201c;
-  --muted: #66736d;
-  --line: #d9dfdc;
+  --muted: #58655e;
+  --line: #dde2df;
   --panel: #ffffff;
-  --panel-soft: #f5f7f4;
-  --canvas: #e9eee8;
+  --panel-soft: #f4f6f3;
+  --canvas: #eef1ec;
   --sidebar: #18251f;
   --sidebar-2: #23362e;
   --accent: #0f766e;
@@ -14,8 +14,10 @@
   --red: #b23b32;
   --blue: #2e5e9e;
   --green: #2d7a45;
-  --shadow: 0 18px 50px rgba(26, 38, 32, 0.12);
-  --radius: 8px;
+  /* Calmer, consistent two-step elevation instead of one heavy float. */
+  --shadow-sm: 0 1px 2px rgba(23, 32, 28, 0.06);
+  --shadow: 0 1px 2px rgba(23, 32, 28, 0.05), 0 4px 12px rgba(23, 32, 28, 0.07);
+  --radius: 10px;
   --font: Aptos, "Segoe UI", "IBM Plex Sans", Helvetica, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -25,6 +27,9 @@
 }
 
 html {
+  /* Explicit rem base so type and layout scale predictably with browser zoom
+     and user font-size preferences. All sizing below is rem-based. */
+  font-size: 100%;
   background: var(--canvas);
   -webkit-tap-highlight-color: rgba(15, 118, 110, 0.16);
 }
@@ -33,26 +38,24 @@ body {
   margin: 0;
   min-width: 0;
   color: var(--ink);
-  background:
-    linear-gradient(90deg, rgba(15, 118, 110, 0.035) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 28, 0.035) 1px, transparent 1px),
-    var(--canvas);
-  background-size: 40px 40px;
+  background: var(--canvas);
   font-family: var(--font);
+  font-size: 1rem;
   line-height: 1.5;
   overflow-x: hidden;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   touch-action: manipulation;
 }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 260px minmax(820px, 1fr);
+  grid-template-columns: 15.5rem minmax(0, 1fr);
   min-height: 100dvh;
 }
 
@@ -207,7 +210,7 @@ input:focus-visible {
 
 .workspace {
   min-width: 0;
-  padding: 18px;
+  padding: 1.125rem;
 }
 
 .topbar {
@@ -218,12 +221,12 @@ input:focus-visible {
   justify-content: space-between;
   gap: 20px;
   align-items: center;
-  min-height: 74px;
-  padding: 12px 18px;
-  background: rgba(247, 249, 246, 0.93);
+  min-height: 4.25rem;
+  padding: 0.75rem 1.125rem;
+  background: rgba(248, 250, 247, 0.95);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 10px 24px rgba(23, 32, 28, 0.08);
+  box-shadow: var(--shadow-sm);
   backdrop-filter: blur(12px);
 }
 
@@ -245,20 +248,20 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 24px;
+  font-size: 1.5rem;
   letter-spacing: 0;
   text-wrap: balance;
 }
 
 h2 {
-  margin-bottom: 12px;
-  font-size: 18px;
+  margin-bottom: 0.75rem;
+  font-size: 1.15rem;
   text-wrap: balance;
 }
 
 h3 {
-  margin-bottom: 8px;
-  font-size: 14px;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
 }
 
 .topbar-actions,
@@ -407,7 +410,7 @@ input {
 }
 
 .content-panel {
-  padding-top: 18px;
+  padding-top: 1.125rem;
 }
 
 .action-row {
@@ -457,38 +460,6 @@ input {
 
 .card {
   padding: 16px;
-}
-
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.metric {
-  padding: 14px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--accent);
-  border-radius: var(--radius);
-}
-
-.metric span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.metric strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 24px;
-}
-
-.metric small {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
 }
 
 /* KPI overview cards */
@@ -670,6 +641,11 @@ input {
   width: 100%;
 }
 
+.order-card.won {
+  border-left: 4px solid var(--accent);
+  background: #f3f9f6;
+}
+
 .workflow-hint {
   display: flex;
   gap: 8px;
@@ -775,7 +751,7 @@ input {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 680px;
+  min-width: 42rem;
 }
 
 th,
@@ -812,7 +788,7 @@ td:last-child,
 }
 
 .wide-table table {
-  min-width: 980px;
+  min-width: 60rem;
 }
 
 tbody tr:hover {
@@ -971,17 +947,17 @@ tbody tr:hover {
 
 .kanban {
   display: grid;
-  grid-template-columns: repeat(5, minmax(190px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(5, minmax(12rem, 1fr));
+  gap: 0.75rem;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  padding-bottom: 4px;
+  padding-bottom: 0.25rem;
 }
 
 .kanban-column {
-  min-height: 420px;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.72);
+  min-height: 24rem;
+  padding: 0.625rem;
+  background: var(--panel-soft);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
@@ -996,13 +972,13 @@ tbody tr:hover {
 
 .order-card {
   display: grid;
-  gap: 9px;
-  padding: 12px;
-  margin-bottom: 10px;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  margin-bottom: 0.625rem;
   background: #ffffff;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  box-shadow: 0 8px 18px rgba(23, 32, 28, 0.08);
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
 }
 
 .order-meta {
@@ -1246,9 +1222,9 @@ textarea {
   font-size: 12px;
 }
 
-/* Sales board */
+/* Sales board — 5 calm stages mirror the order board */
 .sales-kanban {
-  grid-template-columns: repeat(8, minmax(190px, 1fr));
+  grid-template-columns: repeat(5, minmax(12rem, 1fr));
 }
 
 /* Invoice readiness — clearer spacing */
@@ -1274,10 +1250,9 @@ textarea {
 
 @media (max-width: 1180px) {
   .app-shell {
-    grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-columns: 14rem minmax(0, 1fr);
   }
 
-  .metric-grid,
   .result-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1342,7 +1317,6 @@ textarea {
   }
 
   .form-grid,
-  .metric-grid,
   .result-strip,
   .kpi-stats,
   .mcx-rates,
