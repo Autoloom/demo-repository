@@ -1175,8 +1175,8 @@
               const orders = state.orders.filter((order) => state.orderStages[order.id] === stage);
               return `
                 <div class="kanban-column" data-order-drop="${stage}">
-                  <h3>${stage} <span class="badge">${orders.length}</span></h3>
-                  ${orders.map(renderOrderCard).join("") || `<div class="empty">No orders</div>`}
+                  <h3><span class="col-name">${stage}</span><span class="col-count">${orders.length}</span></h3>
+                  ${orders.map(renderOrderCard).join("") || `<div class="empty">Drop orders here</div>`}
                 </div>
               `;
             })
@@ -1302,7 +1302,7 @@
           <span style="width: ${order.completionPct}%"></span>
         </div>
         <div class="order-meta">
-          <span class="badge ${order.priority}">${order.priority}</span>
+          <span class="prio prio-${order.priority.toLowerCase()}">${order.priority}</span>
           <span class="card-amount">${h.money(order.amount)}</span>
         </div>
         ${dispatchLine}
@@ -1766,8 +1766,8 @@
               const items = active.filter((item) => stageOf(item.status) === stage);
               return `
                 <div class="kanban-column" data-inquiry-drop="${stage}">
-                  <h3>${stage} <span class="badge">${items.length}</span></h3>
-                  ${items.map(renderInquiryCard).join("") || `<div class="empty">—</div>`}
+                  <h3><span class="col-name">${stage}</span><span class="col-count">${items.length}</span></h3>
+                  ${items.map(renderInquiryCard).join("") || `<div class="empty">Drop inquiries here</div>`}
                 </div>
               `;
             })

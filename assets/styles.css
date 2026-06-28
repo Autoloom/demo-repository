@@ -1071,31 +1071,102 @@ tbody tr:hover {
 }
 
 .kanban-column {
-  min-height: 24rem;
-  padding: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 26rem;
+  padding: 0.75rem 0.625rem;
   background: var(--panel-soft);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+  border-radius: 12px;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out;
 }
 
 .kanban-column.drag-over {
   background: var(--accent-wash);
   border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.kanban-column .empty {
+  margin-top: 2px;
+  padding: 20px 12px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.kanban-column.drag-over .empty {
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 
 .kanban-column h3 {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin: 0 0 0.625rem;
-  padding: 0 0.125rem 0.5rem;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 2.9rem;
+  margin: 0 0 0.75rem;
+  padding: 0.125rem 0.25rem 0.625rem;
   border-bottom: 1px solid var(--line);
-  color: var(--ink);
-  font-size: 0.8rem;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
+
+.col-name {
+  line-height: 1.25;
+}
+
+.col-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.col-name::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.col-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Per-stage accent dots — the pipeline reads as a flow at a glance. */
+.kanban-column[data-order-drop="Quoted"] .col-name::before { background: #94a3b8; }
+.kanban-column[data-order-drop="Won"] .col-name::before { background: var(--accent); }
+.kanban-column[data-order-drop="In Production"] .col-name::before { background: #2563eb; }
+.kanban-column[data-order-drop="Ready for Dispatch"] .col-name::before { background: #d97706; }
+.kanban-column[data-order-drop="Invoiced"] .col-name::before { background: #15803d; }
+.kanban-column[data-inquiry-drop="New"] .col-name::before { background: #94a3b8; }
+.kanban-column[data-inquiry-drop="Quoting"] .col-name::before { background: #2563eb; }
+.kanban-column[data-inquiry-drop="Quote sent"] .col-name::before { background: #d97706; }
+.kanban-column[data-inquiry-drop="Won"] .col-name::before { background: #15803d; }
+.kanban-column[data-inquiry-drop="Lost"] .col-name::before { background: #dc2626; }
 
 .order-card {
   position: relative;
@@ -1257,9 +1328,50 @@ tbody tr:hover {
 
 .card-amount {
   color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
+}
+
+/* Priority shown as a quiet colour-coded dot + label (cleaner than a pill). */
+.prio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.prio::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.prio-high {
+  color: var(--red-text);
+}
+.prio-high::before {
+  background: var(--red);
+}
+
+.prio-medium {
+  color: var(--amber);
+}
+.prio-medium::before {
+  background: var(--amber);
+}
+
+.prio-low {
+  color: var(--green);
+}
+.prio-low::before {
+  background: var(--green);
 }
 
 .progress {
@@ -1399,15 +1511,18 @@ textarea {
 
 /* Order ↔ dispatch connection */
 .order-dispatch {
-  display: inline-block;
-  padding: 5px 9px;
-  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 3px 8px;
+  color: var(--muted);
   text-decoration: none;
   background: var(--panel-soft);
   border: 1px solid var(--line);
   border-radius: 6px;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .order-dispatch:hover {
