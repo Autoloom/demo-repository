@@ -23,10 +23,37 @@
   // Metal rates are derived from the (mock) MCX commodity index.
   const MCX_RATES = { Aluminium: 248, Copper: 886 };
 
+  // Cable spec vocabularies — the standard options a cable manufacturer works
+  // with. Used across the quote builder and inquiry forms so specs are
+  // structured (not free text).
+  const CABLE_TYPES = [
+    "3.5 Core XLPE Armoured 1.1kV",
+    "3.5 Core XLPE Armoured 11kV",
+    "2 Core Aluminium Flexible",
+    "4 Core PVC Armoured",
+    "3.5 Core ACSR",
+    "PIJF Unarmoured",
+    "PIJF Armoured",
+    "Jelly Filled Unarmoured",
+    "Jelly Filled Armoured",
+    "Other"
+  ];
+  const CROSS_SECTIONS = [16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300];
+  const CONDUCTOR_MATERIALS = ["Aluminium", "Copper", "Copper Clad Steel (CCS)"];
+  const VOLTAGE_RATINGS = ["1.1kV", "6.6kV", "11kV", "33kV"];
+  const INSULATION_TYPES = ["XLPE", "PVC", "EPR"];
+  const ARMORING_TYPES = ["Steel Wire", "Steel Tape", "Unarmoured"];
+  // EMD / bank-guarantee instrument modes.
+  const EMD_MODES = ["Demand Draft", "Bank Guarantee", "Online Transfer", "Cash", "Exempted"];
+
   const defaultQuoteInput = {
       customerId: "cust-arvind",
+      cableType: "3.5 Core XLPE Armoured 1.1kV",
       material: "Aluminium",
       conductorSize: 240,
+      voltage: "1.1kV",
+      insulation: "XLPE",
+      armoring: "Steel Wire",
       lengthM: 1800,
       metalRate: MCX_RATES.Aluminium,
       overheadPerM: 86,
@@ -55,6 +82,9 @@
 
   // Non-persisted UI state for toggling inline "add" forms.
   const ui = { addInquiry: false, addCustomer: false, addCompliance: false };
+
+  // Order whose detail drawer is open (transient, not persisted).
+  let detailOrderId = null;
 
   let state = loadState();
   // Re-hydrate any customers the user onboarded in a previous session.
@@ -214,6 +244,12 @@
     renderNav();
     renderNotifPanel();
     bindChrome();
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && detailOrderId) {
+        detailOrderId = null;
+        renderCurrentRoute();
+      }
+    });
     window.addEventListener("hashchange", renderCurrentRoute);
     if (!window.location.hash) {
       window.location.hash = "#/dashboard";
@@ -335,6 +371,8 @@
       window.location.hash = "#/dashboard";
       return;
     }
+    // The detail drawer only belongs on the order board.
+    if (hash !== "#/orders") detailOrderId = null;
     const route = flatRoutes.find((item) => item.hash === hash) || flatRoutes[0];
     title.textContent = route.title;
     phase.textContent = `${route.phase} / ${state.role} view`;
@@ -644,12 +682,16 @@
 
             <p class="step-label">Step 2 — Configure a cable</p>
             <div class="form-grid" id="costing-form">
-              ${selectField("material", "Conductor material", state.lastQuoteInput.material, [["Aluminium", "Aluminium"], ["Copper", "Copper"]])}
-              ${numberField("conductorSize", "Conductor size sq mm", state.lastQuoteInput.conductorSize)}
-              ${numberField("lengthM", "Length meters", state.lastQuoteInput.lengthM)}
+              ${selectField("cableType", "Cable type", state.lastQuoteInput.cableType, CABLE_TYPES.map((t) => [t, t]))}
+              ${selectField("material", "Conductor material", state.lastQuoteInput.material, CONDUCTOR_MATERIALS.map((m) => [m, m]))}
+              ${selectField("conductorSize", "Conductor size (sq mm)", state.lastQuoteInput.conductorSize, CROSS_SECTIONS.map((s) => [s, `${s} sq mm`]))}
+              ${selectField("voltage", "Voltage rating", state.lastQuoteInput.voltage, VOLTAGE_RATINGS.map((v) => [v, v]))}
+              ${selectField("insulation", "Insulation", state.lastQuoteInput.insulation, INSULATION_TYPES.map((i) => [i, i]))}
+              ${selectField("armoring", "Armouring", state.lastQuoteInput.armoring, ARMORING_TYPES.map((a) => [a, a]))}
+              ${numberField("lengthM", "Length (m)", state.lastQuoteInput.lengthM)}
               ${numberField("metalRate", "Metal rate per kg (MCX index)", state.lastQuoteInput.metalRate, "Auto-filled from MCX; editable for what-ifs")}
-              ${numberField("overheadPerM", "Overhead per meter", state.lastQuoteInput.overheadPerM)}
-              ${numberField("marginPct", "Margin percent", state.lastQuoteInput.marginPct)}
+              ${numberField("overheadPerM", "Overhead per meter (₹)", state.lastQuoteInput.overheadPerM)}
+              ${numberField("marginPct", "Margin percent (%)", state.lastQuoteInput.marginPct)}
             </div>
             ${costingResults(result, state.lastQuoteInput)}
             <div class="action-row">
@@ -857,15 +899,20 @@
 
   function buildLine(input) {
     const result = h.calculateCableQuote(input);
+    const armourText = input.armoring === "Unarmoured" ? "unarmoured" : `${input.armoring} armoured`;
     return {
       id: "line-" + Math.random().toString(36).slice(2, 9),
+      cableType: input.cableType,
       material: input.material,
       conductorSize: input.conductorSize,
+      voltage: input.voltage,
+      insulation: input.insulation,
+      armoring: input.armoring,
       lengthM: input.lengthM,
       metalRate: input.metalRate,
       overheadPerM: input.overheadPerM,
       marginPct: input.marginPct,
-      cableSpec: `${input.conductorSize} sq mm ${input.material} cable, XLPE insulated, armoured`,
+      cableSpec: `${input.cableType} · ${input.conductorSize} sq mm ${input.material}, ${input.voltage}, ${input.insulation} insulated, ${armourText}`,
       basePerM: result.basePerM,
       metalCostPerM: result.metalCostPerM,
       lineTotal: result.total
@@ -1136,6 +1183,102 @@
             .join("")}
         </section>
       </div>
+      ${renderOrderDetailDrawer()}
+    `;
+  }
+
+  // Detail drawer shown when an order card is clicked — surfaces the spec,
+  // customer payment terms, EMD / bank-guarantee terms, and date reminders.
+  function renderOrderDetailDrawer() {
+    if (!detailOrderId) return "";
+    const order = state.orders.find((item) => item.id === detailOrderId);
+    if (!order) return "";
+    const customer = data.customers.find((item) => item.id === order.customerId);
+    const quote = state.quotes.find((item) => item.id === order.quoteId);
+    const stage = state.orderStages[order.id] || order.stage;
+    const compliance = state.complianceItems.filter((item) => item.customerId === order.customerId);
+    const dispatch = state.dispatches.find((item) => item.orderId === order.id);
+
+    const specRows = quote
+      ? `
+        <div class="drawer-row"><span>Cable spec</span><span>${quote.cableSpec || "—"}</span></div>
+        <div class="drawer-row"><span>Conductor</span><span>${quote.conductorSize} sq mm ${quote.material}</span></div>
+        <div class="drawer-row"><span>Length</span><span>${(quote.lengthM || 0).toLocaleString("en-IN")} m</span></div>
+      `
+      : `<div class="drawer-row"><span>Spec</span><span class="muted">Linked quote not on file</span></div>`;
+
+    const complianceHtml = compliance.length
+      ? compliance
+          .map(
+            (item) => `
+              <div class="drawer-compliance">
+                <div class="dc-head">
+                  <strong>${item.type}</strong>
+                  <span class="badge ${item.risk}">${item.risk} risk</span>
+                </div>
+                ${item.mode ? `<div class="drawer-row"><span>Instrument</span><span>${item.mode}</span></div>` : ""}
+                ${item.referenceNumber ? `<div class="drawer-row"><span>Reference no.</span><span class="mono">${item.referenceNumber}</span></div>` : ""}
+                ${item.issuingBank ? `<div class="drawer-row"><span>Issuing bank</span><span>${item.issuingBank}</span></div>` : ""}
+                <div class="drawer-row"><span>Amount</span><span>${item.amount ? h.money(item.amount) : "—"}</span></div>
+                <div class="drawer-row"><span>Due</span><span>${h.shortDate(item.dueDate)}</span></div>
+                ${item.expiryDate ? `<div class="drawer-row"><span>Validity / return</span><span>${h.shortDate(item.expiryDate)}</span></div>` : ""}
+                <div class="drawer-row"><span>Status</span><span>${item.status}</span></div>
+              </div>
+            `
+          )
+          .join("")
+      : `<p class="muted" style="font-size:13px;margin:0">No EMD or bank guarantee on file for this customer.</p>`;
+
+    const reminderRows = compliance
+      .filter((item) => item.status !== "Complete")
+      .map((item) => `<div class="drawer-row"><span>${item.type} due</span><span>${h.shortDate(item.dueDate)}</span></div>`)
+      .join("");
+
+    return `
+      <div class="drawer-scrim" data-close-detail></div>
+      <aside class="drawer" role="dialog" aria-modal="true" aria-label="Details for ${order.id}">
+        <div class="drawer-head">
+          <div>
+            <p class="eyebrow">Order ${order.id}</p>
+            <h2>${order.title}</h2>
+          </div>
+          <button class="icon-button" type="button" data-close-detail aria-label="Close details">✕</button>
+        </div>
+        <div style="margin:0 0 4px"><span class="badge">${stage}</span> <span class="badge ${order.priority}">${order.priority} priority</span></div>
+
+        <section class="drawer-section">
+          <h3>Cable specification</h3>
+          ${specRows}
+        </section>
+
+        <section class="drawer-section">
+          <h3>Customer &amp; payment terms</h3>
+          <div class="drawer-row"><span>Customer</span><span>${customer ? customer.name : h.customerName(order.customerId)}</span></div>
+          ${customer
+            ? `<div class="drawer-row"><span>Contact</span><span>${customer.contact}${customer.phone ? " · " + customer.phone : ""}</span></div>
+               <div class="drawer-row"><span>Payment terms</span><span>${customer.paymentTerms}</span></div>
+               <div class="drawer-row"><span>Credit limit</span><span>${h.money(customer.creditLimit || 0)}</span></div>
+               <div class="drawer-row"><span>GST</span><span class="mono">${customer.gst || "—"}</span></div>`
+            : ""}
+          <div class="drawer-row"><span>Order value</span><span>${h.money(order.amount)}</span></div>
+        </section>
+
+        <section class="drawer-section">
+          <h3>EMD &amp; bank guarantees</h3>
+          ${complianceHtml}
+        </section>
+
+        <section class="drawer-section">
+          <h3>Reminders</h3>
+          <div class="drawer-row"><span>Promised dispatch</span><span>${h.shortDate(order.promisedDate)}</span></div>
+          ${dispatch ? `<div class="drawer-row"><span>Dispatch readiness</span><span>${state.dispatchChecks[dispatch.id].filter(Boolean).length}/${state.dispatchChecks[dispatch.id].length} checks done</span></div>` : ""}
+          ${reminderRows}
+        </section>
+
+        <div class="action-row">
+          <a class="ghost-button" href="#/dispatch" data-close-detail>Open dispatch checklist →</a>
+        </div>
+      </aside>
     `;
   }
 
@@ -1149,7 +1292,7 @@
       dispatchLine = `<a class="order-dispatch ${ready ? "ready" : ""}" href="#/dispatch">Dispatch ${done}/${checks.length} ${ready ? "ready ✓" : "→"}</a>`;
     }
     return `
-      <article class="order-card" draggable="true" data-order-id="${order.id}">
+      <article class="order-card" draggable="true" data-order-id="${order.id}" title="Click for details · drag to change stage">
         <div>
           <strong class="card-title">${order.title}</strong>
           <p class="card-sub muted">${h.customerName(order.customerId)} · <span class="nowrap">${order.id}</span></p>
@@ -1199,6 +1342,25 @@
       });
     });
     bindKanbanDnD("order");
+
+    // Click a card (not a control) to open its detail drawer. A real drag
+    // suppresses the click, so this never fires mid-drag.
+    document.querySelectorAll("[data-order-id]").forEach((card) => {
+      card.addEventListener("click", (event) => {
+        if (event.target.closest("select, button, a, input, label, textarea")) return;
+        detailOrderId = card.dataset.orderId;
+        renderCurrentRoute();
+      });
+    });
+
+    document.querySelectorAll("[data-close-detail]").forEach((el) => {
+      el.addEventListener("click", () => {
+        detailOrderId = null;
+        // Plain controls (X, scrim) need an explicit re-render; the dispatch
+        // link navigates and re-renders on its own.
+        if (!el.getAttribute("href")) renderCurrentRoute();
+      });
+    });
   }
 
   // Native HTML5 drag-and-drop for both the order board and the sales board.
@@ -1644,7 +1806,9 @@
       "New inquiry",
       `
         ${fSelect("customerId", "Customer", data.customers.map((customer) => [customer.id, customer.name]), state.lastQuoteInput.customerId)}
-        ${fInput("requirement", "Requirement", "text", "", 'placeholder="e.g. 3C x 95 sq mm Al armoured"')}
+        ${fSelect("cableType", "Cable type", CABLE_TYPES.map((t) => [t, t]), CABLE_TYPES[0])}
+        ${fInput("requirement", "Requirement / notes", "text", "", 'placeholder="e.g. 3C x 95 sq mm Al armoured"')}
+        ${fInput("quantity", "Quantity (m)", "number", "", 'min="0" step="100"')}
         ${fInput("value", "Estimated value (₹)", "number", "", 'min="0" step="1000"')}
         ${fInput("dueDate", "Follow-up by", "date", "2026-07-01")}
       `,
@@ -1705,7 +1869,9 @@
         const inquiry = {
           id: `inq-DEMO-${String(nextNumber("inq-DEMO-", state.inquiries)).padStart(3, "0")}`,
           customerId: fd.get("customerId"),
-          requirement: (fd.get("requirement") || "New requirement").toString(),
+          cableType: (fd.get("cableType") || CABLE_TYPES[0]).toString(),
+          requirement: (fd.get("requirement") || fd.get("cableType") || "New requirement").toString(),
+          quantity: Number(fd.get("quantity")) || 0,
           source: "Manual entry",
           value: Number(fd.get("value")) || 0,
           dueDate: fd.get("dueDate") || "2026-07-01",
@@ -1884,8 +2050,12 @@
       `
         ${fSelect("type", "Type", [["EMD", "EMD"], ["Bank guarantee", "Bank guarantee"], ["Tender document", "Tender document"]], "EMD")}
         ${fSelect("customerId", "Customer", data.customers.map((customer) => [customer.id, customer.name]), state.lastQuoteInput.customerId)}
+        ${fSelect("mode", "Instrument / mode", EMD_MODES.map((m) => [m, m]), EMD_MODES[0])}
+        ${fInput("referenceNumber", "Reference / instrument no.", "text", "", 'placeholder="DD/BG/UTR number"')}
+        ${fInput("issuingBank", "Issuing bank", "text", "", 'placeholder="e.g. SBI Main Branch, Mumbai"')}
         ${fInput("amount", "Amount (₹, 0 if N/A)", "number", "", 'min="0" step="1000"')}
         ${fInput("dueDate", "Due date", "date", "2026-07-01")}
+        ${fInput("expiryDate", "Validity / return date", "date", "")}
         ${fSelect("status", "Status", [["Needs approval", "Needs approval"], ["Draft requested", "Draft requested"], ["Submitted", "Submitted"], ["Complete", "Complete"]], "Needs approval")}
       `,
       "Add item"
@@ -1923,8 +2093,12 @@
           id: `CMP-DEMO-${String(nextNumber("CMP-DEMO-", state.complianceItems)).padStart(3, "0")}`,
           type: (fd.get("type") || "EMD").toString(),
           customerId: fd.get("customerId"),
+          mode: (fd.get("mode") || "").toString(),
+          referenceNumber: (fd.get("referenceNumber") || "").toString(),
+          issuingBank: (fd.get("issuingBank") || "").toString(),
           amount: Number(fd.get("amount")) || 0,
           dueDate: fd.get("dueDate") || "2026-07-01",
+          expiryDate: (fd.get("expiryDate") || "").toString(),
           status,
           risk: complianceRisk(status)
         };
