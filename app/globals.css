@@ -1,0 +1,242 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+  Cable OS design tokens — see /cable os plans/foundation/design/design-tokens.md
+  Jet black dark / white light · orange = primary accent · purple = secondary highlight (subtle).
+  Agents use TOKEN NAMES (bg-background, bg-primary, border-border, text-muted-foreground, …),
+  never raw values. Enforced by lint (see foundation/design/enforcement.md).
+*/
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.625rem;
+
+  /* Surfaces */
+  --background: oklch(1 0 0);
+  --bg-subtle: oklch(0.97 0 0);
+  --card: oklch(1 0 0);
+  --popover: oklch(1 0 0);
+  --overlay: oklch(0 0 0 / 0.5);
+
+  /* Lines & text */
+  --border: oklch(0.922 0 0);
+  --border-strong: oklch(0.85 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.66 0.19 47);
+  --foreground: oklch(0.145 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.45 0 0);
+  --text-subtle: oklch(0.6 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+
+  /* Accent — ORANGE = primary */
+  --primary: oklch(0.66 0.19 47);
+  --primary-foreground: oklch(0.985 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.145 0 0);
+  --primary-muted: oklch(0.66 0.19 47 / 0.1);
+
+  /* Secondary (neutral) */
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+
+  /* Highlight — PURPLE = secondary (sparing) */
+  --highlight: oklch(0.55 0.2 295);
+  --highlight-foreground: oklch(0.985 0 0);
+  --highlight-muted: oklch(0.55 0.2 295 / 0.08);
+
+  /* Semantic status */
+  --success: oklch(0.62 0.17 150);
+  --success-foreground: oklch(0.985 0 0);
+  --success-muted: oklch(0.62 0.17 150 / 0.12);
+  --warning: oklch(0.75 0.15 80);
+  --warning-foreground: oklch(0.205 0 0);
+  --warning-muted: oklch(0.75 0.15 80 / 0.14);
+  --danger: oklch(0.58 0.22 27);
+  --danger-foreground: oklch(0.985 0 0);
+  --danger-muted: oklch(0.58 0.22 27 / 0.12);
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.985 0 0);
+  --info: oklch(0.6 0.17 250);
+  --info-foreground: oklch(0.985 0 0);
+  --info-muted: oklch(0.6 0.17 250 / 0.12);
+
+  /* Pipeline stage colors */
+  --stage-inquiry: oklch(0.62 0.1 250);
+  --stage-quote: oklch(0.62 0.19 295);
+  --stage-order: oklch(0.66 0.19 47);
+  --stage-dispatch: oklch(0.7 0.14 200);
+  --stage-invoice: oklch(0.62 0.17 150);
+}
+
+.dark {
+  /* Surfaces — jet black */
+  --background: oklch(0.145 0 0);
+  --bg-subtle: oklch(0.205 0 0);
+  --card: oklch(0.175 0 0);
+  --popover: oklch(0.205 0 0);
+  --overlay: oklch(0 0 0 / 0.6);
+
+  /* Lines & text */
+  --border: oklch(1 0 0 / 0.1);
+  --border-strong: oklch(1 0 0 / 0.18);
+  --input: oklch(1 0 0 / 0.12);
+  --ring: oklch(0.7 0.18 47);
+  --foreground: oklch(0.985 0 0);
+  --muted: oklch(0.205 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --text-subtle: oklch(0.556 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+
+  /* Accent — ORANGE = primary */
+  --primary: oklch(0.7 0.18 47);
+  --primary-foreground: oklch(0.145 0 0);
+  --accent: oklch(0.205 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --primary-muted: oklch(0.7 0.18 47 / 0.14);
+
+  /* Secondary (neutral) */
+  --secondary: oklch(0.205 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+
+  /* Highlight — PURPLE */
+  --highlight: oklch(0.62 0.19 295);
+  --highlight-foreground: oklch(0.985 0 0);
+  --highlight-muted: oklch(0.62 0.19 295 / 0.12);
+
+  /* Semantic status */
+  --success: oklch(0.62 0.17 150);
+  --success-foreground: oklch(0.985 0 0);
+  --success-muted: oklch(0.62 0.17 150 / 0.16);
+  --warning: oklch(0.75 0.15 80);
+  --warning-foreground: oklch(0.205 0 0);
+  --warning-muted: oklch(0.75 0.15 80 / 0.18);
+  --danger: oklch(0.58 0.22 27);
+  --danger-foreground: oklch(0.985 0 0);
+  --danger-muted: oklch(0.58 0.22 27 / 0.16);
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.985 0 0);
+  --info: oklch(0.6 0.17 250);
+  --info-foreground: oklch(0.985 0 0);
+  --info-muted: oklch(0.6 0.17 250 / 0.16);
+
+  /* Pipeline stage colors */
+  --stage-inquiry: oklch(0.62 0.1 250);
+  --stage-quote: oklch(0.62 0.19 295);
+  --stage-order: oklch(0.66 0.19 47);
+  --stage-dispatch: oklch(0.7 0.14 200);
+  --stage-invoice: oklch(0.62 0.17 150);
+}
+
+/* Map tokens → Tailwind utilities (shadcn-compatible names). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
+  --color-stage-inquiry: var(--stage-inquiry);
+  --color-stage-quote: var(--stage-quote);
+  --color-stage-order: var(--stage-order);
+  --color-stage-dispatch: var(--stage-dispatch);
+  --color-stage-invoice: var(--stage-invoice);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: var(--ring);
+  }
+  html,
+  body {
+    overflow-x: clip;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  }
+}
+
+@layer components {
+  .portal-table-wrap {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  .portal-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .portal-table :is(th, td) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+  }
+
+  .portal-table :is(input, select, textarea) {
+    min-width: 0;
+    width: 100%;
+  }
+}
