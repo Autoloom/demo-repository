@@ -4,10 +4,12 @@ import type { DragEndEvent } from "@dnd-kit/core";
 import {
   AlertTriangleIcon,
   ArrowRightIcon,
+  CableIcon,
   CalendarDaysIcon,
   CheckCircle2Icon,
   ClipboardListIcon,
   InboxIcon,
+  PackageSearchIcon,
   RefreshCwIcon,
   TruckIcon,
 } from "lucide-react";
@@ -23,6 +25,7 @@ import {
   KanbanHeader,
   KanbanProvider,
 } from "@/components/ui";
+import { daysUntil } from "@/lib/domain/clock";
 import { formatDate, formatINR } from "@/lib/domain/format";
 import { can } from "@/lib/rbac";
 import {
@@ -43,10 +46,19 @@ type LoadState = {
 
 const stages: OrderStage[] = ["Quoted", "Won", "In Production", "Ready for Dispatch", "Invoiced"];
 
-const priorityTones: Record<Priority, string> = {
-  Low: "border-success/30 bg-success/10 text-success",
-  Medium: "border-warning/30 bg-warning/10 text-warning",
-  High: "border-danger/30 bg-danger/10 text-danger",
+// One-line context under each column name — orients anyone new to the chain.
+const stageSubtitles: Record<OrderStage, string> = {
+  Quoted: "Priced, awaiting production slot",
+  Won: "Confirmed, spec pending approval",
+  "In Production": "On the shop floor",
+  "Ready for Dispatch": "Cleared, awaiting pickup",
+  Invoiced: "Billed and closed",
+};
+
+const priorityDotTones: Record<Priority, string> = {
+  Low: "bg-success",
+  Medium: "bg-warning",
+  High: "bg-danger",
 };
 
 const priorityRank: Record<Priority, number> = {
@@ -65,9 +77,9 @@ function Badge({ className, children }: { className?: string; children: React.Re
 
 function SkeletonBoard() {
   return (
-    <div className="grid w-full min-w-0 grid-cols-1 gap-4 overflow-x-clip md:grid-cols-2 xl:grid-cols-5">
+    <div className="grid w-full min-w-0 auto-cols-[minmax(272px,1fr)] grid-flow-col gap-4 overflow-x-auto pb-2">
       {stages.map((stage) => (
-        <section key={stage} className="flex min-h-96 flex-col gap-3 rounded-lg border bg-muted p-3">
+        <section key={stage} className="flex min-h-96 flex-col gap-3 rounded-lg border bg-muted/60 p-3">
           <div className="flex items-center justify-between">
             <div className="h-4 w-28 rounded-sm bg-border" />
             <div className="h-4 w-5 rounded-sm bg-border" />
@@ -109,6 +121,32 @@ function completionForStage(stage: OrderStage) {
 function isOrderStage(value: unknown): value is OrderStage {
   return typeof value === "string" && stages.includes(value as OrderStage);
 }
+
+// Surfaces dispatch risk directly on the card — the #1 signal ops needs at a glance.
+type PromiseRisk = "overdue" | "due-soon" | "ok";
+
+function promiseRisk(iso: string, stage: OrderStage): PromiseRisk {
+  if (stage === "Invoiced") return "ok";
+  const remaining = daysUntil(iso);
+  if (remaining < 0) return "overdue";
+  if (remaining <= 3) return "due-soon";
+  return "ok";
+}
+
+function promiseLabel(iso: string, stage: OrderStage): string {
+  if (stage === "Invoiced") return formatDate(iso);
+  const remaining = daysUntil(iso);
+  if (remaining < 0) return `${Math.abs(remaining)}d overdue`;
+  if (remaining === 0) return "Due today";
+  if (remaining <= 3) return `Due in ${remaining}d`;
+  return formatDate(iso);
+}
+
+const promiseToneClass: Record<PromiseRisk, string> = {
+  overdue: "border-danger/30 bg-danger-muted text-danger",
+  "due-soon": "border-warning/30 bg-warning-muted text-warning",
+  ok: "border-border bg-background text-foreground",
+};
 
 function sortOrders(a: Order, b: Order) {
   const priorityDelta = priorityRank[a.priority] - priorityRank[b.priority];
@@ -324,7 +362,7 @@ export default function OrdersPage() {
             if (!order) return null;
 
             return (
-              <Card className="w-80 rounded-md border-border bg-card p-3 shadow-lg outline outline-2 outline-ring">
+              <Card className="w-72 rounded-md border-primary/50 bg-card p-3 shadow-lg">
                 <OrderCardContent
                   customerName={customerName(data.store, order.customerId)}
                   dispatch={dispatchProgress(data.store, order)}
@@ -397,11 +435,17 @@ function OrderColumn({
 }) {
   return (
     <KanbanBoard id={stage}>
-      <KanbanHeader name={stage} count={orders.length} indicatorClassName={stageIndicatorClass(stage)} />
+      <KanbanHeader
+        name={stage}
+        count={orders.length}
+        subtitle={stageSubtitles[stage]}
+        indicatorClassName={stageIndicatorClass(stage)}
+      />
       <KanbanCards className="max-h-dvh pr-1">
         {orders.length === 0 ? (
-          <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed bg-card p-4 text-center text-sm text-muted-foreground">
-            No orders in {stage}
+          <div className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed p-4 text-center">
+            <PackageSearchIcon className="size-5 text-muted-foreground/60" />
+            <p className="m-0 text-xs text-muted-foreground">No orders in {stage.toLowerCase()}</p>
           </div>
         ) : (
           orders.map((order, index) => (
@@ -453,7 +497,7 @@ function OrderKanbanCard({
       id={order.id}
       name={order.title}
       parent={stage}
-      className={cn("border-border bg-card p-3", !canTransition && "cursor-default")}
+      className={cn("group border-border bg-card p-3", !canTransition && "cursor-default")}
       index={index}
       disabled={!canTransition || busy}
     >
@@ -515,49 +559,62 @@ function OrderCardContent({
     }
   }
 
+  const risk = promiseRisk(order.promisedDate, order.stage);
+
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{name}</p>
-          {isEditing ? (
-            <input
-              aria-label={`Edit title for ${order.id}`}
-              autoFocus
-              className="mt-1 h-8 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onBlur={commitEdit}
-              onChange={(event) => setDraftTitle(event.target.value)}
-              onClick={stopDrag}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") commitEdit();
-                if (event.key === "Escape") cancelEdit();
-              }}
-              onPointerDown={stopDrag}
-              value={draftTitle}
-            />
-          ) : (
-            <button
-              aria-label={`Edit title for ${order.id}`}
-              className={cn(
-                "mt-1 line-clamp-2 w-full rounded-sm text-left text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                editable && "cursor-text hover:text-foreground",
-              )}
-              disabled={!editable}
-              onClick={(event) => {
-                stopDrag(event);
-                if (editable) {
-                  setDraftTitle(order.title);
-                  setIsEditing(true);
-                }
-              }}
-              onPointerDown={stopDrag}
-              type="button"
-            >
-              {order.title}
-            </button>
+    <div className="flex min-w-0 flex-col gap-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 truncate text-sm font-semibold">{name}</p>
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          <span className={cn("size-1.5 rounded-full", priorityDotTones[order.priority])} />
+          {order.priority}
+        </span>
+      </div>
+
+      {isEditing ? (
+        <input
+          aria-label={`Edit title for ${order.id}`}
+          autoFocus
+          className="h-8 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onBlur={commitEdit}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          onClick={stopDrag}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commitEdit();
+            if (event.key === "Escape") cancelEdit();
+          }}
+          onPointerDown={stopDrag}
+          value={draftTitle}
+        />
+      ) : (
+        <button
+          aria-label={`Edit title for ${order.id}`}
+          className={cn(
+            "line-clamp-1 w-full rounded-sm text-left text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            editable && "cursor-text hover:text-foreground",
           )}
-        </div>
-        <Badge className={cn("shrink-0", priorityTones[order.priority])}>{order.priority}</Badge>
+          disabled={!editable}
+          onClick={(event) => {
+            stopDrag(event);
+            if (editable) {
+              setDraftTitle(order.title);
+              setIsEditing(true);
+            }
+          }}
+          onPointerDown={stopDrag}
+          type="button"
+        >
+          {order.title}
+        </button>
+      )}
+
+      {/* Cable spec — the field production/dispatch actually key off; mono per the
+          project's own convention for machine/technical data. */}
+      <div className="flex items-start gap-1.5 rounded-md border bg-muted/40 px-2 py-1.5">
+        <CableIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+        <p className="m-0 line-clamp-2 font-mono text-[11px] leading-snug text-foreground/90">
+          {order.specSummary}
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
@@ -565,15 +622,18 @@ function OrderCardContent({
           <p className="text-muted-foreground">Value</p>
           <p className="mt-1 truncate font-mono font-semibold">{formatINR(order.amountInr)}</p>
         </div>
-        <div className="rounded-md border bg-background p-2">
-          <p className="text-muted-foreground">Promise</p>
-          <p className="mt-1 truncate font-medium">{formatDate(order.promisedDate)}</p>
+        <div className={cn("rounded-md border p-2", promiseToneClass[risk])}>
+          <p className={cn(risk === "ok" ? "text-muted-foreground" : "opacity-80")}>Promise</p>
+          <p className="mt-1 flex items-center gap-1 truncate font-medium">
+            {risk !== "ok" ? <AlertTriangleIcon className="size-3 shrink-0" /> : null}
+            {promiseLabel(order.promisedDate, order.stage)}
+          </p>
         </div>
       </div>
 
-      <div className="space-y-2" aria-label={`${order.completionPct}% complete`}>
+      <div className="space-y-1.5" aria-label={`${order.completionPct}% complete`}>
         <div className="flex items-center justify-between text-xs">
-          <span className="text-muted-foreground">Progress</span>
+          <span className="text-muted-foreground">{order.stage}</span>
           <span className="font-mono font-medium">{order.completionPct}%</span>
         </div>
         <div className="grid grid-cols-5 gap-1">
@@ -594,34 +654,41 @@ function OrderCardContent({
         </span>
       </div>
 
-      {canTransition ? (
-        <select
-          aria-label={`Move ${order.id} to stage`}
-          value={order.stage}
-          disabled={busy}
-          onChange={(event) => onTransition?.(order.id, event.target.value as OrderStage)}
-          onClick={stopDrag}
-          onPointerDown={stopDrag}
-          className="h-8 w-full rounded-md border bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {stages.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      ) : null}
+      {/* Secondary actions — collapsed at rest, revealed on hover/keyboard-focus so the
+          resting card stays scannable. Drag-and-drop is the primary way to move a card;
+          this footer is the accessible fallback, not the default affordance. */}
+      <div className="grid grid-rows-[0fr] transition-[grid-template-rows] duration-200 ease-out group-hover:grid-rows-[1fr] group-focus-within:grid-rows-[1fr]">
+        <div className="flex min-h-0 flex-col gap-2 overflow-hidden">
+          {canTransition ? (
+            <select
+              aria-label={`Move ${order.id} to stage`}
+              value={order.stage}
+              disabled={busy}
+              onChange={(event) => onTransition?.(order.id, event.target.value as OrderStage)}
+              onClick={stopDrag}
+              onPointerDown={stopDrag}
+              className="h-8 w-full rounded-md border bg-background px-2 pt-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {stages.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          ) : null}
 
-      <div className="flex flex-wrap gap-2">
-        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-          <Link href={`/records/${order.id}`}>Journey</Link>
-        </Button>
-        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-          <Link href={`/job-card?orderId=${order.id}`}>Job</Link>
-        </Button>
-        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-          <Link href={`/dispatch?orderId=${order.id}`}>Dispatch</Link>
-        </Button>
+          <div className="flex flex-wrap gap-2 pb-0.5">
+            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+              <Link href={`/records/${order.id}`}>Journey</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+              <Link href={`/job-card?orderId=${order.id}`}>Job</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+              <Link href={`/dispatch?orderId=${order.id}`}>Dispatch</Link>
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );
