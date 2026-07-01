@@ -20,7 +20,15 @@ const dateFmt = new Intl.DateTimeFormat("en-IN", {
   year: "numeric",
 });
 
-/** Format an ISO date string as `dd MMM yyyy`. */
+/**
+ * Format an ISO date as `dd MMM yyyy`. Accepts both date-only strings (`2026-06-21`) and full
+ * datetimes (`2026-06-21T18:30:00.000Z`); the latter come from `now().toISOString()` on records
+ * created in-app. Invalid/empty input renders an em dash rather than throwing.
+ */
 export function formatDate(iso: string): string {
-  return dateFmt.format(new Date(`${iso}T00:00:00+05:30`));
+  if (!iso) return "—";
+  // A date-only string has no time component — anchor it to IST so the day doesn't drift.
+  const parsed = iso.length === 10 ? new Date(`${iso}T00:00:00+05:30`) : new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "—";
+  return dateFmt.format(parsed);
 }

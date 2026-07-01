@@ -1,9 +1,9 @@
 "use client";
 
+import type { DragEndEvent } from "@dnd-kit/core";
 import {
   AlertTriangleIcon,
   ArrowRightIcon,
-  CableIcon,
   CalendarDaysIcon,
   CheckCircle2Icon,
   ClipboardListIcon,
@@ -14,7 +14,15 @@ import {
 import Link from "next/link";
 import * as React from "react";
 
-import { Button } from "@/components/ui/button";
+import {
+  Button,
+  Card,
+  KanbanBoard,
+  KanbanCard as UiKanbanCard,
+  KanbanCards,
+  KanbanHeader,
+  KanbanProvider,
+} from "@/components/ui";
 import { formatDate, formatINR } from "@/lib/domain/format";
 import { can } from "@/lib/rbac";
 import {
@@ -35,18 +43,16 @@ type LoadState = {
 
 const stages: OrderStage[] = ["Quoted", "Won", "In Production", "Ready for Dispatch", "Invoiced"];
 
-const stageTones: Record<OrderStage, string> = {
-  Quoted: "border-stage-quote/30 bg-stage-quote/10 text-stage-quote",
-  Won: "border-stage-order/30 bg-stage-order/10 text-stage-order",
-  "In Production": "border-info/30 bg-info/10 text-info",
-  "Ready for Dispatch": "border-stage-dispatch/30 bg-stage-dispatch/10 text-stage-dispatch",
-  Invoiced: "border-stage-invoice/30 bg-stage-invoice/10 text-stage-invoice",
-};
-
 const priorityTones: Record<Priority, string> = {
   Low: "border-success/30 bg-success/10 text-success",
   Medium: "border-warning/30 bg-warning/10 text-warning",
   High: "border-danger/30 bg-danger/10 text-danger",
+};
+
+const priorityRank: Record<Priority, number> = {
+  High: 0,
+  Medium: 1,
+  Low: 2,
 };
 
 function Badge({ className, children }: { className?: string; children: React.ReactNode }) {
@@ -59,15 +65,19 @@ function Badge({ className, children }: { className?: string; children: React.Re
 
 function SkeletonBoard() {
   return (
-    <div className="grid gap-4 xl:grid-cols-5">
+    <div className="grid w-full min-w-0 grid-cols-1 gap-4 overflow-x-clip md:grid-cols-2 xl:grid-cols-5">
       {stages.map((stage) => (
-        <div key={stage} className="rounded-md border bg-card p-3">
-          <div className="h-4 w-24 rounded-sm bg-muted" />
-          <div className="mt-4 space-y-3">
-            <div className="h-28 rounded-md bg-muted" />
-            <div className="h-24 rounded-md bg-muted" />
+        <section key={stage} className="flex min-h-96 flex-col gap-3 rounded-lg border bg-muted p-3">
+          <div className="flex items-center justify-between">
+            <div className="h-4 w-28 rounded-sm bg-border" />
+            <div className="h-4 w-5 rounded-sm bg-border" />
           </div>
-        </div>
+          <div className="space-y-2">
+            <div className="h-32 rounded-md bg-card" />
+            <div className="h-28 rounded-md bg-card" />
+            <div className="h-24 rounded-md bg-card" />
+          </div>
+        </section>
       ))}
     </div>
   );
@@ -85,6 +95,27 @@ function dispatchProgress(store: CableStore | null, order: Order) {
   return { done, total: required.length, ready: required.length > 0 && done === required.length };
 }
 
+function completionForStage(stage: OrderStage) {
+  const completion: Record<OrderStage, number> = {
+    Quoted: 0,
+    Won: 20,
+    "In Production": 60,
+    "Ready for Dispatch": 90,
+    Invoiced: 100,
+  };
+  return completion[stage];
+}
+
+function isOrderStage(value: unknown): value is OrderStage {
+  return typeof value === "string" && stages.includes(value as OrderStage);
+}
+
+function sortOrders(a: Order, b: Order) {
+  const priorityDelta = priorityRank[a.priority] - priorityRank[b.priority];
+  if (priorityDelta !== 0) return priorityDelta;
+  return new Date(a.promisedDate).getTime() - new Date(b.promisedDate).getTime();
+}
+
 async function fetchOrderPageData(): Promise<LoadState> {
   const [orders, store] = await Promise.all([ordersService.list(), dataService.read()]);
   return { orders, store };
@@ -97,7 +128,9 @@ export default function OrdersPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [busyId, setBusyId] = React.useState<string | null>(null);
 
-  const editable = can(role, "transition", "order");
+  const canView = can(role, "view", "order");
+  const canTransition = can(role, "transition", "order");
+  const canEditTitle = can(role, "edit", "order");
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -129,22 +162,100 @@ export default function OrdersPage() {
   }, []);
 
   async function transition(orderId: string, stage: OrderStage) {
+    if (!canTransition) return;
+    const previousData = data;
     setBusyId(orderId);
     setError(null);
+    setData((current) => ({
+      ...current,
+      orders: current.orders.map((order) =>
+        order.id === orderId
+          ? {
+              ...order,
+              stage,
+              completionPct: completionForStage(stage),
+            }
+          : order,
+      ),
+    }));
+
     try {
       await ordersService.transition(orderId, stage, actorFromSession());
       await load();
     } catch (err) {
+      setData(previousData);
       setError(err instanceof Error ? err.message : "Stage transition failed.");
     } finally {
       setBusyId(null);
     }
   }
 
+  async function updateTitle(orderId: string, title: string) {
+    if (!canEditTitle) return;
+    const nextTitle = title.trim();
+    if (!nextTitle) return;
+
+    const previousData = data;
+    setBusyId(orderId);
+    setError(null);
+    setData((current) => ({
+      ...current,
+      orders: current.orders.map((order) => (order.id === orderId ? { ...order, title: nextTitle } : order)),
+    }));
+
+    try {
+      await ordersService.updateTitle(orderId, nextTitle, actorFromSession());
+      await load();
+    } catch (err) {
+      setData(previousData);
+      setError(err instanceof Error ? err.message : "Order title could not be updated.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const orderId = event.active.id;
+    const nextStage = event.over?.id;
+    if (
+      typeof orderId === "string" &&
+      isOrderStage(nextStage) &&
+      event.active.data.current?.parent !== nextStage
+    ) {
+      void transition(orderId, nextStage);
+    }
+  }
+
+  const groupedOrders = React.useMemo(() => {
+    return stages.reduce<Record<OrderStage, Order[]>>(
+      (groups, stage) => ({
+        ...groups,
+        [stage]: data.orders.filter((order) => order.stage === stage).toSorted(sortOrders),
+      }),
+      {
+        Quoted: [],
+        Won: [],
+        "In Production": [],
+        "Ready for Dispatch": [],
+        Invoiced: [],
+      },
+    );
+  }, [data.orders]);
+
   const activeValue = data.orders
     .filter((order) => order.stage !== "Invoiced")
     .reduce((sum, order) => sum + order.amountInr, 0);
-  const readyCount = data.orders.filter((order) => order.stage === "Ready for Dispatch").length;
+  const readyCount = groupedOrders["Ready for Dispatch"].length;
+  const productionCount = groupedOrders["In Production"].length;
+  const highPriorityCount = data.orders.filter((order) => order.priority === "High" && order.stage !== "Invoiced").length;
+
+  if (!canView) {
+    return (
+      <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-sm text-danger">
+        You do not have access to the order board.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -156,7 +267,7 @@ export default function OrdersPage() {
           </div>
           <h1 className="text-2xl font-semibold">Order Board</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Move won work through production, dispatch readiness, and invoicing. Sales and Accounts can inspect the same board; Operations and Owner can transition stages.
+            Track confirmed work from quote handoff through production, dispatch readiness, and invoicing.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -166,26 +277,18 @@ export default function OrdersPage() {
           </Button>
           <Button asChild>
             <Link href="/job-card">
-              Open job cards
+              Job cards
               <ArrowRightIcon className="ml-2 size-4" />
             </Link>
           </Button>
         </div>
       </header>
 
-      <section className="grid gap-3 md:grid-cols-3">
-        <div className="rounded-md border bg-card p-4">
-          <p className="text-sm text-muted-foreground">Active order value</p>
-          <p className="mt-2 font-mono text-2xl font-semibold">{formatINR(activeValue)}</p>
-        </div>
-        <div className="rounded-md border bg-card p-4">
-          <p className="text-sm text-muted-foreground">Ready for dispatch</p>
-          <p className="mt-2 font-mono text-2xl font-semibold">{readyCount}</p>
-        </div>
-        <div className="rounded-md border bg-card p-4">
-          <p className="text-sm text-muted-foreground">Transition authority</p>
-          <p className="mt-2 text-sm font-medium">{editable ? `${role} can move orders` : `${role} is view-only here`}</p>
-        </div>
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="Active order value" value={formatINR(activeValue)} />
+        <MetricCard label="In production" value={String(productionCount)} />
+        <MetricCard label="Ready dispatch" value={String(readyCount)} tone={readyCount > 0 ? "success" : "neutral"} />
+        <MetricCard label="High priority" value={String(highPriorityCount)} tone={highPriorityCount > 0 ? "danger" : "neutral"} />
       </section>
 
       {loading ? <SkeletonBoard /> : null}
@@ -214,91 +317,324 @@ export default function OrdersPage() {
       ) : null}
 
       {!loading && !error && data.orders.length > 0 ? (
-        <section className="grid gap-4 xl:grid-cols-5">
-          {stages.map((stage) => {
-            const rows = data.orders.filter((order) => order.stage === stage);
+        <KanbanProvider
+          onDragEnd={handleDragEnd}
+          renderOverlay={(activeId) => {
+            const order = data.orders.find((item) => item.id === activeId);
+            if (!order) return null;
+
             return (
-              <div key={stage} className="rounded-md border bg-card">
-                <div className="flex items-center justify-between border-b bg-muted px-3 py-3">
-                  <Badge className={stageTones[stage]}>{stage}</Badge>
-                  <span className="font-mono text-xs text-muted-foreground">{rows.length}</span>
-                </div>
-                <div className="space-y-3 p-3">
-                  {rows.length === 0 ? (
-                    <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">No orders in this stage</div>
-                  ) : null}
-                  {rows.map((order) => {
-                    const dispatch = dispatchProgress(data.store, order);
-                    return (
-                      <article key={order.id} className="rounded-md border bg-background p-4 shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h2 className="font-medium">{order.title}</h2>
-                            <p className="mt-1 text-sm text-muted-foreground">{customerName(data.store, order.customerId)}</p>
-                          </div>
-                          <Badge className={priorityTones[order.priority]}>{order.priority}</Badge>
-                        </div>
-                        <p className="mt-3 font-mono text-xs text-muted-foreground">{order.id}</p>
-                        <div className="mt-3 flex items-start gap-2 text-sm text-muted-foreground">
-                          <CableIcon className="mt-0.5 size-4" />
-                          <span>{order.specSummary}</span>
-                        </div>
-                        <div className="mt-4 grid grid-cols-5 gap-1" aria-label={`${order.completionPct}% complete`}>
-                          {[20, 40, 60, 80, 100].map((step) => (
-                            <span key={step} className={cn("h-1 rounded-sm", order.completionPct >= step ? "bg-primary" : "bg-muted")} />
-                          ))}
-                        </div>
-                        <div className="mt-4 flex items-center justify-between gap-3 text-sm">
-                          <span className="font-mono font-medium">{formatINR(order.amountInr)}</span>
-                          <span className="flex items-center gap-1 text-muted-foreground">
-                            <CalendarDaysIcon className="size-4" />
-                            {formatDate(order.promisedDate)}
-                          </span>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <Badge className={dispatch.ready ? "border-success/30 bg-success/10 text-success" : "border-warning/30 bg-warning/10 text-warning"}>
-                            {dispatch.ready ? <CheckCircle2Icon className="mr-1 size-3" /> : <TruckIcon className="mr-1 size-3" />}
-                            Dispatch {dispatch.done}/{dispatch.total}
-                          </Badge>
-                        </div>
-                        <div className="mt-4 grid gap-2">
-                          <label className="text-xs font-medium text-muted-foreground" htmlFor={`${order.id}-stage`}>
-                            Move stage
-                          </label>
-                          <select
-                            id={`${order.id}-stage`}
-                            value={order.stage}
-                            disabled={!editable || busyId === order.id}
-                            onChange={(event) => void transition(order.id, event.target.value as OrderStage)}
-                            className="h-9 rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {stages.map((item) => (
-                              <option key={item} value={item}>
-                                {item}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex flex-wrap gap-2">
-                            <Button asChild variant="outline" size="sm">
-                              <Link href={`/records/${order.id}`}>Journey</Link>
-                            </Button>
-                            <Button asChild variant="outline" size="sm">
-                              <Link href={`/job-card?orderId=${order.id}`}>Job card</Link>
-                            </Button>
-                            <Button asChild variant="outline" size="sm">
-                              <Link href={`/dispatch?orderId=${order.id}`}>Dispatch</Link>
-                            </Button>
-                          </div>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </div>
+              <Card className="w-80 rounded-md border-border bg-card p-3 shadow-lg outline outline-2 outline-ring">
+                <OrderCardContent
+                  customerName={customerName(data.store, order.customerId)}
+                  dispatch={dispatchProgress(data.store, order)}
+                  order={order}
+                />
+              </Card>
             );
-          })}
-        </section>
+          }}
+        >
+          {stages.map((stage) => (
+            <OrderColumn
+              key={stage}
+              stage={stage}
+              orders={groupedOrders[stage]}
+              store={data.store}
+              busyId={busyId}
+              canTransition={canTransition}
+              canEditTitle={canEditTitle}
+              onTransition={transition}
+              onUpdateTitle={updateTitle}
+            />
+          ))}
+        </KanbanProvider>
       ) : null}
     </div>
   );
+}
+
+function MetricCard({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "success" | "danger";
+}) {
+  return (
+    <Card
+      className={cn(
+        "rounded-md p-4",
+        tone === "success" && "border-success/30 bg-success/10",
+        tone === "danger" && "border-danger/30 bg-danger/10",
+      )}
+    >
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <p className="mt-2 font-mono text-2xl font-semibold">{value}</p>
+    </Card>
+  );
+}
+
+function OrderColumn({
+  stage,
+  orders,
+  store,
+  busyId,
+  canTransition,
+  canEditTitle,
+  onTransition,
+  onUpdateTitle,
+}: {
+  stage: OrderStage;
+  orders: Order[];
+  store: CableStore | null;
+  busyId: string | null;
+  canTransition: boolean;
+  canEditTitle: boolean;
+  onTransition: (orderId: string, stage: OrderStage) => void;
+  onUpdateTitle: (orderId: string, title: string) => void;
+}) {
+  return (
+    <KanbanBoard id={stage}>
+      <KanbanHeader name={stage} count={orders.length} indicatorClassName={stageIndicatorClass(stage)} />
+      <KanbanCards className="max-h-dvh pr-1">
+        {orders.length === 0 ? (
+          <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed bg-card p-4 text-center text-sm text-muted-foreground">
+            No orders in {stage}
+          </div>
+        ) : (
+          orders.map((order, index) => (
+            <OrderKanbanCard
+              key={order.id}
+              index={index}
+              stage={stage}
+              order={order}
+              customerName={customerName(store, order.customerId)}
+              dispatch={dispatchProgress(store, order)}
+              busy={busyId === order.id}
+              canTransition={canTransition}
+              canEditTitle={canEditTitle}
+              onTransition={onTransition}
+              onUpdateTitle={onUpdateTitle}
+            />
+          ))
+        )}
+      </KanbanCards>
+    </KanbanBoard>
+  );
+}
+
+function OrderKanbanCard({
+  index,
+  stage,
+  order,
+  customerName: name,
+  dispatch,
+  busy,
+  canTransition,
+  canEditTitle,
+  onTransition,
+  onUpdateTitle,
+}: {
+  index: number;
+  stage: OrderStage;
+  order: Order;
+  customerName: string;
+  dispatch: ReturnType<typeof dispatchProgress>;
+  busy: boolean;
+  canTransition: boolean;
+  canEditTitle: boolean;
+  onTransition: (orderId: string, stage: OrderStage) => void;
+  onUpdateTitle: (orderId: string, title: string) => void;
+}) {
+  return (
+    <UiKanbanCard
+      id={order.id}
+      name={order.title}
+      parent={stage}
+      className={cn("border-border bg-card p-3", !canTransition && "cursor-default")}
+      index={index}
+      disabled={!canTransition || busy}
+    >
+      <OrderCardContent
+        customerName={name}
+        dispatch={dispatch}
+        order={order}
+        editable={canEditTitle}
+        canTransition={canTransition}
+        busy={busy}
+        onTransition={onTransition}
+        onUpdateTitle={onUpdateTitle}
+      />
+    </UiKanbanCard>
+  );
+}
+
+function OrderCardContent({
+  order,
+  customerName: name,
+  dispatch,
+  editable = false,
+  canTransition = false,
+  busy = false,
+  onTransition,
+  onUpdateTitle,
+}: {
+  order: Order;
+  customerName: string;
+  dispatch: ReturnType<typeof dispatchProgress>;
+  editable?: boolean;
+  canTransition?: boolean;
+  busy?: boolean;
+  onTransition?: (orderId: string, stage: OrderStage) => void;
+  onUpdateTitle?: (orderId: string, title: string) => void;
+}) {
+  const [isEditing, setIsEditing] = React.useState(false);
+  const [draftTitle, setDraftTitle] = React.useState(order.title);
+
+  function stopDrag(event: React.SyntheticEvent) {
+    event.stopPropagation();
+  }
+
+  function cancelEdit() {
+    setDraftTitle(order.title);
+    setIsEditing(false);
+  }
+
+  function commitEdit() {
+    const nextTitle = draftTitle.trim();
+    if (!nextTitle) {
+      cancelEdit();
+      return;
+    }
+
+    setIsEditing(false);
+    if (nextTitle !== order.title) {
+      onUpdateTitle?.(order.id, nextTitle);
+    }
+  }
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{name}</p>
+          {isEditing ? (
+            <input
+              aria-label={`Edit title for ${order.id}`}
+              autoFocus
+              className="mt-1 h-8 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onBlur={commitEdit}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onClick={stopDrag}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") commitEdit();
+                if (event.key === "Escape") cancelEdit();
+              }}
+              onPointerDown={stopDrag}
+              value={draftTitle}
+            />
+          ) : (
+            <button
+              aria-label={`Edit title for ${order.id}`}
+              className={cn(
+                "mt-1 line-clamp-2 w-full rounded-sm text-left text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                editable && "cursor-text hover:text-foreground",
+              )}
+              disabled={!editable}
+              onClick={(event) => {
+                stopDrag(event);
+                if (editable) {
+                  setDraftTitle(order.title);
+                  setIsEditing(true);
+                }
+              }}
+              onPointerDown={stopDrag}
+              type="button"
+            >
+              {order.title}
+            </button>
+          )}
+        </div>
+        <Badge className={cn("shrink-0", priorityTones[order.priority])}>{order.priority}</Badge>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-md border bg-background p-2">
+          <p className="text-muted-foreground">Value</p>
+          <p className="mt-1 truncate font-mono font-semibold">{formatINR(order.amountInr)}</p>
+        </div>
+        <div className="rounded-md border bg-background p-2">
+          <p className="text-muted-foreground">Promise</p>
+          <p className="mt-1 truncate font-medium">{formatDate(order.promisedDate)}</p>
+        </div>
+      </div>
+
+      <div className="space-y-2" aria-label={`${order.completionPct}% complete`}>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-muted-foreground">Progress</span>
+          <span className="font-mono font-medium">{order.completionPct}%</span>
+        </div>
+        <div className="grid grid-cols-5 gap-1">
+          {[20, 40, 60, 80, 100].map((step) => (
+            <span key={step} className={cn("h-1.5 rounded-sm", order.completionPct >= step ? "bg-primary" : "bg-border")} />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge className={dispatch.ready ? "border-success/30 bg-success/10 text-success" : "border-warning/30 bg-warning/10 text-warning"}>
+          {dispatch.ready ? <CheckCircle2Icon className="mr-1 size-3" /> : <TruckIcon className="mr-1 size-3" />}
+          Dispatch {dispatch.done}/{dispatch.total}
+        </Badge>
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+          <CalendarDaysIcon className="size-3" />
+          {order.id}
+        </span>
+      </div>
+
+      {canTransition ? (
+        <select
+          aria-label={`Move ${order.id} to stage`}
+          value={order.stage}
+          disabled={busy}
+          onChange={(event) => onTransition?.(order.id, event.target.value as OrderStage)}
+          onClick={stopDrag}
+          onPointerDown={stopDrag}
+          className="h-8 w-full rounded-md border bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {stages.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+          <Link href={`/records/${order.id}`}>Journey</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+          <Link href={`/job-card?orderId=${order.id}`}>Job</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
+          <Link href={`/dispatch?orderId=${order.id}`}>Dispatch</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function stageIndicatorClass(stage: OrderStage) {
+  const tones: Record<OrderStage, string> = {
+    Quoted: "bg-stage-quote",
+    Won: "bg-stage-order",
+    "In Production": "bg-info",
+    "Ready for Dispatch": "bg-stage-dispatch",
+    Invoiced: "bg-stage-invoice",
+  };
+
+  return tones[stage];
 }

@@ -40,6 +40,7 @@ import { formatDate, formatINR } from "@/lib/domain/format";
 import { can, requiresApproval } from "@/lib/rbac";
 import {
   contactsService,
+  inquiriesService,
   integrationsService,
   materialsService,
   quotesService,
@@ -53,6 +54,7 @@ import type {
   CoreConfig,
   Customer,
   FlameClass,
+  Inquiry,
   Insulation,
   Material,
   MaterialCategory,
@@ -281,30 +283,85 @@ function Panel({
   icon: Icon,
   action,
   children,
+  collapsible = true,
+  defaultOpen = true,
+  storageKey,
 }: {
   title: string;
   description?: string;
   icon?: typeof Cable;
   action?: React.ReactNode;
   children: React.ReactNode;
+  /** When false, the panel is always open with no toggle. */
+  collapsible?: boolean;
+  /** Open state on first render (overridden by a remembered value if storageKey is set). */
+  defaultOpen?: boolean;
+  /** Remember open/closed across reloads under `cableos2:panel:<key>`. */
+  storageKey?: string;
 }) {
+  const [open, setOpen] = useState(() => {
+    if (!collapsible) return true;
+    if (storageKey && typeof window !== "undefined") {
+      const stored = window.localStorage.getItem(`cableos2:panel:${storageKey}`);
+      if (stored === "open") return true;
+      if (stored === "closed") return false;
+    }
+    return defaultOpen;
+  });
+
+  function toggle() {
+    setOpen((value) => {
+      const next = !value;
+      if (storageKey && typeof window !== "undefined") {
+        window.localStorage.setItem(`cableos2:panel:${storageKey}`, next ? "open" : "closed");
+      }
+      return next;
+    });
+  }
+
+  const bodyId = `panel-body-${(storageKey ?? title).replace(/\s+/g, "-").toLowerCase()}`;
+
+  const header = (
+    <div className="flex min-w-0 gap-3">
+      {Icon ? (
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
+          <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        </div>
+      ) : null}
+      <div className="min-w-0 space-y-1 text-left">
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+      </div>
+    </div>
+  );
+
   return (
     <section className="rounded-lg border border-border bg-card shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex gap-3">
-          {Icon ? (
-            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted">
-              <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            </div>
-          ) : null}
-          <div className="space-y-1">
-            <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-            {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-          </div>
-        </div>
-        {action}
+      <div className="flex items-start justify-between gap-3 border-b border-border p-4">
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={open}
+            aria-controls={bodyId}
+            className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          >
+            <ChevronDown
+              className={cn("mt-2.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")}
+              aria-hidden="true"
+            />
+            {header}
+          </button>
+        ) : (
+          header
+        )}
+        {action ? <div className="shrink-0">{action}</div> : null}
       </div>
-      <div className="p-4">{children}</div>
+      {open ? (
+        <div id={bodyId} className="p-4">
+          {children}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -412,6 +469,128 @@ function NumberField({
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </Field>
+  );
+}
+
+/**
+ * Customer field by NAME (no codes). Type a name to filter existing customers and pick one,
+ * or type a brand-new name to quote a customer not yet on file. Selecting a known customer
+ * keeps the tax/credit/sales-board linkage; a new name is quoted as-is.
+ */
+function CustomerInput({
+  id,
+  customers,
+  value, // current display name
+  selectedCustomerId,
+  disabled,
+  big,
+  onSelectExisting,
+  onTypeNew,
+}: {
+  id: string;
+  customers: Customer[];
+  value: string;
+  selectedCustomerId: string;
+  disabled?: boolean;
+  big?: boolean;
+  onSelectExisting: (customer: Customer) => void;
+  onTypeNew: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = value.trim().toLowerCase();
+  const matches = query
+    ? customers.filter((c) => c.name.toLowerCase().includes(query))
+    : customers;
+  const exactMatch = customers.find((c) => c.name.toLowerCase() === query);
+  const isNewName = value.trim().length > 0 && !exactMatch;
+
+  return (
+    <Field id={id} label="Customer name" hint="Type a name. Pick an existing customer, or enter a new one.">
+      <div className="relative">
+        <Input
+          id={id}
+          value={value}
+          disabled={disabled}
+          autoComplete="off"
+          placeholder="e.g. Shakti Infra Projects"
+          className={big ? "h-11 text-base" : undefined}
+          onChange={(event) => {
+            onTypeNew(event.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        />
+        {open && !disabled && (matches.length > 0 || isNewName) ? (
+          <div className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-md border border-border bg-popover shadow-md">
+            {matches.map((customer) => (
+              <button
+                key={customer.id}
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onSelectExisting(customer);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-muted",
+                  customer.id === selectedCustomerId && "bg-muted",
+                )}
+              >
+                <span className="font-medium text-foreground">{customer.name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {customer.city}, {customer.state}
+                </span>
+              </button>
+            ))}
+            {isNewName ? (
+              <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+                Press Enter / keep typing to quote{" "}
+                <span className="font-medium text-foreground">“{value.trim()}”</span> as a new customer.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </Field>
+  );
+}
+
+/** Quick-pick customers straight from the Sales board (inquiries without a quote yet). */
+function SalesBoardPicks({
+  picks,
+  selectedCustomerId,
+  disabled,
+  onPick,
+}: {
+  picks: Array<{ inquiry: Inquiry; customer: Customer }>;
+  selectedCustomerId: string;
+  disabled?: boolean;
+  onPick: (inquiry: Inquiry, customer: Customer) => void;
+}) {
+  if (picks.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Or pick from the Sales board</p>
+      <p className="text-xs text-muted-foreground">Open inquiries that don&apos;t have a quote yet.</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {picks.map(({ inquiry, customer }) => (
+          <button
+            key={inquiry.id}
+            type="button"
+            disabled={disabled}
+            onClick={() => onPick(inquiry, customer)}
+            className={cn(
+              "rounded-md border p-3 text-left transition-colors disabled:opacity-50",
+              customer.id === selectedCustomerId ? "border-primary bg-primary/10" : "border-border bg-card hover:bg-muted",
+            )}
+          >
+            <p className="text-sm font-medium text-foreground">{customer.name}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{inquiry.requirement}</p>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -683,8 +862,13 @@ function GuidedWizard(props: BuilderShared) {
   const {
     customers,
     selectedCustomerId,
-    setSelectedCustomerId,
+    customerName,
     selectedCustomer,
+    onSelectExistingCustomer,
+    onTypeCustomerName,
+    openInquiryPicks,
+    onPickFromSalesBoard,
+    hasCustomer,
     draft,
     setDraft,
     presets,
@@ -711,29 +895,38 @@ function GuidedWizard(props: BuilderShared) {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [editingPreset, setEditingPreset] = useState(false);
 
-  const canGoNext = step === 0 ? Boolean(selectedCustomerId) : step === 1 ? lines.length > 0 : true;
+  const canGoNext = step === 0 ? hasCustomer : step === 1 ? lines.length > 0 : true;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-8">
       <WizardProgress step={step} />
 
       {step === 0 ? (
-        <div className="space-y-4">
-          {customers.length === 0 ? (
-            <EmptyState icon={Users} title="No customers available" description="Add a customer in Contacts before creating a quote." />
-          ) : (
-            <>
-              <SelectField id="wizard-customer" label="Customer" value={selectedCustomerId} options={customers.map((c) => c.id)} hint="Start typing or pick from the list." disabled={readOnly} big onChange={setSelectedCustomerId} />
-              {selectedCustomer ? (
-                <div className="rounded-md border border-border bg-muted p-4 text-sm">
-                  <p className="font-medium text-foreground">{selectedCustomer.name}</p>
-                  <p className="text-muted-foreground">
-                    {selectedCustomer.city}, {selectedCustomer.state} · {selectedCustomer.paymentTerms}
-                  </p>
-                </div>
-              ) : null}
-            </>
-          )}
+        <div className="space-y-6">
+          <CustomerInput
+            id="wizard-customer"
+            customers={customers}
+            value={customerName}
+            selectedCustomerId={selectedCustomerId}
+            disabled={readOnly}
+            big
+            onSelectExisting={onSelectExistingCustomer}
+            onTypeNew={onTypeCustomerName}
+          />
+          {selectedCustomer ? (
+            <div className="rounded-md border border-border bg-muted p-4 text-sm">
+              <p className="font-medium text-foreground">{selectedCustomer.name}</p>
+              <p className="text-muted-foreground">
+                {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}
+                {selectedCustomer.paymentTerms ? ` · ${selectedCustomer.paymentTerms}` : ""}
+              </p>
+            </div>
+          ) : customerName.trim() ? (
+            <p className="text-sm text-muted-foreground">
+              New customer <span className="font-medium text-foreground">“{customerName.trim()}”</span> will be created when you save or send.
+            </p>
+          ) : null}
+          <SalesBoardPicks picks={openInquiryPicks} selectedCustomerId={selectedCustomerId} disabled={readOnly} onPick={onPickFromSalesBoard} />
         </div>
       ) : null}
 
@@ -967,6 +1160,8 @@ function MaterialsPanel({
       title="Materials & rates"
       description="₹/kg used to cost every cable. Edit a rate and quotes update."
       icon={Zap}
+      storageKey="adv-materials"
+      defaultOpen={false}
       action={
         <Button type="button" variant="secondary" size="sm" disabled={readOnly} onClick={onRefreshMcx}>
           <RefreshCcw className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -1041,8 +1236,12 @@ function AdvancedLayout(props: BuilderShared) {
   const {
     customers,
     selectedCustomerId,
-    setSelectedCustomerId,
+    customerName,
     selectedCustomer,
+    onSelectExistingCustomer,
+    onTypeCustomerName,
+    openInquiryPicks,
+    onPickFromSalesBoard,
     draft,
     setDraft,
     mcx,
@@ -1056,7 +1255,6 @@ function AdvancedLayout(props: BuilderShared) {
     gstSplit,
     subtotalInr,
     totalInr,
-    creditOverLimit,
     marginGate,
   } = props;
 
@@ -1065,26 +1263,32 @@ function AdvancedLayout(props: BuilderShared) {
   return (
     <div className="grid gap-6 xl:grid-cols-3">
       <div className="space-y-6 xl:col-span-2">
-        <Panel title="Step 1 — Customer" description="Drives tax split, credit gate, and preview." icon={Users}>
-          {customers.length === 0 ? (
-            <EmptyState icon={Users} title="No contacts available" description="The contacts service must return customers before a quote can be created." />
-          ) : (
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="md:col-span-2">
-                <SelectField id="adv-customer" label="Customer" value={selectedCustomerId} options={customers.map((c) => c.id)} hint="Tax preview uses customer state vs our Maharashtra origin." disabled={readOnly} onChange={setSelectedCustomerId} />
-              </div>
-              <div className="rounded-md border border-border bg-muted p-3">
-                <p className="text-xs text-muted-foreground">Credit exposure</p>
-                <p className="mt-2 text-sm font-semibold">
-                  <MoneyCell amount={selectedCustomer?.creditUsedInr ?? 0} /> / <MoneyCell amount={selectedCustomer?.creditLimitInr ?? 0} />
-                </p>
-                {creditOverLimit ? <p className="mt-2 text-xs font-medium text-danger">Credit override needed for non-owner send.</p> : null}
-              </div>
-            </div>
-          )}
+        <Panel title="Step 1 — Customer" description="Type a name or pick from the Sales board. Drives tax and preview." icon={Users} storageKey="adv-customer">
+          <div className="space-y-4">
+            <CustomerInput
+              id="adv-customer"
+              customers={customers}
+              value={customerName}
+              selectedCustomerId={selectedCustomerId}
+              disabled={readOnly}
+              onSelectExisting={onSelectExistingCustomer}
+              onTypeNew={onTypeCustomerName}
+            />
+            {selectedCustomer ? (
+              <p className="text-xs text-muted-foreground">
+                {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}
+                {selectedCustomer.gstin ? ` · ${selectedCustomer.gstin}` : ""}
+              </p>
+            ) : customerName.trim() ? (
+              <p className="text-xs text-muted-foreground">
+                New customer — saved to Contacts when you save or send.
+              </p>
+            ) : null}
+            <SalesBoardPicks picks={openInquiryPicks} selectedCustomerId={selectedCustomerId} disabled={readOnly} onPick={onPickFromSalesBoard} />
+          </div>
         </Panel>
 
-        <Panel title="Step 2 — Configure a cable" description="Rich CableSpec form with live designation, code, and costing." icon={Wand2}>
+        <Panel title="Step 2 — Configure a cable" description="Rich CableSpec form with live designation, code, and costing." icon={Wand2} storageKey="adv-configure">
           <div className="space-y-6">
             <SpecForm draft={draft} mcx={mcx} readOnly={readOnly} onChange={setDraft} />
             <MoreOptions draft={draft} readOnly={readOnly} onChange={setDraft} />
@@ -1114,7 +1318,7 @@ function AdvancedLayout(props: BuilderShared) {
           </div>
         </Panel>
 
-        <Panel title="Cables in this quote" description="Line totals include metal, overhead, margin; GST applied at quote level." icon={Cable}>
+        <Panel title="Cables in this quote" description="Line totals include metal, overhead, margin; GST applied at quote level." icon={Cable} storageKey="adv-lines">
           {lines.length === 0 ? (
             <EmptyState title="No quote lines yet" description="Configure a cable above, then add it to this quote." />
           ) : (
@@ -1165,12 +1369,12 @@ function AdvancedLayout(props: BuilderShared) {
       </div>
 
       <div className="space-y-6">
-        <Panel title="Quote preview" description="Live commercial document preview." icon={FileText}>
+        <Panel title="Quote preview" description="Live commercial document preview." icon={FileText} storageKey="adv-preview">
           <div className="space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-foreground">{selectedCustomer?.name ?? "Select a customer"}</p>
-                <p className="text-xs text-muted-foreground">{selectedCustomer ? `${selectedCustomer.gstin} · ${selectedCustomer.state}` : "GST split appears after selection."}</p>
+                <p className="text-sm font-semibold text-foreground">{selectedCustomer?.name ?? (customerName.trim() || "Enter a customer name")}</p>
+                <p className="text-xs text-muted-foreground">{selectedCustomer ? [selectedCustomer.gstin, selectedCustomer.state].filter(Boolean).join(" · ") || "Details pending" : "GST split appears after selection."}</p>
               </div>
               <Badge tone={gstSplit.interstate ? "info" : "highlight"}>{gstSplit.interstate ? "IGST" : "CGST + SGST"}</Badge>
             </div>
@@ -1191,16 +1395,10 @@ function AdvancedLayout(props: BuilderShared) {
 
         <MaterialsPanel materials={materials} readOnly={readOnly} onSave={onSaveMaterial} onRefreshMcx={onRefreshMcx} />
 
-        <Panel title="Approval gates" description="Mirrors margin and credit intervention rules." icon={ShieldCheck}>
-          <div className="space-y-3 text-sm">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">Margin gate (≥ {MARGIN_GATE_PCT}%)</span>
-              {marginGate ? <Badge tone="warning">Low margin</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Margin gate clear" />}
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">Credit gate</span>
-              {creditOverLimit ? <Badge tone="warning">Over limit</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Credit gate clear" />}
-            </div>
+        <Panel title="Approval gate" description="Low-margin quotes need owner approval before they go to the factory." icon={ShieldCheck} storageKey="adv-gates" defaultOpen={false}>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">Margin gate (≥ {MARGIN_GATE_PCT}%)</span>
+            {marginGate ? <Badge tone="warning">Low margin</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Margin gate clear" />}
           </div>
         </Panel>
       </div>
@@ -1212,8 +1410,13 @@ function AdvancedLayout(props: BuilderShared) {
 interface BuilderShared {
   customers: Customer[];
   selectedCustomerId: string;
-  setSelectedCustomerId: (id: string) => void;
+  customerName: string;
   selectedCustomer?: Customer;
+  onSelectExistingCustomer: (customer: Customer) => void;
+  onTypeCustomerName: (name: string) => void;
+  openInquiryPicks: Array<{ inquiry: Inquiry; customer: Customer }>;
+  onPickFromSalesBoard: (inquiry: Inquiry, customer: Customer) => void;
+  hasCustomer: boolean;
   draft: LineDraft;
   setDraft: (next: LineDraft) => void;
   presets: CablePreset[];
@@ -1229,7 +1432,6 @@ interface BuilderShared {
   gstSplit: ReturnType<typeof computeGst>;
   subtotalInr: number;
   totalInr: number;
-  creditOverLimit: boolean;
   marginGate: boolean;
   sendLabel: string;
   sendIcon: React.ReactNode;
@@ -1259,11 +1461,13 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [presets, setPresets] = useState<CablePreset[]>([]);
   const [savedQuotes, setSavedQuotes] = useState<Quote[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [mcx, setMcx] = useState<McxRates | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [draft, setDraft] = useState<LineDraft>(fallbackDraft);
   const [lines, setLines] = useState<LineWithSpec[]>([]);
   const [seq, setSeq] = useState(1);
@@ -1279,35 +1483,32 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const gstSplit = useMemo(() => computeGst(subtotalInr, selectedCustomer?.stateCode), [subtotalInr, selectedCustomer]);
   const totalInr = subtotalInr + gstSplit.gstInr;
 
+  const hasCustomer = Boolean(selectedCustomerId) || customerName.trim().length > 0;
   const marginGate = lines.some((item) => item.line.marginPct < MARGIN_GATE_PCT);
-  const creditOverLimit = selectedCustomer
-    ? (selectedCustomer.creditUsedInr ?? 0) + totalInr > selectedCustomer.creditLimitInr
-    : false;
   const permissionCtx = { record: { marginReviewRequired: marginGate, amountInr: totalInr } };
   const needsMarginApproval = requiresApproval(role, "transition", "quote", permissionCtx);
-  const needsCreditApproval = role !== "Owner" && creditOverLimit;
-  const needsApproval = needsMarginApproval || needsCreditApproval;
+  const needsApproval = needsMarginApproval;
   const canTransition = can(role, "transition", "quote", permissionCtx);
 
   const gateReason = needsMarginApproval
     ? `Your profit is below the company minimum (${MARGIN_GATE_PCT}%), so the owner needs to okay it first.`
-    : needsCreditApproval
-      ? "This pushes the customer over their credit limit, so the owner needs to okay it first."
-      : null;
+    : null;
 
   // ── data load ────────────────────────────────────────────────────────────
   async function loadPage() {
     setLoading(true);
     setError(null);
     try {
-      const [loadedCustomers, loadedPresets, loadedQuotes, loadedMaterials, rates] = await Promise.all([
+      const [loadedCustomers, loadedInquiries, loadedPresets, loadedQuotes, loadedMaterials, rates] = await Promise.all([
         contactsService.list(),
+        inquiriesService.list(),
         quotesService.listPresets(),
         quotesService.list(),
         materialsService.list(),
         integrationsService.fetchMcxRates(),
       ]);
       setCustomers(loadedCustomers);
+      setInquiries(loadedInquiries);
       setPresets(loadedPresets);
       setSavedQuotes(loadedQuotes);
       setMaterials(loadedMaterials);
@@ -1316,10 +1517,15 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       const conductorRate = (material: ConductorMaterial) =>
         loadedMaterials.find((m) => m.category === "Conductor" && m.matchMaterial === material)?.ratePerKg;
 
+      const nameForId = (customerId: string) =>
+        loadedCustomers.find((c) => c.id === customerId)?.name ?? "";
+
       const existing = quoteId ? loadedQuotes.find((q) => q.id === quoteId) : undefined;
+      const inquiryCustomerId = searchParams.get("customerId");
       if (existing) {
         const specs = await specsService.list();
         setSelectedCustomerId(existing.customerId);
+        setCustomerName(nameForId(existing.customerId));
         setLinkedInquiryId(existing.inquiryId ?? null);
         setLines(
           existing.lines.map((line) => {
@@ -1338,7 +1544,11 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
           }),
         );
       } else {
-        setSelectedCustomerId(loadedCustomers[0]?.id ?? "");
+        // New quote: start blank so the user types a name, unless arriving from an inquiry.
+        if (inquiryCustomerId) {
+          setSelectedCustomerId(inquiryCustomerId);
+          setCustomerName(nameForId(inquiryCustomerId));
+        }
         setDraft((current) => ({ ...current, metalRatePerKg: conductorRate(current.conductorMaterial) ?? current.metalRatePerKg }));
       }
     } catch {
@@ -1359,6 +1569,35 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   function switchMode(next: "guided" | "advanced") {
     setMode(next);
     if (typeof window !== "undefined") window.localStorage.setItem(MODE_KEY, next);
+  }
+
+  // ── customer selection ─────────────────────────────────────────────────────
+  function selectExistingCustomer(customer: Customer) {
+    setSelectedCustomerId(customer.id);
+    setCustomerName(customer.name);
+  }
+
+  function typeCustomerName(name: string) {
+    setCustomerName(name);
+    // Typing a name that exactly matches a customer re-links to it; otherwise it's a new name.
+    const match = customers.find((c) => c.name.toLowerCase() === name.trim().toLowerCase());
+    setSelectedCustomerId(match ? match.id : "");
+  }
+
+  /** Sales-board inquiries whose customer has no quote yet — quick-pick source. */
+  const openInquiryPicks = useMemo(() => {
+    const customerIdsWithQuote = new Set(savedQuotes.map((q) => q.customerId));
+    return inquiries
+      .filter((inq) => inq.stage !== "Won" && inq.stage !== "Lost")
+      .filter((inq) => !inq.convertedOrderId && !customerIdsWithQuote.has(inq.customerId))
+      .map((inq) => ({ inquiry: inq, customer: customers.find((c) => c.id === inq.customerId) }))
+      .filter((row): row is { inquiry: Inquiry; customer: Customer } => Boolean(row.customer));
+  }, [inquiries, savedQuotes, customers]);
+
+  function pickFromSalesBoard(inquiry: Inquiry, customer: Customer) {
+    selectExistingCustomer(customer);
+    setLinkedInquiryId(inquiry.id);
+    setFeedback({ tone: "info", message: `Linked Sales inquiry ${inquiry.id} for ${customer.name}.` });
   }
 
   // ── line ops ───────────────────────────────────────────────────────────────
@@ -1428,11 +1667,45 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     removeLine(lineId);
   }
 
-  function buildQuoteRecord(status: QuoteStatus): Quote {
+  /**
+   * Resolve the customer id to store on the quote. If an existing customer is selected, use it.
+   * If only a name was typed, create a lightweight customer record on the fly so the quote (and
+   * the order chain) still references a real customer.
+   */
+  async function ensureCustomerId(): Promise<string> {
+    if (selectedCustomerId) return selectedCustomerId;
+    const name = customerName.trim();
+    if (!name) throw new Error("No customer name");
+    const created = await contactsService.create(
+      {
+        id: `CUS-NEW-${customers.length + 1}-${now().getTime()}`,
+        name,
+        segment: "Trader/Dealer",
+        contactName: name,
+        phone: "",
+        email: "",
+        billingAddress: "",
+        city: "",
+        state: "",
+        pincode: "",
+        gstin: "",
+        stateCode: "", // unknown → treated as interstate (IGST) until completed in Contacts
+        paymentTerms: "To be confirmed",
+        creditLimitInr: 0,
+        createdAt: now().toISOString(),
+      },
+      actor,
+    );
+    setCustomers((current) => [created, ...current]);
+    setSelectedCustomerId(created.id);
+    return created.id;
+  }
+
+  function buildQuoteRecord(status: QuoteStatus, customerId: string): Quote {
     return {
       id: quoteId ?? nextQuoteId(),
       inquiryId: linkedInquiryId ?? undefined,
-      customerId: selectedCustomerId,
+      customerId,
       lines: lines.map((item) => item.line),
       subtotalInr,
       gstInr: gstSplit.gstInr,
@@ -1451,11 +1724,12 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   }
 
   async function saveDraft() {
-    if (lines.length === 0 || !can(role, "create", "quote")) return;
+    if (lines.length === 0 || !can(role, "create", "quote") || !hasCustomer) return;
     setSaving(true);
     try {
+      const customerId = await ensureCustomerId();
       await persistSpecs();
-      const saved = await quotesService.saveDraft(buildQuoteRecord("Draft"), actor);
+      const saved = await quotesService.saveDraft(buildQuoteRecord("Draft", customerId), actor);
       setSavedQuotes((current) => [saved, ...current.filter((q) => q.id !== saved.id)]);
       setFeedback({ tone: "success", message: `${saved.id} saved as a draft. The factory has not started.` });
     } catch {
@@ -1471,8 +1745,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       // Persist as Review + raise approval via the service transaction (no order created).
       setSending(true);
       try {
+        const customerId = await ensureCustomerId();
         await persistSpecs();
-        const quote = await quotesService.saveDraft(buildQuoteRecord("Review"), actor);
+        const quote = await quotesService.saveDraft(buildQuoteRecord("Review", customerId), actor);
         await quotesService.sendToOrderBoard(quote.id, actor); // service raises the ApprovalRequest
         setSavedQuotes((current) => [{ ...quote, status: "Review" }, ...current.filter((q) => q.id !== quote.id)]);
         setFeedback({
@@ -1494,8 +1769,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
     setSending(true);
     try {
+      const customerId = await ensureCustomerId();
       await persistSpecs();
-      const quote = await quotesService.saveDraft(buildQuoteRecord("Approved"), actor);
+      const quote = await quotesService.saveDraft(buildQuoteRecord("Approved", customerId), actor);
       const result = await quotesService.sendToOrderBoard(quote.id, actor);
       const order = "order" in result ? result.order : undefined;
       setFeedback({
@@ -1535,13 +1811,18 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   const sendLabel = needsApproval ? "Ask owner to approve" : "Approve & send to factory";
   const sendIcon = needsApproval ? <ShieldCheck className="h-4 w-4" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />;
-  const sendDisabled = readOnly || sending || (!canTransition && !needsApproval);
+  const sendDisabled = readOnly || sending || !hasCustomer || (!canTransition && !needsApproval);
 
   const shared: BuilderShared = {
     customers,
     selectedCustomerId,
-    setSelectedCustomerId,
+    customerName,
     selectedCustomer,
+    onSelectExistingCustomer: selectExistingCustomer,
+    onTypeCustomerName: typeCustomerName,
+    openInquiryPicks,
+    onPickFromSalesBoard: pickFromSalesBoard,
+    hasCustomer,
     draft,
     setDraft,
     presets,
@@ -1557,7 +1838,6 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     gstSplit,
     subtotalInr,
     totalInr,
-    creditOverLimit,
     marginGate,
     sendLabel,
     sendIcon,
@@ -1640,7 +1920,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
         {mode === "guided" ? <GuidedWizard {...shared} /> : <AdvancedLayout {...shared} />}
 
-        <Panel title="Saved quotes" description="Saved and locked quotes can be sent to the order board from here." icon={FileText}>
+        <Panel title="Saved quotes" description="Saved and locked quotes can be sent to the order board from here." icon={FileText} storageKey="saved-quotes" defaultOpen={false}>
           {savedQuotes.length === 0 ? (
             <EmptyState icon={FileText} title="No saved quotes" description="Drafts and locked quotes appear here after saving." />
           ) : (

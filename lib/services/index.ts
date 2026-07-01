@@ -318,6 +318,21 @@ export const quotesService = {
 export const ordersService = {
   list: () => list("orders"),
   get: (orderId: string) => get("orders", orderId),
+  updateTitle: (orderId: string, title: string, actor: Actor) =>
+    mutateStore((store) => {
+      const order = store.orders.find((item) => item.id === orderId);
+      if (!order) throw new Error("Order not found");
+      order.title = title;
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "order.title_updated",
+        recordType: "order",
+        recordId: orderId,
+        text: `${orderId} title updated.`,
+      });
+      return order;
+    }),
   transition: (orderId: string, stage: Order["stage"], actor: Actor) =>
     mutateStore((store) => {
       const order = store.orders.find((item) => item.id === orderId);
@@ -358,9 +373,92 @@ export const jobCardsService = {
     }),
 };
 
+/**
+ * Runs the Operations → Accounts handoff when every required checklist item is done:
+ * advances the order to "Ready for Dispatch", flips the linked invoice to "Ready to sync",
+ * and — if the invoice still has a balance pending — raises a "Dispatch hold" approval so
+ * Accounts/Owner confirm payment before physical dispatch (rbac §4, page plan §3/§5).
+ * Idempotent: only fires while the order is still pre-dispatch.
+ */
+function completeDispatchHandoff(store: CableStore, dispatch: Dispatch, actor: Actor) {
+  const order = store.orders.find((entry) => entry.id === dispatch.orderId);
+  const invoice = store.invoices.find((entry) => entry.orderId === dispatch.orderId);
+  if (order && order.stage !== "Ready for Dispatch" && order.stage !== "Invoiced") {
+    order.stage = "Ready for Dispatch";
+    order.completionPct = 90;
+    addActivity(store, {
+      actorRole: actor.role,
+      actorName: actor.name,
+      type: "order.ready_for_dispatch",
+      recordType: "order",
+      recordId: order.id,
+      text: `${order.id} is ready for dispatch.`,
+    });
+  }
+  if (invoice && invoice.syncStatus === "Missing dispatch data") {
+    invoice.status = "Ready to sync";
+    invoice.syncStatus = "Ready to sync";
+    addActivity(store, {
+      actorRole: actor.role,
+      actorName: actor.name,
+      type: "invoice.ready_to_sync",
+      recordType: "invoice",
+      recordId: invoice.id,
+      text: `${invoice.id} is ready to sync.`,
+    });
+  }
+  // Dispatch hold: payment still pending → raise an approval (unless one is already open).
+  const paymentPending = invoice?.status === "Payment pending" || invoice?.status === "Overdue";
+  const holdOpen = store.approvals.some(
+    (entry) => entry.kind === "Dispatch hold" && entry.recordId === dispatch.id && entry.status === "Pending",
+  );
+  if (paymentPending && !holdOpen) {
+    store.approvals.unshift({
+      id: id("APR", store.approvals.length),
+      kind: "Dispatch hold",
+      recordType: "dispatch",
+      recordId: dispatch.id,
+      requestedByRole: actor.role,
+      status: "Pending",
+      reason: `Balance pending on ${invoice?.id ?? "linked invoice"} — confirm payment before physical dispatch.`,
+      createdAt: isoNow(),
+    });
+    addActivity(store, {
+      actorRole: actor.role,
+      actorName: actor.name,
+      type: "approval.requested",
+      recordType: "dispatch",
+      recordId: dispatch.id,
+      text: `Dispatch hold raised for ${dispatch.id} — payment pending.`,
+    });
+  }
+}
+
 export const dispatchService = {
   list: () => list("dispatches"),
   get: (dispatchId: string) => get("dispatches", dispatchId),
+  getByOrder: async (orderId: string) =>
+    (await adapter.list("dispatches")).find((item) => item.orderId === orderId) ?? null,
+  updateLogistics: (
+    dispatchId: string,
+    patch: { transporter: string; vehicleNo: string },
+    actor: Actor,
+  ) =>
+    mutateStore((store) => {
+      const dispatch = store.dispatches.find((item) => item.id === dispatchId);
+      if (!dispatch) throw new Error("Dispatch not found");
+      dispatch.transporter = patch.transporter;
+      dispatch.vehicleNo = patch.vehicleNo;
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "dispatch.logistics_updated",
+        recordType: "dispatch",
+        recordId: dispatchId,
+        text: `Transporter set to ${patch.transporter || "—"}, vehicle ${patch.vehicleNo || "—"}.`,
+      });
+      return dispatch;
+    }),
   toggleChecklist: (dispatchId: string, itemId: string, done: boolean, actor: Actor) =>
     mutateStore((store) => {
       const dispatch = store.dispatches.find((item) => item.id === dispatchId);
@@ -368,17 +466,8 @@ export const dispatchService = {
       const item = dispatch.checklist.find((entry) => entry.id === itemId);
       if (!item) throw new Error("Checklist item not found");
       item.done = done;
-      const order = store.orders.find((entry) => entry.id === dispatch.orderId);
-      const invoice = store.invoices.find((entry) => entry.orderId === dispatch.orderId);
       if (checklistComplete(dispatch)) {
-        if (order) {
-          order.stage = "Ready for Dispatch";
-          order.completionPct = 90;
-        }
-        if (invoice && invoice.syncStatus === "Missing dispatch data") {
-          invoice.status = "Ready to sync";
-          invoice.syncStatus = "Ready to sync";
-        }
+        completeDispatchHandoff(store, dispatch, actor);
       }
       addActivity(store, {
         actorRole: actor.role,
