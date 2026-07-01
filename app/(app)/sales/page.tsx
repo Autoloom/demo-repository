@@ -532,6 +532,18 @@ export default function SalesBoardPage() {
     }
   }
 
+  async function handleConvert(id: string) {
+    if (!can(actor.role, "transition", "inquiry")) return;
+    try {
+      const { inquiry } = await localInquiriesService.convertToOrder(id, actor);
+      await refreshAfterMutation(
+        `Converted to ${inquiry.convertedOrderId}. It now lives on the Order Board.`,
+      );
+    } catch {
+      setLoadState("error");
+    }
+  }
+
   function handleDragEnd(event: DragEndEvent) {
     const nextStage = event.over?.id;
     const inquiryId = event.active.id;
@@ -665,6 +677,7 @@ export default function SalesBoardPage() {
                 canTransition={can(actor.role, "transition", "inquiry")}
                 canEditTitle={can(actor.role, "update", "inquiry")}
                 onUpdateTitle={handleUpdateTitle}
+                onConvert={handleConvert}
               />
             ))}
           </KanbanProvider>
@@ -871,6 +884,7 @@ function KanbanColumn({
   canTransition,
   canEditTitle,
   onUpdateTitle,
+  onConvert,
 }: {
   stage: InquiryStage;
   inquiries: Inquiry[];
@@ -878,6 +892,7 @@ function KanbanColumn({
   canTransition: boolean;
   canEditTitle: boolean;
   onUpdateTitle: (id: string, title: string) => void;
+  onConvert: (id: string) => void;
 }) {
   return (
     <KanbanBoard id={stage}>
@@ -904,6 +919,7 @@ function KanbanColumn({
               canTransition={canTransition}
               canEditTitle={canEditTitle}
               onUpdateTitle={onUpdateTitle}
+              onConvert={canTransition ? onConvert : undefined}
             />
           ))
         )}
@@ -920,6 +936,7 @@ function InquiryKanbanCard({
   canTransition,
   canEditTitle,
   onUpdateTitle,
+  onConvert,
 }: {
   index: number;
   stage: InquiryStage;
@@ -928,6 +945,7 @@ function InquiryKanbanCard({
   canTransition: boolean;
   canEditTitle: boolean;
   onUpdateTitle: (id: string, title: string) => void;
+  onConvert?: (id: string) => void;
 }) {
   return (
     <UiKanbanCard
@@ -943,6 +961,7 @@ function InquiryKanbanCard({
         inquiry={inquiry}
         editable={canEditTitle}
         onUpdateTitle={onUpdateTitle}
+        onConvert={onConvert}
       />
     </UiKanbanCard>
   );
@@ -953,14 +972,17 @@ function InquiryCardContent({
   customer,
   editable = false,
   onUpdateTitle,
+  onConvert,
 }: {
   inquiry: Inquiry;
   customer?: Customer;
   editable?: boolean;
   onUpdateTitle?: (id: string, title: string) => void;
+  onConvert?: (id: string) => void;
 }) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [draftTitle, setDraftTitle] = React.useState(inquiry.requirement);
+  const [converting, setConverting] = React.useState(false);
 
   function stopDrag(event: React.SyntheticEvent) {
     event.stopPropagation();
@@ -1063,6 +1085,26 @@ function InquiryCardContent({
           <CalendarClock className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
           <span className="line-clamp-2">Next: {inquiry.nextAction}</span>
         </p>
+      ) : null}
+
+      {/* Won deals convert here — closes the loop the column subtitle promises.
+          Converted inquiries leave this board for Orders (page-level filter). */}
+      {inquiry.stage === "Won" && !inquiry.convertedOrderId && onConvert ? (
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 w-full text-xs"
+          disabled={converting}
+          onClick={(event) => {
+            stopDrag(event);
+            setConverting(true);
+            onConvert(inquiry.id);
+          }}
+          onPointerDown={stopDrag}
+        >
+          {converting ? "Converting…" : "Convert to order"}
+          <ArrowRight className="ml-1.5 size-3.5" aria-hidden="true" />
+        </Button>
       ) : null}
     </div>
   );
