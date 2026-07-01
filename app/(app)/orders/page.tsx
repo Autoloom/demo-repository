@@ -4,10 +4,12 @@ import type { DragEndEvent } from "@dnd-kit/core";
 import {
   AlertTriangleIcon,
   ArrowRightIcon,
+  ArrowUpRightIcon,
   CableIcon,
   CalendarDaysIcon,
   CheckCircle2Icon,
   ClipboardListIcon,
+  HistoryIcon,
   InboxIcon,
   PackageSearchIcon,
   RefreshCwIcon,
@@ -72,6 +74,34 @@ function Badge({ className, children }: { className?: string; children: React.Re
     <span className={cn("inline-flex items-center rounded-sm border px-2 py-1 text-xs font-medium", className)}>
       {children}
     </span>
+  );
+}
+
+// Self-explanatory action row for card footers — full label + icon + tooltip,
+// so users never have to guess what a destination is.
+function CardActionLink({
+  href,
+  icon,
+  label,
+  hint,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <Link
+      href={href}
+      title={hint}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      className="flex h-8 items-center gap-2 rounded-md border bg-background px-2 text-xs font-medium text-foreground/80 transition-colors hover:border-primary/30 hover:bg-primary-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="text-muted-foreground">{icon}</span>
+      <span className="flex-1 truncate">{label}</span>
+      <ArrowUpRightIcon className="size-3 text-muted-foreground" />
+    </Link>
   );
 }
 
@@ -677,16 +707,25 @@ function OrderCardContent({
             </select>
           ) : null}
 
-          <div className="flex flex-wrap gap-2 pb-0.5">
-            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-              <Link href={`/records/${order.id}`}>Journey</Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-              <Link href={`/job-card?orderId=${order.id}`}>Job</Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="h-8 px-2 text-xs">
-              <Link href={`/dispatch?orderId=${order.id}`}>Dispatch</Link>
-            </Button>
+          <div className="flex flex-col gap-1 pb-0.5">
+            <CardActionLink
+              href={`/records/${order.id}`}
+              icon={<HistoryIcon className="size-3.5" />}
+              label="Order history"
+              hint={`Full timeline of ${order.id} — every stage change and edit`}
+            />
+            <CardActionLink
+              href={`/job-card?orderId=${order.id}`}
+              icon={<ClipboardListIcon className="size-3.5" />}
+              label="Operator job card"
+              hint="Shop-floor job card with the production spec"
+            />
+            <CardActionLink
+              href={`/dispatch?orderId=${order.id}`}
+              icon={<TruckIcon className="size-3.5" />}
+              label="Dispatch checklist"
+              hint="Pre-dispatch checks required before pickup"
+            />
           </div>
         </div>
       </div>

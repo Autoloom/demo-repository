@@ -7,8 +7,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import {
   AlertTriangle,
   ArrowRight,
+  Cable,
+  CalendarClock,
   Filter,
   Inbox,
+  PackageSearch,
   Plus,
   RefreshCcw,
   Search,
@@ -29,10 +32,20 @@ import {
   KanbanProvider,
   Label,
 } from "@/components/ui";
-import { formatINR } from "@/lib/domain/format";
+import { daysUntil } from "@/lib/domain/clock";
+import { formatDate, formatINR } from "@/lib/domain/format";
 import { cn } from "@/lib/utils";
 
 const inquiryStages = ["New", "Quoting", "Quote sent", "Won", "Lost"] as const;
+
+// One-line context under each column name — orients anyone new to the chain.
+const stageSubtitles: Record<(typeof inquiryStages)[number], string> = {
+  New: "Fresh inquiries to qualify",
+  Quoting: "Costing in progress",
+  "Quote sent": "Awaiting customer response",
+  Won: "Ready to convert to order",
+  Lost: "Closed — kept for reference",
+};
 const inquirySources = [
   "Repeat order",
   "Tender portal",
@@ -871,12 +884,14 @@ function KanbanColumn({
       <KanbanHeader
         name={stage}
         count={inquiries.length}
+        subtitle={stageSubtitles[stage]}
         indicatorClassName={stageIndicatorClass(stage)}
       />
       <KanbanCards className="max-h-dvh pr-1">
         {inquiries.length === 0 ? (
-          <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed bg-card p-4 text-center text-sm text-muted-foreground">
-            No inquiries in {stage}
+          <div className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed p-4 text-center">
+            <PackageSearch className="size-5 text-muted-foreground/60" aria-hidden="true" />
+            <p className="m-0 text-xs text-muted-foreground">No inquiries in {stage.toLowerCase()}</p>
           </div>
         ) : (
           inquiries.map((inquiry, index) => (
@@ -969,50 +984,86 @@ function InquiryCardContent({
     }
   }
 
+  const spec = inquiry.specId ? cableSpecs.find((item) => item.id === inquiry.specId) : undefined;
+  const risk = followUpRisk(inquiry.followUpDate, inquiry.stage);
+  const closed = inquiry.stage === "Won" || inquiry.stage === "Lost";
+
   return (
-    <div className="flex flex-col gap-3">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{customer?.name ?? "Unknown customer"}</p>
-        {isEditing ? (
-          <input
-            aria-label={`Edit title for ${inquiry.id}`}
-            autoFocus
-            className="mt-1 h-8 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onBlur={commitEdit}
-            onChange={(event) => setDraftTitle(event.target.value)}
-            onClick={stopDrag}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") commitEdit();
-              if (event.key === "Escape") cancelEdit();
-            }}
-            onPointerDown={stopDrag}
-            value={draftTitle}
-          />
-        ) : (
-          <button
-            aria-label={`Edit title for ${inquiry.id}`}
-            className={cn(
-              "mt-1 line-clamp-2 w-full rounded-sm text-left text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              editable && "cursor-text hover:text-foreground",
-            )}
-            disabled={!editable}
-            onClick={(event) => {
-              stopDrag(event);
-              if (editable) {
-                setDraftTitle(inquiry.requirement);
-                setIsEditing(true);
-              }
-            }}
-            onPointerDown={stopDrag}
-            type="button"
-          >
-            {inquiry.requirement}
-          </button>
-        )}
+    <div className="flex min-w-0 flex-col gap-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 truncate text-sm font-semibold">{customer?.name ?? "Unknown customer"}</p>
+        <span className="shrink-0 rounded-sm border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+          {inquiry.source}
+        </span>
       </div>
-      <div className="flex items-center justify-end">
-        <MoneyCell amountInr={inquiry.estimatedValueInr} />
+
+      {isEditing ? (
+        <input
+          aria-label={`Edit title for ${inquiry.id}`}
+          autoFocus
+          className="h-8 w-full rounded-sm border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onBlur={commitEdit}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          onClick={stopDrag}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commitEdit();
+            if (event.key === "Escape") cancelEdit();
+          }}
+          onPointerDown={stopDrag}
+          value={draftTitle}
+        />
+      ) : (
+        <button
+          aria-label={`Edit title for ${inquiry.id}`}
+          className={cn(
+            "line-clamp-1 w-full rounded-sm text-left text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            editable && "cursor-text hover:text-foreground",
+          )}
+          disabled={!editable}
+          onClick={(event) => {
+            stopDrag(event);
+            if (editable) {
+              setDraftTitle(inquiry.requirement);
+              setIsEditing(true);
+            }
+          }}
+          onPointerDown={stopDrag}
+          type="button"
+        >
+          {inquiry.requirement}
+        </button>
+      )}
+
+      {/* Cable spec — same treatment as the order board so the chain reads consistently. */}
+      {spec ? (
+        <div className="flex items-start gap-1.5 rounded-md border bg-muted/40 px-2 py-1.5">
+          <Cable className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <p className="m-0 line-clamp-2 font-mono text-[11px] leading-snug text-foreground/90">
+            {spec.designation}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-md border bg-background p-2">
+          <p className="text-muted-foreground">Est. value</p>
+          <p className="mt-1 truncate font-mono font-semibold">{formatINR(inquiry.estimatedValueInr)}</p>
+        </div>
+        <div className={cn("rounded-md border p-2", followUpToneClass[risk])}>
+          <p className={cn(risk === "ok" ? "text-muted-foreground" : "opacity-80")}>Follow-up</p>
+          <p className="mt-1 flex items-center gap-1 truncate font-medium">
+            {risk !== "ok" ? <AlertTriangle className="size-3 shrink-0" aria-hidden="true" /> : null}
+            {followUpLabel(inquiry.followUpDate, inquiry.stage)}
+          </p>
+        </div>
       </div>
+
+      {!closed && inquiry.nextAction ? (
+        <p className="m-0 flex items-start gap-1.5 text-[11px] leading-snug text-muted-foreground">
+          <CalendarClock className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+          <span className="line-clamp-2">Next: {inquiry.nextAction}</span>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1028,6 +1079,32 @@ function stageIndicatorClass(stage: InquiryStage) {
 
   return tones[stage];
 }
+
+// Follow-up risk — the signal a sales user actually chases the board by.
+type FollowUpRisk = "overdue" | "due-soon" | "ok";
+
+function followUpRisk(iso: string, stage: InquiryStage): FollowUpRisk {
+  if (stage === "Won" || stage === "Lost") return "ok";
+  const remaining = daysUntil(iso);
+  if (remaining < 0) return "overdue";
+  if (remaining <= 1) return "due-soon";
+  return "ok";
+}
+
+function followUpLabel(iso: string, stage: InquiryStage): string {
+  if (stage === "Won" || stage === "Lost") return formatDate(iso);
+  const remaining = daysUntil(iso);
+  if (remaining < 0) return `${Math.abs(remaining)}d overdue`;
+  if (remaining === 0) return "Due today";
+  if (remaining === 1) return "Due in 1d";
+  return formatDate(iso);
+}
+
+const followUpToneClass: Record<FollowUpRisk, string> = {
+  overdue: "border-danger/30 bg-danger-muted text-danger",
+  "due-soon": "border-warning/30 bg-warning-muted text-warning",
+  ok: "border-border bg-background text-foreground",
+};
 
 function StageBadge({ stage, label }: { stage: InquiryStage | "New"; label?: string }) {
   const tone: Record<InquiryStage, string> = {
@@ -1047,10 +1124,6 @@ function StageBadge({ stage, label }: { stage: InquiryStage | "New"; label?: str
       {label ?? stage}
     </span>
   );
-}
-
-function MoneyCell({ amountInr }: { amountInr: number }) {
-  return <span className="font-mono">{formatINR(amountInr)}</span>;
 }
 
 function ConvertedBadge({ count, canViewOrders }: { count: number; canViewOrders: boolean }) {
