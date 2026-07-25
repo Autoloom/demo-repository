@@ -1,32 +1,12 @@
 "use client";
 
-import {
-  ArrowLeft,
-  ArrowRight,
-  Cable,
-  CheckCircle2,
-  ChevronDown,
-  CircleAlert,
-  Eye,
-  FileText,
-  Info,
-  LayoutGrid,
-  Link2Off,
-  Loader2,
-  Pencil,
-  Plus,
-  RefreshCcw,
-  Send,
-  ShieldCheck,
-  Trash2,
-  Users,
-  Wand2,
-  Zap,
-} from "lucide-react";
+import { ArrowRight, Cable, CheckCircle2, ChevronDown, Eye, FileText, LayoutGrid, Link2Off, Plus, RefreshCcw, Send, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button, Input, Label } from "@/components/ui";
+import { GuidedWizard as GuidedWizardExperience, type LineDraft, type LineWithSpec, type McxRates } from "@/components/features/quote/sections/guided-wizard";
+import { EmptyState, ErrorState, LoadingState, Panel } from "@/components/features/quote/sections/quote-states";
 import { now } from "@/lib/domain/clock";
 import { buildCableCode, buildDesignation } from "@/lib/domain/cable";
 import {
@@ -88,32 +68,7 @@ const SHEATHS: SheathType[] = ["PVC (ST1)", "PVC (ST2)", "FR PVC", "FRLS PVC", "
 const FLAME_CLASSES: FlameClass[] = ["FR", "FRLS", "LSZH", "Standard"];
 const MODE_KEY = "cableos2:quote-mode";
 
-// ── Draft line shape (UI-local; converted to a persisted CableSpec + QuoteLine on add) ──
-interface LineDraft {
-  standard: (typeof STANDARDS)[number];
-  voltageGrade: VoltageGrade;
-  cores: CoreConfig;
-  conductorMaterial: ConductorMaterial;
-  conductorClass: ConductorClass;
-  conductorSizeSqMm: number;
-  neutralSizeSqMm: number;
-  insulation: Insulation;
-  armour: ArmourType;
-  sheath: SheathType;
-  flameClass: FlameClass;
-  screened: boolean;
-  lengthM: number;
-  metalRatePerKg: number;
-  overheadPerM: number;
-  marginPct: number;
-}
-
-interface McxRates {
-  aluminium: number;
-  copper: number;
-  at: string;
-}
-
+// ── Draft line shape (shared with the guided wizard module) ──
 const fallbackDraft: LineDraft = {
   standard: "IS 7098-1",
   voltageGrade: "650/1100 V (1.1 kV)",
@@ -133,28 +88,6 @@ const fallbackDraft: LineDraft = {
   marginPct: 14,
 };
 
-function draftFromPreset(preset: CablePreset, mcx: McxRates | null): LineDraft {
-  const material = preset.spec.conductorMaterial;
-  return {
-    standard: preset.spec.standard as LineDraft["standard"],
-    voltageGrade: preset.spec.voltageGrade,
-    cores: preset.spec.cores,
-    conductorMaterial: material,
-    conductorClass: preset.spec.conductorClass,
-    conductorSizeSqMm: preset.spec.conductorSizeSqMm,
-    neutralSizeSqMm: preset.spec.neutralSizeSqMm ?? 120,
-    insulation: preset.spec.insulation,
-    armour: preset.spec.armour,
-    sheath: preset.spec.sheath,
-    flameClass: preset.spec.flameClass,
-    screened: preset.spec.screened ?? false,
-    lengthM: preset.defaultLengthM ?? 1000,
-    metalRatePerKg: mcx ? (material === "Aluminium" ? mcx.aluminium : mcx.copper) : fallbackDraft.metalRatePerKg,
-    overheadPerM: preset.defaultOverheadPerM ?? fallbackDraft.overheadPerM,
-    marginPct: preset.defaultMarginPct ?? fallbackDraft.marginPct,
-  };
-}
-
 function specFromDraft(draft: LineDraft, id: string): CableSpec {
   return {
     id,
@@ -173,13 +106,6 @@ function specFromDraft(draft: LineDraft, id: string): CableSpec {
     designation: buildDesignation(draft),
     cableCode: buildCableCode(draft),
   };
-}
-
-/** A quote line plus its resolved spec — kept together in page state for rendering. */
-interface LineWithSpec {
-  line: QuoteLine;
-  spec: CableSpec;
-  costing: CostingResult; // per-component breakdown for the UI
 }
 
 /**
@@ -275,95 +201,6 @@ function StatusBadge({ status }: { status: QuoteStatus }) {
             ? "info"
             : "neutral";
   return <Badge tone={tone}>{status}</Badge>;
-}
-
-function Panel({
-  title,
-  description,
-  icon: Icon,
-  action,
-  children,
-  collapsible = true,
-  defaultOpen = true,
-  storageKey,
-}: {
-  title: string;
-  description?: string;
-  icon?: typeof Cable;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  /** When false, the panel is always open with no toggle. */
-  collapsible?: boolean;
-  /** Open state on first render (overridden by a remembered value if storageKey is set). */
-  defaultOpen?: boolean;
-  /** Remember open/closed across reloads under `cableos2:panel:<key>`. */
-  storageKey?: string;
-}) {
-  const [open, setOpen] = useState(() => {
-    if (!collapsible) return true;
-    if (storageKey && typeof window !== "undefined") {
-      const stored = window.localStorage.getItem(`cableos2:panel:${storageKey}`);
-      if (stored === "open") return true;
-      if (stored === "closed") return false;
-    }
-    return defaultOpen;
-  });
-
-  function toggle() {
-    setOpen((value) => {
-      const next = !value;
-      if (storageKey && typeof window !== "undefined") {
-        window.localStorage.setItem(`cableos2:panel:${storageKey}`, next ? "open" : "closed");
-      }
-      return next;
-    });
-  }
-
-  const bodyId = `panel-body-${(storageKey ?? title).replace(/\s+/g, "-").toLowerCase()}`;
-
-  const header = (
-    <div className="flex min-w-0 gap-3">
-      {Icon ? (
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
-          <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-        </div>
-      ) : null}
-      <div className="min-w-0 space-y-1 text-left">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-      </div>
-    </div>
-  );
-
-  return (
-    <section className="rounded-lg border border-border bg-card shadow-sm">
-      <div className="flex items-start justify-between gap-3 border-b border-border p-4">
-        {collapsible ? (
-          <button
-            type="button"
-            onClick={toggle}
-            aria-expanded={open}
-            aria-controls={bodyId}
-            className="flex min-w-0 flex-1 items-start gap-2 text-left"
-          >
-            <ChevronDown
-              className={cn("mt-2.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")}
-              aria-hidden="true"
-            />
-            {header}
-          </button>
-        ) : (
-          header
-        )}
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
-      {open ? (
-        <div id={bodyId} className="p-4">
-          {children}
-        </div>
-      ) : null}
-    </section>
-  );
 }
 
 function Field({
@@ -594,59 +431,6 @@ function SalesBoardPicks({
   );
 }
 
-// ── Data states ──────────────────────────────────────────────────────────────
-function LoadingState() {
-  return (
-    <div className="grid animate-pulse gap-4 lg:grid-cols-3">
-      {[0, 1, 2].map((item) => (
-        <div key={item} className="space-y-4 rounded-lg border border-border bg-card p-4">
-          <div className="h-4 w-1/2 rounded-md bg-muted" />
-          <div className="h-9 rounded-md bg-muted" />
-          <div className="h-24 rounded-md bg-muted" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="rounded-lg border border-danger bg-card p-4">
-      <div className="flex items-start gap-3">
-        <CircleAlert className="mt-1 h-4 w-4 text-danger" aria-hidden="true" />
-        <div className="space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">Quote data could not load</h2>
-            <p className="text-sm text-muted-foreground">{message}</p>
-          </div>
-          <Button type="button" variant="secondary" size="sm" onClick={onRetry}>
-            <RefreshCcw className="mr-2 h-4 w-4" aria-hidden="true" />
-            Retry
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({
-  title,
-  description,
-  icon: Icon = Cable,
-}: {
-  title: string;
-  description: string;
-  icon?: typeof Cable;
-}) {
-  return (
-    <div className="rounded-lg border border-dashed border-border bg-muted p-6 text-center">
-      <Icon className="mx-auto h-5 w-5 text-muted-foreground" aria-hidden="true" />
-      <h3 className="mt-3 text-sm font-semibold text-foreground">{title}</h3>
-      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-    </div>
-  );
-}
-
 // ── Reusable summary card for a built cable ──────────────────────────────────
 function CableSpecSummary({ spec }: { spec: CableSpec }) {
   return (
@@ -839,288 +623,7 @@ function MoreOptions({
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GUIDED WIZARD (default experience)
-// ══════════════════════════════════════════════════════════════════════════════
-const STEP_TITLES = ["Who is this quote for?", "What cable do they need?", "Here's the price.", "Send it."];
-
-function WizardProgress({ step }: { step: number }) {
-  return (
-    <div className="space-y-2">
-      <p className="font-mono text-xs text-muted-foreground">Step {step + 1} of 4</p>
-      <h2 className="text-2xl font-semibold tracking-tight text-foreground">{STEP_TITLES[step]}</h2>
-      <div className="flex gap-1.5" aria-hidden="true">
-        {STEP_TITLES.map((_, index) => (
-          <span key={index} className={cn("h-1.5 flex-1 rounded-full", index <= step ? "bg-primary" : "bg-muted")} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function GuidedWizard(props: BuilderShared) {
-  const {
-    customers,
-    selectedCustomerId,
-    customerName,
-    selectedCustomer,
-    onSelectExistingCustomer,
-    onTypeCustomerName,
-    openInquiryPicks,
-    onPickFromSalesBoard,
-    hasCustomer,
-    draft,
-    setDraft,
-    presets,
-    mcx,
-    materials,
-    lines,
-    addLine,
-    removeLine,
-    editLine,
-    readOnly,
-    gstSplit,
-    totalInr,
-    sendLabel,
-    sendIcon,
-    sendDisabled,
-    onSend,
-    onSaveDraft,
-    saving,
-    sending,
-    gateReason,
-  } = props;
-
-  const [step, setStep] = useState(0);
-  const [showBreakdown, setShowBreakdown] = useState(false);
-  const [editingPreset, setEditingPreset] = useState(false);
-
-  const canGoNext = step === 0 ? hasCustomer : step === 1 ? lines.length > 0 : true;
-
-  return (
-    <div className="mx-auto w-full max-w-3xl space-y-8">
-      <WizardProgress step={step} />
-
-      {step === 0 ? (
-        <div className="space-y-6">
-          <CustomerInput
-            id="wizard-customer"
-            customers={customers}
-            value={customerName}
-            selectedCustomerId={selectedCustomerId}
-            disabled={readOnly}
-            big
-            onSelectExisting={onSelectExistingCustomer}
-            onTypeNew={onTypeCustomerName}
-          />
-          {selectedCustomer ? (
-            <div className="rounded-md border border-border bg-muted p-4 text-sm">
-              <p className="font-medium text-foreground">{selectedCustomer.name}</p>
-              <p className="text-muted-foreground">
-                {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}
-                {selectedCustomer.paymentTerms ? ` · ${selectedCustomer.paymentTerms}` : ""}
-              </p>
-            </div>
-          ) : customerName.trim() ? (
-            <p className="text-sm text-muted-foreground">
-              New customer <span className="font-medium text-foreground">“{customerName.trim()}”</span> will be created when you save or send.
-            </p>
-          ) : null}
-          <SalesBoardPicks picks={openInquiryPicks} selectedCustomerId={selectedCustomerId} disabled={readOnly} onPick={onPickFromSalesBoard} />
-        </div>
-      ) : null}
-
-      {step === 1 ? (
-        <div className="space-y-6">
-          <div>
-            <p className="text-sm font-medium text-foreground">Pick a cable you usually sell</p>
-            <p className="text-sm text-muted-foreground">Choosing one fills in everything for you — you can change it after.</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {presets.map((preset) => {
-                const active = isSamePreset(draft, preset);
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => {
-                      setDraft(draftFromPreset(preset, mcx));
-                      setEditingPreset(false);
-                    }}
-                    className={cn(
-                      "rounded-md border p-4 text-left transition-colors disabled:opacity-50",
-                      active ? "border-primary bg-primary/10" : "border-border bg-card hover:bg-muted",
-                    )}
-                  >
-                    <p className="text-sm font-medium text-foreground">{preset.displayName}</p>
-                    {preset.description ? <p className="mt-1 text-xs text-muted-foreground">{preset.description}</p> : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setEditingPreset((value) => !value)}
-            aria-expanded={editingPreset}
-            className="flex items-center gap-2 text-sm font-medium text-primary"
-          >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-            Need to change something?
-          </button>
-
-          {editingPreset ? (
-            <div className="space-y-6 rounded-md border border-border p-4">
-              <SpecForm draft={draft} mcx={mcx} readOnly={readOnly} big onChange={setDraft} />
-              <CostingFields draft={draft} readOnly={readOnly} big onChange={setDraft} />
-              {draft.marginPct < MARGIN_GATE_PCT ? (
-                <p className="flex items-center gap-2 text-xs font-medium text-warning">
-                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                  A profit below {MARGIN_GATE_PCT}% needs the owner to approve before it can go to the factory.
-                </p>
-              ) : null}
-              <MoreOptions draft={draft} readOnly={readOnly} onChange={setDraft} />
-            </div>
-          ) : null}
-
-          <div className="rounded-md border border-border bg-muted p-4">
-            <CableSpecSummary spec={specFromDraft(draft, "preview")} />
-            <p className="mt-2 text-sm text-muted-foreground">
-              {draft.lengthM} m · profit {draft.marginPct}% · this cable ≈ <MoneyCell amount={costDraft(draft, materials).lineTotalInr} />
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <Button type="button" disabled={readOnly || draft.lengthM <= 0} onClick={() => addLine(draft)}>
-              <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
-              Add this cable
-            </Button>
-            {lines.length > 0 ? <Badge tone="success">{lines.length} cable{lines.length > 1 ? "s" : ""} added</Badge> : null}
-          </div>
-
-          {lines.length > 0 ? (
-            <div className="space-y-3">
-              {lines.map(({ line, spec }) => (
-                <div key={line.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-                  <CableSpecSummary spec={spec} />
-                  <div className="flex shrink-0 items-center gap-2">
-                    <MoneyCell amount={line.lineTotalInr} />
-                    <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => editLine(line.id)} aria-label={`Edit ${line.id}`}>
-                      <Pencil className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {step === 2 ? (
-        <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-card p-6 text-center">
-            <p className="text-sm text-muted-foreground">Total price (including GST)</p>
-            <p className="mt-2 text-4xl font-semibold tracking-tight text-foreground">{formatINR(totalInr)}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {gstSplit.interstate ? "IGST" : "CGST + SGST"} · valid until <DateCell iso={validUntilIso()} />
-            </p>
-          </div>
-
-          <button type="button" onClick={() => setShowBreakdown((value) => !value)} aria-expanded={showBreakdown} className="flex items-center gap-2 text-sm font-medium text-primary">
-            <ChevronDown className={cn("h-4 w-4 transition-transform", showBreakdown && "rotate-180")} aria-hidden="true" />
-            Show me how this was worked out
-          </button>
-          {showBreakdown ? <CostingBreakdown lines={lines} gstSplit={gstSplit} /> : null}
-
-          <div className="space-y-3">
-            {lines.map(({ line, spec }) => (
-              <div key={line.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-                <CableSpecSummary spec={spec} />
-                <div className="flex shrink-0 items-center gap-2">
-                  <MoneyCell amount={line.lineTotalInr} />
-                  <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => { editLine(line.id); setStep(1); }} aria-label={`Edit ${line.id}`}>
-                    <Pencil className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                  <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {step === 3 ? (
-        <div className="space-y-4">
-          {gateReason ? (
-            <div className="flex items-start gap-3 rounded-md border border-warning bg-warning/10 p-4 text-sm">
-              <ShieldCheck className="mt-0.5 h-4 w-4 text-warning" aria-hidden="true" />
-              <p className="text-foreground">{gateReason}</p>
-            </div>
-          ) : null}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <button
-              type="button"
-              disabled={readOnly || saving || lines.length === 0}
-              onClick={onSaveDraft}
-              className="rounded-lg border border-border bg-card p-5 text-left transition-colors hover:bg-muted disabled:opacity-50"
-            >
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
-                Save for later
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">Keeps it; doesn&apos;t start the factory.</p>
-            </button>
-            <button
-              type="button"
-              disabled={sendDisabled || lines.length === 0}
-              onClick={onSend}
-              className="rounded-lg border border-primary bg-primary/10 p-5 text-left transition-colors hover:bg-primary/20 disabled:opacity-50"
-            >
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : sendIcon}
-                {sendLabel}
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {gateReason ? "The owner will review it before anything starts." : "Locks the price and starts production, dispatch, and the invoice."}
-              </p>
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="flex items-center justify-between border-t border-border pt-4">
-        <Button type="button" variant="ghost" disabled={step === 0} onClick={() => setStep((s) => Math.max(0, s - 1))}>
-          <ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" />
-          Back
-        </Button>
-        {step < 3 ? (
-          <Button type="button" disabled={!canGoNext} onClick={() => setStep((s) => Math.min(3, s + 1))}>
-            Next
-            <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-          </Button>
-        ) : (
-          <span className="text-xs text-muted-foreground">Choose an option above.</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function isSamePreset(draft: LineDraft, preset: CablePreset): boolean {
-  return (
-    draft.conductorMaterial === preset.spec.conductorMaterial &&
-    draft.conductorSizeSqMm === preset.spec.conductorSizeSqMm &&
-    draft.cores === preset.spec.cores &&
-    draft.insulation === preset.spec.insulation &&
-    draft.armour === preset.spec.armour
-  );
-}
+// ── Guided wizard experience is now handled by the dedicated feature module. ──
 
 // ── Materials & rates — add a material and edit ₹/kg; costing reads from here ──
 function MaterialsPanel({
@@ -1918,7 +1421,7 @@ export function QuoteBuilderPageContent({ quoteId }: { quoteId?: string }) {
           </div>
         ) : null}
 
-        {mode === "guided" ? <GuidedWizard {...shared} /> : <AdvancedLayout {...shared} />}
+        {mode === "guided" ? <GuidedWizardExperience {...shared} /> : <AdvancedLayout {...shared} />}
 
         <Panel title="Saved quotes" description="Saved and locked quotes can be sent to the order board from here." icon={FileText} storageKey="saved-quotes" defaultOpen={false}>
           {savedQuotes.length === 0 ? (
