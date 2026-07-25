@@ -13,8 +13,8 @@ import { useSessionStore } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const role = useSessionStore((state) => state.role);
-  const user = useSessionStore((state) => state.user);
+  const currentRole = useSessionStore((state) => state.role);
+  const currentUser = useSessionStore((state) => state.user);
   const {
     collapsed,
     commandOpen,
@@ -69,17 +69,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className={cn("min-w-0 overflow-x-clip transition-[padding] duration-200 ease-out", collapsed ? "lg:pl-16" : "lg:pl-64")}>
-        <AppShellHeader onCommandOpenChange={setCommandOpen} />
+        <AppShellHeader onCommandPaletteOpenChange={setCommandOpen} />
         <main className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-6 overflow-x-clip px-4 py-6 lg:px-6">
           <div className="rounded-md border bg-card px-4 py-3 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">{user.name}</span> is viewing the portal as{" "}
-            <span className="font-mono text-foreground">{role}</span>. Use the role switcher to test RBAC.
+            <span className="font-medium text-foreground">{currentUser.name}</span> is viewing the portal as{" "}
+            <span className="font-mono text-foreground">{currentRole}</span>. Use the role switcher to test RBAC.
           </div>
           {children}
         </main>
       </div>
 
-      <AppShellCommand open={commandOpen} onOpenChange={setCommandOpen} />
+      <AppShellCommand isOpen={commandOpen} onOpenChange={setCommandOpen} />
     </div>
   );
 }

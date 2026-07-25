@@ -9,14 +9,14 @@ import { can } from "@/lib/rbac";
 import { useSessionStore } from "@/lib/store/session";
 
 type AppShellCommandProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
 };
 
-export function AppShellCommand({ open, onOpenChange }: AppShellCommandProps) {
-  const role = useSessionStore((state) => state.role);
+export function AppShellCommand({ isOpen, onOpenChange }: AppShellCommandProps) {
+  const currentRole = useSessionStore((state) => state.role);
 
-  if (!open) return null;
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-overlay px-4 pt-16">
@@ -36,15 +36,15 @@ export function AppShellCommand({ open, onOpenChange }: AppShellCommandProps) {
         <div className="grid gap-2 pt-3">
           {navGroups.flatMap((group) =>
             group.items
-              .filter((item) => can(role, "view", item.resource))
-              .map((item) => (
+              .filter((navItem) => can(currentRole, "view", navItem.resource))
+              .map((navItem) => (
                 <Link
-                  key={item.href}
-                  href={item.href}
+                  key={navItem.href}
+                  href={navItem.href}
                   className="rounded-md px-3 py-2 text-sm hover:bg-muted"
                   onClick={() => onOpenChange(false)}
                 >
-                  Go to {item.label}
+                  Go to {navItem.label}
                 </Link>
               )),
           )}

@@ -12,13 +12,13 @@ import type { Role } from "@/lib/services/types";
 import { useSessionStore } from "@/lib/store/session";
 
 type AppShellHeaderProps = {
-  onCommandOpenChange: (open: boolean) => void;
+  onCommandPaletteOpenChange: (isOpen: boolean) => void;
 };
 
-export function AppShellHeader({ onCommandOpenChange }: AppShellHeaderProps) {
-  const pathname = usePathname();
+export function AppShellHeader({ onCommandPaletteOpenChange }: AppShellHeaderProps) {
+  const currentPath = usePathname();
   const router = useRouter();
-  const role = useSessionStore((state) => state.role);
+  const currentRole = useSessionStore((state) => state.role);
   const setRole = useSessionStore((state) => state.setRole);
   const signOut = useSessionStore((state) => state.signOut);
 
@@ -29,7 +29,7 @@ export function AppShellHeader({ onCommandOpenChange }: AppShellHeaderProps) {
           type="button"
           variant="outline"
           className="hidden min-w-64 justify-start text-muted-foreground md:inline-flex"
-          onClick={() => onCommandOpenChange(true)}
+          onClick={() => onCommandPaletteOpenChange(true)}
         >
           <SearchIcon className="mr-2 size-4" />
           Search records
@@ -45,19 +45,19 @@ export function AppShellHeader({ onCommandOpenChange }: AppShellHeaderProps) {
         </label>
         <select
           id="role-switcher"
-          value={role}
+          value={currentRole}
           onChange={(event) => {
             const nextRole = event.target.value as Role;
             setRole(nextRole);
-            if (pathname.startsWith("/dashboard")) {
+            if (currentPath.startsWith("/dashboard")) {
               router.replace(`/dashboard?role=${nextRole}`);
             }
           }}
           className="h-9 rounded-md border bg-background px-3 text-sm"
         >
-          {roles.map((item) => (
-            <option key={item} value={item}>
-              {item}
+          {roles.map((roleOption) => (
+            <option key={roleOption} value={roleOption}>
+              {roleOption}
             </option>
           ))}
         </select>
