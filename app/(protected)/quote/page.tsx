@@ -1,11 +1,11 @@
 import { Suspense } from "react";
 
-import { QuoteBuilderClient } from "./QuoteBuilderClient";
+import { QuoteBuilderPageContent } from "@/components/features/quote/QuoteBuilderPageContent";
 
 export default function QuotePage() {
   return (
     <Suspense fallback={<main className="min-h-screen bg-background p-6" />}>
-      <QuoteBuilderClient />
+      <QuoteBuilderPageContent />
     </Suspense>
   );
 }

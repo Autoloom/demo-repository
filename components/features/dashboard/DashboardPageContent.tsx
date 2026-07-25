@@ -27,7 +27,6 @@ import {
   roles,
   type ApprovalRequest,
   type OrderSnapshot,
-  type Priority,
   type PriorityQueueItem,
   type Role,
   type Signal,
@@ -47,12 +46,6 @@ const toneClasses: Record<Tone, string> = {
   danger: "border-danger/30 bg-danger/10 text-danger",
   info: "border-info/30 bg-info/10 text-info",
   highlight: "border-highlight/30 bg-highlight/10 text-highlight",
-};
-
-const priorityTone: Record<Priority, Tone> = {
-  Low: "success",
-  Medium: "warning",
-  High: "danger",
 };
 
 const roleNotes: Record<Role, string> = {
@@ -244,10 +237,10 @@ function AccountsDashboard({ summary }: { summary: Awaited<ReturnType<typeof das
               <div key={signal.id} className="rounded-md border bg-background p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">{signal.title}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{signal.detail}</p>
+                    <p className="text-sm font-medium">{signal.text}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{signal.type}</p>
                   </div>
-                  <Pill tone={signal.kind === "warning" ? "warning" : "neutral"}>{signal.kind}</Pill>
+                  <Pill tone={signal.severity === "High" ? "warning" : "neutral"}>{signal.severity}</Pill>
                 </div>
               </div>
             ))}
@@ -259,10 +252,10 @@ function AccountsDashboard({ summary }: { summary: Awaited<ReturnType<typeof das
               <div key={item.id} className="rounded-md border bg-background p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">{item.title}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+                    <p className="text-sm font-medium">{item.label}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.nextAction}</p>
                   </div>
-                  <Pill tone={priorityTone[item.priority]}>{item.priority}</Pill>
+                  <Pill tone={item.resource === "invoice" ? "warning" : "neutral"}>{item.resource}</Pill>
                 </div>
               </div>
             ))}
@@ -281,12 +274,12 @@ function LiveOrderSnapshot({ orders }: { orders: OrderSnapshot[] }) {
           <div key={order.id} className="rounded-md border bg-background p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">{order.customerName}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{order.jobName}</p>
+                <p className="text-sm font-medium">{order.customer}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{order.title}</p>
               </div>
               <div className="flex items-center gap-2">
                 <Pill tone={order.stage === "Won" ? "success" : "neutral"}>{order.stage}</Pill>
-                <Pill tone="info">{order.expectedDispatch}</Pill>
+                <Pill tone="info">{order.promisedDate}</Pill>
               </div>
             </div>
           </div>
@@ -304,8 +297,8 @@ function ApprovalsSignalsCard({ approvals, signals }: { approvals: ApprovalReque
           <div key={approval.id} className="rounded-md border bg-background p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">{approval.title}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{approval.detail}</p>
+                <p className="text-sm font-medium">{approval.kind}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{approval.reason}</p>
               </div>
               <Pill tone="warning">{approval.status}</Pill>
             </div>
@@ -315,10 +308,10 @@ function ApprovalsSignalsCard({ approvals, signals }: { approvals: ApprovalReque
           <div key={signal.id} className="rounded-md border bg-background p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">{signal.title}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{signal.detail}</p>
+                <p className="text-sm font-medium">{signal.text}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{signal.type}</p>
               </div>
-              <Pill tone={signal.kind === "warning" ? "warning" : "neutral"}>{signal.kind}</Pill>
+              <Pill tone={signal.severity === "High" ? "warning" : "neutral"}>{signal.severity}</Pill>
             </div>
           </div>
         ))}
@@ -335,10 +328,10 @@ function PriorityQueueCard({ items }: { items: PriorityQueueItem[] }) {
           <div key={item.id} className="rounded-md border bg-background p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-medium">{item.title}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+                <p className="text-sm font-medium">{item.label}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{item.nextAction}</p>
               </div>
-              <Pill tone={priorityTone[item.priority]}>{item.priority}</Pill>
+              <Pill tone={item.resource === "invoice" ? "warning" : "neutral"}>{item.resource}</Pill>
             </div>
           </div>
         ))}
