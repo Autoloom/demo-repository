@@ -6,6 +6,7 @@ import {
   BellIcon,
   BoxesIcon,
   Building2Icon,
+  CableIcon,
   CalculatorIcon,
   ClipboardListIcon,
   CommandIcon,
@@ -48,6 +49,7 @@ const navGroups: Array<{
     items: [
       { href: "/sales", label: "Sales Board", resource: "inquiry", icon: BoxesIcon },
       { href: "/quote", label: "Quote Builder", resource: "quote", icon: CalculatorIcon },
+      { href: "/cable-builder", label: "Cable Builder", resource: "quote", icon: CableIcon },
       { href: "/contacts", label: "Contacts", resource: "contact", icon: UsersIcon },
       { href: "/compliance", label: "EMD & BG", resource: "compliance", icon: ShieldCheckIcon },
     ],

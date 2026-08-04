@@ -36,7 +36,7 @@ export const GST_RATE_PCT = 18;
  * Conductor weight: kg/m per sq mm of cross-section, per core.
  * (Density-derived: Cu ≈ 8.9 g/cm³ → 0.0089–0.0092; Al ≈ 2.7 → 0.0027–0.00325 with stranding.)
  */
-const CONDUCTOR_KG_PER_M_PER_SQMM: Record<ConductorMaterial, number> = {
+export const CONDUCTOR_KG_PER_M_PER_SQMM: Record<ConductorMaterial, number> = {
   Copper: 0.0092,
   Aluminium: 0.00325,
 };
