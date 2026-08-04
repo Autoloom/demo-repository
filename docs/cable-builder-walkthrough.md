@@ -7,9 +7,21 @@
 
 ## 1. What this is
 
-A **cable builder for aerial bunched (ABC) cable**: spec it core by core, cost it live against material rates, and issue the GTP.
+A **cable builder covering the product range from our brochure** — pick a family, spec the cable, cost it live, and (for ABC) issue the GTP.
 
-It sits alongside the existing Quote Builder rather than replacing it, because the two cable families are genuinely different things:
+The family picker lists **all twelve product lines** with honest status:
+
+| Status | Meaning | Lines |
+|---|---|---|
+| ✅ **Ready** | Fully modelled, costed on approved weights | Aerial bunched |
+| ◐ **Costing only** | Costs correctly, but no verified weight table yet | LT XLPE · LT PVC power · Control |
+| ○ **Not modelled** | Listed, with exactly what's needed to build it | The other eight |
+
+Unbuilt lines are *visibly* unbuilt — they say what's missing rather than quietly producing a wrong quote. Adding a line is a data edit in `lib/domain/families.ts`.
+
+> **Highest-value next task:** the brochure's dimension tables (XLPE 3.5-core 25/16→500/240, control 1.5/2.5 sq mm) carry approved kg/km per size. Transcribing those moves LT XLPE / LT PVC / Control from *costing only* to *ready*.
+
+Aerial bunched has its own editor rather than sharing one form, because the families are genuinely different things:
 
 | | Armoured LT/HT (existing Quote Builder) | ABC (this) |
 |---|---|---|

@@ -37,6 +37,10 @@ import Link from "next/link";
 import * as React from "react";
 
 import { Button, Card } from "@/components/ui";
+import { FamilyNotModelled, FamilyPicker } from "./FamilyPicker";
+import { StandardBuilder } from "./StandardBuilder";
+import { CABLE_FAMILIES, getFamily, type CableFamilyId } from "@/lib/domain/families";
+import type { Material } from "@/lib/services/types";
 import {
   abcConductorKgPerM,
   abcConductorLengthM,
@@ -113,8 +117,13 @@ export default function CableBuilderPage() {
   const [metalRateOverride, setMetalRateOverride] = React.useState<number | null>(null);
 
   const [rates, setRates] = React.useState<MaterialRates | null>(null);
+  const [materials, setMaterials] = React.useState<Material[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [familyId, setFamilyId] = React.useState<CableFamilyId>("ABC_AERIAL_BUNCHED");
+
+  const family = getFamily(familyId);
+  const isAbc = familyId === "ABC_AERIAL_BUNCHED";
 
   /** Manual refresh. Called from an event handler, so synchronous setState is fine here. */
   const load = React.useCallback(async () => {
@@ -123,6 +132,7 @@ export default function CableBuilderPage() {
     try {
       const store = await dataService.read();
       setRates(ratesForSpec(RATE_SHIM, store.materials));
+      setMaterials(store.materials);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Material rates could not be loaded.");
     } finally {
@@ -137,7 +147,9 @@ export default function CableBuilderPage() {
     dataService
       .read()
       .then((store) => {
-        if (active) setRates(ratesForSpec(RATE_SHIM, store.materials));
+        if (!active) return;
+        setRates(ratesForSpec(RATE_SHIM, store.materials));
+        setMaterials(store.materials);
       })
       .catch((err: unknown) => {
         if (active) setError(err instanceof Error ? err.message : "Material rates could not be loaded.");
@@ -267,27 +279,37 @@ export default function CableBuilderPage() {
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
             <CableIcon className="size-4" />
-            Engineering · Aerial bunched
+            Engineering · {family?.shortLabel ?? "Cable"}
           </div>
           <h1 className="text-2xl font-semibold">Cable Builder</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Spec an aerial bunched cable core by core and cost it live. Starts from the approved GTP —
-            anything you change is tracked against it.
+            {isAbc
+              ? "Spec an aerial bunched cable core by core and cost it live. Starts from the approved GTP — anything you change is tracked against it."
+              : (family?.description ?? "Choose a cable family to begin.")}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={resetToApproved} disabled={deviations.length === 0}>
-            <RotateCcwIcon className="mr-2 size-4" />
-            Reset to approved
-          </Button>
-          <Button asChild>
-            <Link href="/cable-builder/gtp">
-              <FileTextIcon className="mr-2 size-4" />
-              View GTP
-            </Link>
-          </Button>
-        </div>
+        {isAbc ? (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={resetToApproved} disabled={deviations.length === 0}>
+              <RotateCcwIcon className="mr-2 size-4" />
+              Reset to approved
+            </Button>
+            <Button asChild>
+              <Link href="/cable-builder/gtp">
+                <FileTextIcon className="mr-2 size-4" />
+                View GTP
+              </Link>
+            </Button>
+          </div>
+        ) : null}
       </header>
+
+      {/* Whole product range, including lines we haven't modelled — a salesperson should
+          find their cable and be told what's missing, not conclude the tool can't do it. */}
+      <div>
+        <p className="mb-2 text-xs uppercase text-muted-foreground">Cable family — {CABLE_FAMILIES.length} product lines</p>
+        <FamilyPicker selected={familyId} onSelect={setFamilyId} />
+      </div>
 
       {error ? (
         <div className="rounded-md border border-danger/30 bg-danger/10 p-4 text-sm text-danger">
@@ -301,8 +323,18 @@ export default function CableBuilderPage() {
         </div>
       ) : null}
 
+      {/* Non-ABC families branch here. Armoured/standard lines reuse the existing
+          CableSpec + computeLine; unmodelled lines say what they need. */}
+      {!isAbc && family ? (
+        family.schema === "armoured" ? (
+          <StandardBuilder key={family.id} family={family} materials={materials} />
+        ) : (
+          <FamilyNotModelled family={family} />
+        )
+      ) : null}
+
       {/* ── Deviation banner: the compliance signal ── */}
-      {deviations.length > 0 ? (
+      {isAbc && deviations.length > 0 ? (
         <div className="rounded-md border border-warning/40 bg-warning/10 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-warning">
             <TriangleAlertIcon className="size-4" />
@@ -313,12 +345,15 @@ export default function CableBuilderPage() {
             to this spec: {deviations.join(" · ")}
           </p>
         </div>
-      ) : (
+      ) : isAbc ? (
         <div className="rounded-md border border-success/30 bg-success/10 px-4 py-2 text-sm text-success">
           Matches the approved GTP exactly.
         </div>
-      )}
+      ) : null}
 
+      {/* ── ABC-only from here down ── */}
+      {isAbc ? (
+      <>
       {/* ── Identity, regenerated live ── */}
       <Card className="rounded-md p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -593,6 +628,8 @@ export default function CableBuilderPage() {
             ))}
           </ul>
         </Card>
+      ) : null}
+      </>
       ) : null}
     </div>
   );
