@@ -1,7 +1,4 @@
-/**
- * Centralized formatting. Pages/components use these (or the MoneyCell/DateCell components),
- * never inline `toLocaleString` / ad-hoc date formatting. See patterns.md §9.
- */
+/*  Shared Indian-currency and date-formatting utilities. */
 
 const inr = new Intl.NumberFormat("en-IN", {
   style: "currency",

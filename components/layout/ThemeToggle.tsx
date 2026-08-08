@@ -1,3 +1,5 @@
+/*  Dark mode switching and persistence */
+
 "use client";
 
 import { MoonIcon, SunIcon } from "lucide-react";

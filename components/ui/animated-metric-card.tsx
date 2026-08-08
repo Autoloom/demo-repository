@@ -1,3 +1,5 @@
+/*  Reusable animated KPI/metric display card. */
+
 "use client";
 
 import { motion, useReducedMotion } from "framer-motion";

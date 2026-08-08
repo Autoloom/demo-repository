@@ -1,6 +1,8 @@
+/* Entry route for creating/building a quote, with a Suspense boundary. */
+
 import { Suspense } from "react";
 
-import { QuoteBuilderPageContent } from "@/components/features/quote/QuoteBuilderPageContent";
+import { QuoteBuilderPageContent } from "@/features/quote/components/quote-builder-page-content";
 
 export default function QuotePage() {
   return (

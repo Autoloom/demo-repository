@@ -1,3 +1,5 @@
+/*  Avatar, avatar image, and fallback primitives. */
+
 "use client";
 
 import * as AvatarPrimitive from "@radix-ui/react-avatar";

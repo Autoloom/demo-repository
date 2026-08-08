@@ -1,3 +1,6 @@
+//  Core cable costing logic: material rates, construction cost,
+//  labour, margins, GST calculations, and pricing constants.
+
 /**
  * Bill-of-materials quote costing + GST split (data-models.md §5, upgraded).
  *

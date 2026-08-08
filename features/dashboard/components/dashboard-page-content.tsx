@@ -1,3 +1,7 @@
+/* Pure dashboard presentation layer: 
+    metrics, pipeline flow, order snapshot, approvals/signals,
+    priority queues, account-specific dashboard content, etc. */
+
 "use client";
 
 import Link from "next/link";
@@ -30,7 +34,7 @@ import {
   type PriorityQueueItem,
   type Role,
   type Signal,
-} from "@/app/(protected)/dashboard/data";
+} from "@/features/dashboard/data/dashboard-data";
 
 type DashboardPageContentProps = {
   role: Role;

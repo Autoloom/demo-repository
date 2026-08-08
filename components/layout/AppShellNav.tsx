@@ -1,3 +1,5 @@
+/* Shared role-aware sidebar/navigation rendering. */
+
 "use client";
 
 import Link from "next/link";

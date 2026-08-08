@@ -1,3 +1,6 @@
+/*  Shared top header, including shell-level controls and 
+    command-palette interaction. */
+
 "use client";
 
 import Link from "next/link";

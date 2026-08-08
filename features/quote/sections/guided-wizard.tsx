@@ -1,3 +1,5 @@
+/*  Feature-specific guided multi-step quote creation workflow. */
+
 "use client";
 
 import { ArrowLeft, ArrowRight, ChevronDown, FileText, Info, Loader2, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";

@@ -1,3 +1,6 @@
+/*  Reusable navigation menu primitives plus 
+    desktop/mobile navigation item layouts. */
+
 import * as React from "react";
 import * as NavigationMenuPrimitive from "@radix-ui/react-navigation-menu";
 import { ArrowRightIcon, ChevronDownIcon, type LucideIcon } from "lucide-react";

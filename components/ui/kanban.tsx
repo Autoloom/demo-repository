@@ -1,3 +1,6 @@
+/* Generic drag-and-drop Kanban board primitives: 
+    boards, cards, columns/header and drag context/provider. */
+
 "use client";
 
 import {

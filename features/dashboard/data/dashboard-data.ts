@@ -1,3 +1,6 @@
+/*  Dashboard-specific data types, role parsing, visibility rules,
+    and the service that builds dashboard summary data. */
+
 import { daysUntil } from "@/lib/domain/clock";
 
 export type Role = "Owner" | "Sales" | "Operations" | "Accounts";

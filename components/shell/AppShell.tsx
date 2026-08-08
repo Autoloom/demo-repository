@@ -1,3 +1,7 @@
+/*  Top-level authenticated application shell. 
+    Coordinates navigation, sidebar state, header, command palette,
+    session state, access checks, and renders protected page content.*/
+
 "use client";
 
 import Link from "next/link";

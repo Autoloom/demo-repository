@@ -1,3 +1,6 @@
+/*  Entry-level quote-builder page logic, including selecting or 
+    creating quotes and preparing the page-level quote experience. */
+
 "use client";
 
 import { ArrowRight, Cable, CheckCircle2, ChevronDown, Eye, FileText, LayoutGrid, Link2Off, Plus, RefreshCcw, Send, ShieldCheck, Trash2, Users, Wand2, Zap } from "lucide-react";
@@ -5,8 +8,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button, Input, Label } from "@/components/ui";
-import { GuidedWizard as GuidedWizardExperience, type LineDraft, type LineWithSpec, type McxRates } from "@/components/features/quote/sections/guided-wizard";
-import { EmptyState, ErrorState, LoadingState, Panel } from "@/components/features/quote/sections/quote-states";
+import { GuidedWizard as GuidedWizardExperience, type LineDraft, type LineWithSpec, type McxRates } from "@/features/quote/sections/guided-wizard";
+import { EmptyState, ErrorState, LoadingState, Panel } from "@/features/quote/sections/quote-states";
 import { now } from "@/lib/domain/clock";
 import { buildCableCode, buildDesignation } from "@/lib/domain/cable";
 import {

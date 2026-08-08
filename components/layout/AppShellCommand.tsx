@@ -1,3 +1,5 @@
+/* Global command palette/search interface used by the application shell. */
+
 "use client";
 
 import Link from "next/link";

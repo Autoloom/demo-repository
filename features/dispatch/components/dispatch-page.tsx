@@ -1,3 +1,7 @@
+/*  Implements dispatch management, dispatch cards, 
+    logistics information, checklist progress, order/customer lookup,
+    loading states, and dispatch interactions. */
+
 "use client";
 
 import {
@@ -29,6 +33,7 @@ import {
   type Order,
 } from "@/lib/services";
 import { actorFromSession, useSessionStore } from "@/lib/store/session";
+import { lookup } from "dns/promises"
 import { cn } from "@/lib/utils";
 
 type LoadState = {

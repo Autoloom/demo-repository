@@ -1,3 +1,5 @@
+/* Dashboard-specific Next.js error boundary. */
+
 "use client";
 
 import { AlertTriangle, RefreshCcw } from "lucide-react";

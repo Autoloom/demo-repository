@@ -1,3 +1,6 @@
+//  Calculates sales signals, lead scores, follow-up warnings,
+//  repeat-order opportunities, and signal severity.
+
 /**
  * Signal engine — pure rules over current store state.
  *

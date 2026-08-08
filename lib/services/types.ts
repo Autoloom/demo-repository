@@ -1,3 +1,7 @@
+/*  Central domain/application type definitions: users, roles, 
+    permissions, cable specs, customers, inquiries, quotes,
+    orders, dispatch records, invoices, approvals, signals, etc. */
+
 export type Role = "Owner" | "Sales" | "Operations" | "Accounts";
 
 export type Action =

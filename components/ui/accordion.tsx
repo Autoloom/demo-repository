@@ -1,3 +1,5 @@
+/*  Reusable accordion primitives built around expandable/collapsible content. */
+
 "use client";
 
 import * as React from "react";

@@ -1,3 +1,5 @@
+/* Route-level loading state displayed while the dashboard is being prepared. */
+
 import { Gauge } from "lucide-react";
 
 export default function DashboardLoading() {

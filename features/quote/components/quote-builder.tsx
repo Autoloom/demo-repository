@@ -1,3 +1,8 @@
+/* Core quote-builder implementation: 
+    cable specification, costing, materials, lines, 
+    quote state, customer selection, pricing, and quote editing. */
+//TODO: use a service layer to encapsulate the quote-building logic and state management, separating it from the UI components.
+
 "use client";
 
 import {

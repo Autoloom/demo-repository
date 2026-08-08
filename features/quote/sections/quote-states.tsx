@@ -1,3 +1,5 @@
+/*  Reusable quote-only loading, error, empty, and panel states. */
+
 "use client";
 
 import { Cable, CircleAlert, RefreshCcw } from "lucide-react";

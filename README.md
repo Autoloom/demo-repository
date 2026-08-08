@@ -3,6 +3,23 @@
 This folder holds the **new production code** for Autoloom Cable OS. It is built from the plans in
 **`../cable os plans`**. Do not modify the old demo in `../cable-os` (reference only).
 
+## Run App   
+   
+### Preqrequisites:    
+node and npm is needed to run this app.   
+   
+### Install dependencies:
+```
+npm ci
+```    
+
+### Run app
+```
+npm run dev
+``` 
+  
+Then go to [localhost:3000](http://localhost:3000)
+  
 ## Stack
 Next.js 15 (App Router) · TypeScript (strict) · Tailwind v4 · shadcn/ui · TanStack Query/Table ·
 Zustand · React Hook Form + Zod · dnd-kit · date-fns · lucide-react · Recharts.

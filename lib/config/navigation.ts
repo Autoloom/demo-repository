@@ -1,3 +1,6 @@
+/*  Central source of truth for navigation groups, routes,
+    icons, associated resources, and available roles. */
+
 import {
   BellIcon,
   BoxesIcon,

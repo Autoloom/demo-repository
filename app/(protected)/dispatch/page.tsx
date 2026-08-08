@@ -1,6 +1,8 @@
+/* dispatch route with a fallback loading state. */
+
 import { Suspense } from "react";
 
-import { DispatchClient } from "./DispatchClient";
+import { DispatchClient } from "@/features/dispatch/components/dispatch-page";
 
 export default function DispatchPage() {
   return (

@@ -1,3 +1,7 @@
+/*  Isolated fallback compliance domain/service implementation 
+    containing compliance types, risk calculation, sorting, permissions,
+    and local fallback behaviour. */
+
 import { daysUntil, now } from "@/lib/domain/clock";
 
 export type Role = "Owner" | "Sales" | "Operations" | "Accounts";

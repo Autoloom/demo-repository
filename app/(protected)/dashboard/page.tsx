@@ -1,8 +1,11 @@
+/* Server-side dashboard route; parses the requested role,
+gets dashboard data, and passes it to the dashboard feature UI. */
+
 import type { Metadata } from "next";
 
-import { DashboardPageContent } from "@/components/features/dashboard/DashboardPageContent";
+import { DashboardPageContent } from "@/features/dashboard/components/dashboard-page-content";
 
-import { dashboardService, parseRole } from "./data";
+import { dashboardService, parseRole } from "@/features/dashboard/data/dashboard-data";
 
 export const metadata: Metadata = {
   title: "Dashboard | Cable OS",
