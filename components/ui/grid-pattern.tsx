@@ -1,3 +1,5 @@
+/*  Low-level decorative SVG/grid-pattern primitive. */
+
 import { useId } from "react";
 
 import { cn } from "@/lib/utils";

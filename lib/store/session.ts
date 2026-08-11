@@ -1,3 +1,8 @@
+/*  Zustand-backed authentication/session store containing demo users,
+    login handling, role state, persistence to local/session storage,
+    hydration, logout, and actor creation. */
+//TODO: use auth0 in place of this
+
 "use client";
 
 import { create } from "zustand";

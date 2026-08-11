@@ -1,3 +1,5 @@
+//  Predefined cable specification presets used by the quote builder.
+
 /**
  * Ready-made cable presets — the "common cables you usually sell" shown first in the Quote
  * Builder wizard (page plan §2a / §3). Picking one pre-fills the whole spec form; the operator

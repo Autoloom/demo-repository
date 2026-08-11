@@ -1,12 +1,7 @@
+/* Application-wide CSS, Tailwind/theme variables, colours, and global styles. */
+
 @import "tailwindcss";
 @import "tw-animate-css";
-
-/*
-  Cable OS design tokens — see /cable os plans/foundation/design/design-tokens.md
-  Jet black dark / white light · orange = primary accent · purple = secondary highlight (subtle).
-  Agents use TOKEN NAMES (bg-background, bg-primary, border-border, text-muted-foreground, …),
-  never raw values. Enforced by lint (see foundation/design/enforcement.md).
-*/
 
 @custom-variant dark (&:is(.dark *));
 

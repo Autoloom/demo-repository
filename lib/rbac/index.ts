@@ -1,3 +1,7 @@
+//  Central permission matrix and helpers such as can(), 
+//  approval requirements, contextual permission guards, 
+//  and mapping URLs to protected resources.
+
 import type { Action, PermissionContext, PermissionKey, Resource, Role } from "@/lib/services/types";
 
 export const ROLE_PERMISSIONS: Record<Exclude<Role, "Owner">, Set<PermissionKey>> = {

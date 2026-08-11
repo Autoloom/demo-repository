@@ -1,3 +1,8 @@
+/*  Main application service façade containing services
+    for contacts, inquiries, specs, materials, quotes, orders,
+    job cards, dispatch, invoices, compliance, approvals,
+    and activity updates. */
+
 "use client";
 
 import { adapter } from "@/lib/adapters/mock-adapter";

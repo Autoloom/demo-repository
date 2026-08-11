@@ -1,3 +1,5 @@
+/*  Mock data adapter for simulating CRUD operations on a local in-memory store. */
+
 "use client";
 
 import { seedData } from "@/lib/seed/data";

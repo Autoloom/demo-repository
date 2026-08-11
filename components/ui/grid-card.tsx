@@ -1,3 +1,5 @@
+/*  Higher-level reusable card with decorative grid/pattern presentation. */
+
 import * as React from "react";
 
 import { cn } from "@/lib/utils";

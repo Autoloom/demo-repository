@@ -1,3 +1,5 @@
+/* Shared Input component with reusable visual variants and styling. */
+
 import * as React from "react";
 
 import { cn } from "@/lib/utils";

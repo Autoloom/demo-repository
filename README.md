@@ -3,13 +3,30 @@
 This folder holds the **new production code** for Autoloom Cable OS. It is built from the plans in
 **`../cable os plans`**. Do not modify the old demo in `../cable-os` (reference only).
 
+## Run App   
+   
+### Preqrequisites:    
+node and npm is needed to run this app.   
+   
+### Install dependencies:
+```
+npm ci
+```    
+
+### Run app
+```
+npm run dev
+``` 
+  
+Then go to [localhost:3000](http://localhost:3000)
+  
 ## Stack
 Next.js 15 (App Router) · TypeScript (strict) · Tailwind v4 · shadcn/ui · TanStack Query/Table ·
 Zustand · React Hook Form + Zod · dnd-kit · date-fns · lucide-react · Recharts.
 
 ## Where things go
 See `../cable os plans/foundation/architecture.md` §2 for the full directory layout. In short:
-- `app/(auth)/login`, `app/(app)/…` — pages (one per plan in `../cable os plans/pages`).
+- `app/(auth)/login`, `app/(protected)/…` — pages (one per plan in `../cable os plans/pages`).
 - `lib/services` — the service layer (pages call only this).
 - `lib/adapters` — mock (localStorage) now, http stub for later. Backend-ready.
 - `lib/integrations` — the 4 fixed connectors (Zoho Books, CRM, e-way, MCX).
