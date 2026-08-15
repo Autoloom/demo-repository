@@ -1,3 +1,8 @@
+FOR CLAUDE CODE, ADD:    
+```
+keep this organised in convention with the industry standard and current folder structure. make it separate, clean and reusable.
+```
+
 # Cable OS 2 — Production Build
 
 This folder holds the **new production code** for Autoloom Cable OS. It is built from the plans in

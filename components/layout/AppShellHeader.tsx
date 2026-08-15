@@ -1,11 +1,16 @@
-/*  Shared top header, including shell-level controls and 
+/*  Shared top header, including shell-level controls and
     command-palette interaction. */
 
 "use client";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BellIcon, RefreshCwIcon, LogOutIcon, SearchIcon } from "lucide-react";
+import {
+  BellIcon,
+  RefreshCwIcon,
+  LogOutIcon,
+  SearchIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
@@ -18,12 +23,14 @@ type AppShellHeaderProps = {
   onCommandPaletteOpenChange: (isOpen: boolean) => void;
 };
 
-export function AppShellHeader({ onCommandPaletteOpenChange }: AppShellHeaderProps) {
+export function AppShellHeader({
+  onCommandPaletteOpenChange,
+}: AppShellHeaderProps) {
   const currentPath = usePathname();
   const router = useRouter();
+
   const currentRole = useSessionStore((state) => state.role);
   const setRole = useSessionStore((state) => state.setRole);
-  const signOut = useSessionStore((state) => state.signOut);
 
   return (
     <header className="sticky top-0 z-50 flex min-h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur lg:px-6">
@@ -38,20 +45,31 @@ export function AppShellHeader({ onCommandPaletteOpenChange }: AppShellHeaderPro
           Search records
           <span className="ml-auto font-mono text-xs">⌘K</span>
         </Button>
-        <Button type="button" variant="ghost" size="sm" className="lg:hidden" asChild>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="lg:hidden"
+          asChild
+        >
           <Link href="/dashboard">Cable OS</Link>
         </Button>
       </div>
+
       <div className="flex items-center gap-2">
         <label className="sr-only" htmlFor="role-switcher">
           Current role
         </label>
+
         <select
           id="role-switcher"
           value={currentRole}
           onChange={(event) => {
             const nextRole = event.target.value as Role;
+
             setRole(nextRole);
+
             if (currentPath.startsWith("/dashboard")) {
               router.replace(`/dashboard?role=${nextRole}`);
             }
@@ -64,12 +82,21 @@ export function AppShellHeader({ onCommandPaletteOpenChange }: AppShellHeaderPro
             </option>
           ))}
         </select>
-        <Button type="button" variant="ghost" size="icon" aria-label="Open approvals" asChild>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Open approvals"
+          asChild
+        >
           <Link href="/approvals">
             <BellIcon className="size-4" />
           </Link>
         </Button>
+
         <ThemeToggle />
+
         <Button
           type="button"
           variant="ghost"
@@ -82,17 +109,17 @@ export function AppShellHeader({ onCommandPaletteOpenChange }: AppShellHeaderPro
         >
           <RefreshCwIcon className="size-4" />
         </Button>
+
         <Button
           type="button"
           variant="ghost"
           size="icon"
           aria-label="Sign out"
-          onClick={() => {
-            signOut();
-            router.replace("/login");
-          }}
+          asChild
         >
-          <LogOutIcon className="size-4" />
+          <a href="/auth/logout">
+            <LogOutIcon className="size-4" />
+          </a>
         </Button>
       </div>
     </header>
