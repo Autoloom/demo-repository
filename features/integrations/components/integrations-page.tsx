@@ -54,7 +54,7 @@ import {
   type Role,
   type SyncLog,
 } from "@/lib/services";
-import { hydrateSessionRole, useSessionStore } from "@/lib/store/session";
+import { useSessionStore } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 type HubData = {
@@ -223,10 +223,6 @@ function IntegrationsHub() {
   const [selectedConnector, setSelectedConnector] = React.useState<ConnectorMeta | null>(null);
   const [activeFilter, setActiveFilter] = React.useState<ConnectorId | "all">("all");
   const [feedback, setFeedback] = React.useState<Feedback | null>(null);
-
-  React.useEffect(() => {
-    hydrateSessionRole();
-  }, []);
 
   const actor = React.useMemo(() => makeActor(user), [user]);
   const canView = can(role, "view", "integrations");

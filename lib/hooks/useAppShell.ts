@@ -14,12 +14,13 @@ export function useAppShell() {
   const currentPath = usePathname();
   const router = useRouter();
 
-  const { user, isLoading } = useUser();
-
+  const { user: auth0User, isLoading: auth0IsLoading } = useUser();
+  const sessionUser = useSessionStore((state) => state.user);
   const currentRole = useSessionStore((state) => state.role);
 
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [hasCheckedAuth, setHasCheckedAuth] = useState(false);
 
   useEffect(() => {
     const sidebarRestoreTimer = window.setTimeout(() => {
@@ -45,11 +46,24 @@ export function useAppShell() {
   }, []);
 
   useEffect(() => {
-    if (isLoading) {
+    // Give DashboardPageContent time to populate session store
+    // Only check after Auth0 finishes loading
+    if (auth0IsLoading) {
       return;
     }
 
-    if (!user) {
+    // Mark that we've done the auth check
+    setHasCheckedAuth(true);
+
+    // Check session store first (server-side auth), then fall back to Auth0
+    // Auth0 user has `sub` (not `id`), so check both
+    const user = sessionUser.id 
+      ? sessionUser 
+      : auth0User && (auth0User.sub || auth0User.email)
+      ? auth0User
+      : null;
+
+    if (!user || (!user.id && !user.sub)) {
       router.replace("/login");
       return;
     }
@@ -59,7 +73,7 @@ export function useAppShell() {
     if (!can(currentRole, "view", resource)) {
       router.replace("/dashboard");
     }
-  }, [isLoading, user, currentPath, currentRole, router]);
+  }, [sessionUser.id, auth0User, currentPath, currentRole, auth0IsLoading, router]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -85,8 +99,8 @@ export function useAppShell() {
     collapsed: isSidebarCollapsed,
     commandOpen: isCommandPaletteOpen,
 
-    hydrated: !isLoading,
-    isAuthenticated: Boolean(user),
+    hydrated: !auth0IsLoading || hasCheckedAuth,
+    isAuthenticated: Boolean(sessionUser.id || auth0User || !hasCheckedAuth),
 
     role: currentRole,
 

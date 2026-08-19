@@ -11,7 +11,8 @@ This folder holds the **new production code** for Autoloom Cable OS. It is built
 ## Run App   
    
 ### Preqrequisites:    
-node and npm is needed to run this app.   
+node and npm is needed to run this app. 
+**You also need the .env file and credentials to login**  
    
 ### Install dependencies:
 ```

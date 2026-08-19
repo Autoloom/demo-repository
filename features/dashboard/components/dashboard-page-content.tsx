@@ -5,7 +5,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -25,6 +25,8 @@ import { Button } from "@/components/ui";
 import { now } from "@/lib/domain/clock";
 import { formatDate, formatINR } from "@/lib/domain/format";
 import { cn } from "@/lib/utils";
+import { useSessionStore } from "@/lib/store/session";
+import type { User } from "@/lib/services/types";
 
 import {
   dashboardService,
@@ -37,6 +39,7 @@ import {
 } from "@/features/dashboard/data/dashboard-data";
 
 type DashboardPageContentProps = {
+  user: User | null;
   role: Role;
   summary: Awaited<ReturnType<typeof dashboardService.summary>>;
 };
@@ -59,8 +62,16 @@ const roleNotes: Record<Role, string> = {
   Accounts: "Accounts view focuses on receivables, sync readiness, payment holds, and invoice-linked action.",
 };
 
-export function DashboardPageContent({ role, summary }: DashboardPageContentProps) {
+export function DashboardPageContent({ user, role, summary }: DashboardPageContentProps) {
+  const setUser = useSessionStore((state) => state.setUser);
   const todayIso = now().toISOString().slice(0, 10);
+
+  // Initialize session store with server-provided user data
+  useEffect(() => {
+    if (user) {
+      setUser(user);
+    }
+  }, [user, setUser]);
 
   return (
     <main className="flex min-h-screen flex-col gap-6 bg-background px-4 py-6 text-foreground sm:px-6 lg:px-8">
