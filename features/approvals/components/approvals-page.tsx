@@ -42,7 +42,7 @@ import {
   type Role,
   type Signal,
 } from "@/lib/services";
-import { actorFromSession, hydrateSessionRole, useSessionStore } from "@/lib/store/session";
+import { actorFromSession, useSessionStore } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 type InboxTab = "action" | "requested" | "signals" | "history";
@@ -680,10 +680,6 @@ export default function ApprovalsInboxPage() {
       setLoading(false);
     }
   }, [role]);
-
-  useEffect(() => {
-    hydrateSessionRole();
-  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
