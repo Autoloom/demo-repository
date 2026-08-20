@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,8 @@ import {
 } from "@/lib/domain/gtp/templates";
 import type { ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
+import { gtpService, type Gtp } from "@/lib/services";
+import { actorFromSession } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 const TAG_TONE: Record<ResolvedField["tag"], string> = {
@@ -265,6 +268,8 @@ export default function GtpBuilderPage() {
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   /** Field key the user was last sent to from a validation issue — briefly highlighted. */
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const router = useRouter();
   /** Manual edits, keyed by field. Applied over the derived values. */
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   /** Reasons for overriding a LOOKUP/CALC field — required, stored in the audit trail. */
@@ -360,6 +365,50 @@ export default function GtpBuilderPage() {
     recordTemplateUse(template.id);
     setVersion((v) => v + 1);
     setSavedNotice(`Started from "${template.name}". Every value below was re-derived from the current IS tables.`);
+  }
+
+  /**
+   * Generate: persist the GTP so it appears in Review. Stores the derived fields WITH their
+   * provenance snapshot, so this document keeps printing the values it was generated with even
+   * after the IS tables are amended.
+   */
+  async function handleGenerate() {
+    if (!profile || !canGenerate || generating) return;
+    setGenerating(true);
+    try {
+      const now = new Date().toISOString();
+      const gtp: Gtp = {
+        id: `GTP-${Date.now().toString(36).toUpperCase()}`,
+        state: profile.state,
+        boardName: profile.name,
+        customerId: profile.id,
+        specId: "",
+        cableType: `LT Aerial Bunched, XLPE — ${sizeInput}`,
+        format: "self-generated",
+        designation: sizeInput,
+        standardsPin: profile.standardsPin,
+        derivedFields: fields,
+        // Mirror the fields into sections so the existing detail view can render this record.
+        sections: fields.map((f) => ({
+          id: f.key,
+          label: f.label,
+          value: String(f.value),
+          source: f.tag === "LOOKUP" || f.tag === "CALC" ? ("is-standard" as const) : ("client-fixed" as const),
+        })),
+        status: "Draft",
+        signOffs: [],
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await gtpService.save(gtp, actorFromSession());
+      router.push(`/gtp/review?gtpId=${gtp.id}`);
+    } catch (err) {
+      setSavedNotice(
+        err instanceof Error ? `Could not save the GTP: ${err.message}` : "Could not save the GTP.",
+      );
+      setGenerating(false);
+    }
   }
 
   /** Save the inputs just used as a reusable named starting point. */
@@ -815,9 +864,9 @@ export default function GtpBuilderPage() {
               {validation.errorCount} error{validation.errorCount === 1 ? "" : "s"} · {validation.warningCount} warning
               {validation.warningCount === 1 ? "" : "s"}
             </span>
-            <Button type="button" disabled={!canGenerate}>
+            <Button type="button" disabled={!canGenerate || generating} onClick={() => void handleGenerate()}>
               <FileText className="mr-2 h-4 w-4" aria-hidden="true" />
-              Generate GTP
+              {generating ? "Saving…" : "Generate GTP"}
             </Button>
           </div>
           {!canGenerate && validation.errorCount > 0 ? (

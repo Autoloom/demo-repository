@@ -176,6 +176,33 @@ test("DHBVN profile differs from WBSEDCL — proves the quirk layer separates cu
   assert.equal(fieldValue(dh, "fin.sag"), "3%");
 });
 
+test("golden file — computed bundle dia & mass land within tolerance of the approved KRYFS GTP", () => {
+  // §0.5 states the finished cable as ~35 mm overall and ~966 kg/km ±5%. Our figures are derived
+  // from densities + geometry, NOT fitted to these, so agreement is real corroboration. The bands
+  // below are deliberately loose (estimates, per "approx." in the schedules) but tight enough to
+  // catch a constant being fat-fingered.
+  const parsed = parseSizeString("3Cx70 + 1Cx50 + 1Cx16");
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  const fields = deriveFields(parsed.construction, WBSEDCL_QUIRKS);
+
+  const dia = Number(String(fieldValue(fields, "fin.overallDia")).match(/[\d.]+/)?.[0]);
+  const mass = Number(String(fieldValue(fields, "fin.totalMass")).match(/[\d.]+/)?.[0]);
+
+  assert.ok(dia > 31 && dia < 39, `overall dia ${dia} mm should be near the approved ~35 mm`);
+  assert.ok(mass > 900 && mass < 1030, `mass ${mass} kg/km should be near the approved ~966 kg/km`);
+});
+
+test("neither bundle CALC is a blocking gap for an encoded cable", () => {
+  const parsed = parseSizeString("3Cx70 + 1Cx50 + 1Cx16");
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  const fields = deriveFields(parsed.construction, WBSEDCL_QUIRKS);
+  for (const key of ["fin.overallDia", "fin.totalMass"]) {
+    assert.equal(fields.find((f) => f.key === key)?.gap, undefined, `${key} should no longer be a gap`);
+  }
+});
+
 test("parser — unsupported size returns a suggestion state, never throws", () => {
   const result = parseSizeString("3Cx400");
   assert.equal(result.ok, false);

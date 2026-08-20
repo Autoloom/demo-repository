@@ -15,6 +15,7 @@ export type Resource =
   | "inquiry"
   | "quote"
   | "order"
+  | "gtp"
   | "jobcard"
   | "dispatch"
   | "invoice"
@@ -40,24 +41,57 @@ export interface PermissionContext {
 export type CableStandard =
   | "IS 7098-1"
   | "IS 7098-2"
+  | "IS 9968-1"
   | "IS 1554-1"
   | "IS 694"
   | "IS 8130"
+  | "IS 14255"
+  | "IS 398-4"
+  | "EN 50618"
+  | "BS EN 60228"
+  | "IEC 60584"
+  | "SS EN 50397-1"
   | "IEC 60502-1"
   | "IEC 60502-2";
 export type VoltageGrade =
   | "650/1100 V (1.1 kV)"
+  | "600/1000 V DC"
   | "1.9/3.3 kV"
   | "3.8/6.6 kV"
   | "6.35/11 kV"
   | "12.7/22 kV"
-  | "19/33 kV";
-export type ConductorMaterial = "Aluminium" | "Copper";
+  | "19/33 kV"
+  | "13.8 kV"
+  | "22 kV"
+  | "33 kV";
+export type CableFamily =
+  | "LT PVC Power"
+  | "LT XLPE Power"
+  | "Control Cable"
+  | "FR/FRLS/ZHFR Cable"
+  | "House Wiring"
+  | "Weatherproof Cable"
+  | "Screened Instrumentation"
+  | "Thermocouple Cable"
+  | "Aerial Bunched Cable"
+  | "Submersible Cable"
+  | "Solar DC Cable"
+  | "Covered Conductor";
+export type ConductorMaterial =
+  | "Aluminium"
+  | "Copper"
+  | "Tinned Copper"
+  | "Aluminium Alloy"
+  | "AAAC"
+  | "ACSR"
+  | "Thermocouple Alloy";
 export type ConductorClass =
   | "Class 1 (solid)"
   | "Class 2 (stranded)"
   | "Class 2 compacted"
-  | "Class 5 (flexible)";
+  | "Class 5 (flexible)"
+  | "Messenger conductor"
+  | "Thermocouple extension";
 export type CoreConfig =
   | "1C"
   | "2C"
@@ -70,7 +104,15 @@ export type CoreConfig =
   | "19C"
   | "27C"
   | "37C";
-export type Insulation = "XLPE" | "PVC (Type A)" | "PVC (Type C)" | "EPR" | "XLPO (solar/UV)";
+export type Insulation =
+  | "XLPE"
+  | "PVC (Type A)"
+  | "PVC (Type C)"
+  | "EPR"
+  | "XLPO (solar/UV)"
+  | "Polyethylene"
+  | "XLPE anti-tracking"
+  | "HDPE anti-tracking";
 export type ArmourType =
   | "Unarmoured"
   | "GI round wire (GSW)"
@@ -83,12 +125,66 @@ export type SheathType =
   | "FR PVC"
   | "FRLS PVC"
   | "Zero-halogen (ZHFR/LSZH)"
-  | "HDPE";
+  | "HDPE"
+  | "Weatherproof PVC"
+  | "XLPO (solar/UV)";
 export type FlameClass = "FR" | "FRLS" | "LSZH" | "Standard";
 export type DrumType = "Wooden" | "Steel" | "Steel-Wood";
 
+export interface CableTechnicalData {
+  approxCurrentRatingA?: number;
+  approxCurrentRatingInAirA?: number;
+  approxCurrentRatingInGroundA?: number;
+  approxCurrentRatingInDuctA?: number;
+  conductorResistanceOhmPerKm?: number;
+  acResistanceOhmPerKm?: number;
+  coreIdentification?: string;
+  colour?: string;
+}
+
+export interface AerialBunchedDetails {
+  phaseCount: 1 | 3;
+  phaseSizeSqMm: number;
+  messengerSizeSqMm: number;
+  messengerInsulated?: boolean;
+  streetLightSizeSqMm?: number;
+}
+
+export interface CoveredConductorDetails {
+  networkVoltageKv: "13.8" | "22" | "33";
+  conductorConstruction: "AAAC" | "ACSR";
+  waterTight?: boolean;
+  antiTrackingOuter?: boolean;
+}
+
+export interface InstrumentationDetails {
+  grouping: "Pair" | "Triad";
+  groupCount: number;
+  individualScreen?: boolean;
+  overallScreen?: boolean;
+  drainWire?: boolean;
+}
+
+export interface ThermocoupleDetails {
+  thermocoupleType: "J" | "K" | "T" | "R" | "S";
+  pairCount: number;
+  extensionGrade?: boolean;
+}
+
+export interface SolarDetails {
+  dcPolarityColour: "Red" | "Black" | "Natural" | "Black with red stripe";
+  halogenFree: boolean;
+  uvResistant: boolean;
+}
+
+export interface SubmersibleDetails {
+  shape: "Flat" | "Round";
+  waterResistant: boolean;
+}
+
 export interface CableSpec {
   id: string;
+  family?: CableFamily;
   standard: CableStandard;
   voltageGrade: VoltageGrade;
   cores: CoreConfig;
@@ -105,6 +201,13 @@ export interface CableSpec {
   cableCode?: string;
   approxOuterDiaMm?: number;
   approxWeightKgPerKm?: number;
+  technical?: CableTechnicalData;
+  aerialBunched?: AerialBunchedDetails;
+  coveredConductor?: CoveredConductorDetails;
+  instrumentation?: InstrumentationDetails;
+  thermocouple?: ThermocoupleDetails;
+  solar?: SolarDetails;
+  submersible?: SubmersibleDetails;
   bisLicenceNo?: string;
   rohsCompliant?: boolean;
   notes?: string;
@@ -191,6 +294,12 @@ export interface Quote {
 
 export type OrderStage = "Quoted" | "Won" | "In Production" | "Ready for Dispatch" | "Invoiced";
 export type Priority = "Low" | "Medium" | "High";
+export type InspectionStatus =
+  | "Not called"
+  | "Called"
+  | "Inspector arrived"
+  | "Passed"
+  | "Failed";
 export interface Order {
   id: string;
   quoteId: string;
@@ -207,7 +316,163 @@ export interface Order {
   dispatchId?: string;
   invoiceId?: string;
   jobCardId?: string;
+  gtpId?: string;
+  /** Set when the job card is issued — drives the "call inspection by" countdown. */
+  estimatedCompletionDate?: string;
+  inspectionStatus?: InspectionStatus;
+  /** Date the inspection call was actually placed with the board/agency. */
+  inspectionCallDate?: string;
+  /** Expected inspector arrival (call date + ~11 days). */
+  inspectorEtaDate?: string;
   createdAt: string;
+}
+
+// ── GTP (Guaranteed Technical Particulars) ────────────────────────────────────
+// Hard production gate: an order cannot move to "In Production" until its GTP is
+// Approved (divisional engineer + AE stamped). See kamble-meeting-improvements.md §1.
+export type GtpStatus = "Draft" | "Pending sign-off" | "Approved";
+export type GtpFormat = "client-fixed" | "self-generated";
+export type GtpSectionSource = "client-fixed" | "is-standard";
+
+export interface GtpSection {
+  id: string;
+  label: string;
+  value: string;
+  /** Client-mandated sections have different edit rules than IS-standard ones. */
+  source: GtpSectionSource;
+}
+
+export interface GtpSignOff {
+  role: "Divisional Engineer" | "Assistant Engineer";
+  name: string;
+  stampedAt: string;
+}
+
+export interface Gtp {
+  id: string;
+  /** Absent on reusable templates (public formats pre-seeded per state/board). */
+  orderId?: string;
+  customerId?: string;
+  /** Destination state — same client, different state = different GTP. */
+  state: string;
+  /** Board/client format name, e.g. "WBCL", "MSEDCL". */
+  boardName?: string;
+  specId: string;
+  cableType: string;
+  format: GtpFormat;
+  /** Header of the formatted GTP sheet, e.g. "Daksha Cables Pvt. Ltd." (blank = fill by hand). */
+  manufacturerName?: string;
+  /** Board tender/PO reference printed on the formatted GTP sheet. */
+  tenderNo?: string;
+  sections: GtpSection[];
+  status: GtpStatus;
+  signOffs: GtpSignOff[];
+  version: number;
+  reusedFromGtpId?: string;
+  isTemplate?: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Engine-derived fields, snapshotted at generation time with their provenance
+   * (tag/source/trace) — present on GTPs built by the derivation engine, absent on the older
+   * section-based records. Stored rather than re-derived so an approved GTP keeps printing the
+   * values it was approved with, even after the IS tables are amended.
+   */
+  derivedFields?: GtpDerivedField[];
+  /** The cable designation the engine parsed, e.g. "3Cx70 + 1Cx50 + 1Cx16". */
+  designation?: string;
+  /** Which standard editions produced `derivedFields`. */
+  standardsPin?: { standardId: string; edition: string }[];
+}
+
+/** A `ResolvedField` as persisted on a GTP record (structurally identical, kept independent). */
+export interface GtpDerivedField {
+  key: string;
+  label: string;
+  value: string | number;
+  tag: "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED";
+  source: "is-table" | "profile" | "order" | "override" | "calc";
+  trace: string;
+  editable: boolean;
+  gap?: boolean;
+  override?: { previous: string | number; reason: string; by: string; at: string };
+}
+
+// ── Raw material incoming QC ──────────────────────────────────────────────────
+// Pre-production gate: material must pass incoming checks before the job card can
+// drive production. A Fail escalates to the Owner via the activity trail.
+export interface RawMaterialCheckItem {
+  id: string;
+  label: string;
+  result: "Pass" | "Fail" | "Pending";
+}
+
+export interface RawMaterialCheck {
+  id: string;
+  orderId: string;
+  materialType: string;
+  checks: RawMaterialCheckItem[];
+  passedAt?: string;
+  approvedBy?: string;
+}
+
+// ── Finished cable QC (per drum) ─────────────────────────────────────────────
+// HVT / conductor resistance / IR per drum. These results ARE the test
+// certificates — "Generate cert" stamps a certRef that flows to the dispatch
+// checklist's per-drum certs.
+export interface FinishedCableQc {
+  id: string;
+  orderId: string;
+  drumNo: string;
+  hvtResult: "Pass" | "Fail" | "Pending";
+  resistanceMeasuredOhmPerKm?: number;
+  resistanceSpecMaxOhmPerKm?: number;
+  irValueMohmKm?: number;
+  result: "Pass" | "Fail" | "Pending";
+  certRef?: string;
+  testedAt?: string;
+}
+
+// ── Machine incident log ─────────────────────────────────────────────────────
+// Replaces the verbal operator → owner flow. Tagged by machineType + failureMode
+// from day one so pattern detection can ship later without a data migration.
+export type MachineType =
+  | "Extruder"
+  | "Stranding"
+  | "Armouring"
+  | "RBD (wire drawing)"
+  | "Laying-up"
+  | "Rewinding/Drum";
+
+export type MachineIncidentStatus = "Open" | "Awaiting approval" | "Approved" | "Resolved";
+
+export interface MachineIncident {
+  id: string;
+  orderId: string;
+  jobCardId: string;
+  machineType: MachineType;
+  failureMode: string;
+  description: string;
+  proposedFix: string;
+  status: MachineIncidentStatus;
+  reportedAt: string;
+  resolvedAt?: string;
+}
+
+// ── Inspection report digital log ────────────────────────────────────────────
+// Replaces the QC manager's physical diary. clearanceIssued auto-ticks the
+// dispatch checklist's "Inspection clearance" item.
+export interface InspectionReport {
+  id: string;
+  orderId: string;
+  inspectorName: string;
+  inspectorOrg: string;
+  inspectedAt: string;
+  drumsChecked: string[];
+  result: "Passed" | "Failed";
+  nonConformances?: string[];
+  clearanceIssued: boolean;
+  diRef?: string;
 }
 
 export interface QualityCheck {
@@ -245,6 +510,13 @@ export interface DispatchChecklistItem {
   required: boolean;
 }
 
+/** Test certificates are per drum (client-confirmed), not per order. */
+export interface DrumTestCert {
+  drumNo: string;
+  certRef: string;
+  verified: boolean;
+}
+
 export interface Dispatch {
   id: string;
   orderId: string;
@@ -253,7 +525,7 @@ export interface Dispatch {
   checklist: DispatchChecklistItem[];
   ewayBillNo?: string;
   ewayBillRequired: boolean;
-  testCertificateRef?: string;
+  drumTestCerts: DrumTestCert[];
   packingListRef?: string;
   dispatchedAt?: string;
   createdAt: string;
@@ -322,7 +594,17 @@ export interface ActivityEvent {
   actorRole: Role;
   actorName?: string;
   type: string;
-  recordType: "inquiry" | "quote" | "order" | "dispatch" | "invoice" | "compliance" | "jobcard";
+  recordType:
+    | "inquiry"
+    | "quote"
+    | "order"
+    | "dispatch"
+    | "invoice"
+    | "compliance"
+    | "jobcard"
+    | "gtp"
+    | "incident"
+    | "inspection";
   recordId: string;
   text: string;
 }
@@ -336,7 +618,10 @@ export type SignalType =
   // ── Sales-acceleration signals (computed by lib/domain/signals.ts) ──
   | "Hot lead" // high win-probability inquiry worth prioritising
   | "Follow-up due" // an inquiry's followUpDate has arrived or passed
-  | "Repeat-order due"; // a recurring customer is overdue for their next order
+  | "Repeat-order due" // a recurring customer is overdue for their next order
+  // ── Compliance/production-gate signals (also computed) ──
+  | "GTP missing" // Won/In-Production order without an approved GTP
+  | "Inspection call due"; // inspection call must be placed ~10 days before completion
 export interface Signal {
   id: string;
   type: SignalType;
@@ -354,7 +639,8 @@ export type ApprovalKind =
   | "Margin approval"
   | "BG/EMD approval"
   | "Credit override"
-  | "Dispatch hold";
+  | "Dispatch hold"
+  | "Machine incident";
 export interface ApprovalRequest {
   id: string;
   kind: ApprovalKind;
@@ -412,6 +698,11 @@ export interface OrgSettings {
 }
 
 export interface Policies {
+  /**
+   * Off by default for the PoC: flagging owner review on every sub-threshold line
+   * creates friction in a small team. Turn on once the client validates the rule.
+   */
+  marginGateEnabled: boolean;
   marginThresholdPct: number;
   ewayThresholdInr: number;
   gstRatePct: number;
@@ -446,7 +737,12 @@ export interface CableStore {
   inquiries: Inquiry[];
   quotes: Quote[];
   orders: Order[];
+  gtps: Gtp[];
   jobCards: JobCard[];
+  rawMaterialChecks: RawMaterialCheck[];
+  finishedCableQc: FinishedCableQc[];
+  machineIncidents: MachineIncident[];
+  inspectionReports: InspectionReport[];
   dispatches: Dispatch[];
   invoices: Invoice[];
   compliance: ComplianceItem[];

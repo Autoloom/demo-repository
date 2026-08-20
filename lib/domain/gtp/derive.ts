@@ -213,14 +213,95 @@ function messengerFields(group: ConductorGroup): ResolvedField[] {
  * Finished-cable, drum, and compliance fields (DHBVN Appendix-I items 2, 6, 7–14).
  * Buyer schedules reject blank cells, so every one of these must resolve or be flagged as a gap.
  */
-function finishedAndComplianceFields(quirks: DerivationQuirks): ResolvedField[] {
+/**
+ * Physical constants for the finished-cable CALCs. Sourced values, kept named and in one place so
+ * a production engineer can tune them (corpus plan T2-7) without hunting through the code.
+ */
+const PHYSICAL = {
+  /** Aluminium density, g/cm³ — conductor mass. */
+  aluminiumDensity: 2.7,
+  /** Al-Mg-Si alloy density, g/cm³ (messenger). */
+  alloyDensity: 2.7,
+  /** XLPE density, g/cm³ — insulation mass. */
+  xlpeDensity: 0.92,
+  /**
+   * Bundle-diameter factor: an AB bundle of n twisted cores is roughly this multiple of one
+   * insulated core's diameter. ~2.4 for the common 4-wire bundle; scaled by core count below.
+   */
+  bundleDiaFactor: 2.4,
+  /** Stranding adds length per unit of cable — mass is scaled by this. */
+  layUpFactor: 1.03,
+} as const;
+
+/**
+ * Overall diameter and total mass of the finished bundle.
+ *
+ * These are the two fields buyer schedules ask for (DHBVN Appendix-I 6.i/6.ii) that can't be read
+ * from a table — they follow from the construction. Computed as ESTIMATES and labelled "approx."
+ * exactly as the schedules do; they are marked CALC with their working in the trace so an engineer
+ * can check them.
+ */
+function finishedBundle(
+  groups: ConductorGroup[],
+): { overallDiaMm: number; massKgPerKm: number; workings: string } | undefined {
+  let conductorMassKgPerKm = 0;
+  let insulationMassKgPerKm = 0;
+  let largestInsulatedDiaMm = 0;
+  let coreCount = 0;
+
+  for (const g of groups) {
+    const isMessenger = g.role === "messenger";
+    const conductor = isMessenger ? findMessengerRow(g.sizeSqMm) : findConductorRow(g.sizeSqMm);
+    if (!conductor) return undefined; // an unsourced size means we must not invent a number
+    const phase = isMessenger ? undefined : findPhaseRow(g.sizeSqMm);
+    if (!isMessenger && !phase) return undefined;
+
+    const density = isMessenger ? PHYSICAL.alloyDensity : PHYSICAL.aluminiumDensity;
+    // area (mm²) × density (g/cm³) = kg/km, since 1 mm²·1 km = 1000 cm³ → g/cm³ ≡ kg/km per mm².
+    conductorMassKgPerKm += g.count * g.sizeSqMm * density;
+    coreCount += g.count;
+
+    if (phase) {
+      const conductorDia = conductor.compactedDiaMm;
+      const wall = phase.insulationThicknessMinMm;
+      const insulatedDia = conductorDia + 2 * wall;
+      largestInsulatedDiaMm = Math.max(largestInsulatedDiaMm, insulatedDia);
+      // Annulus area of the insulation wall, mm² → kg/km via density.
+      const annulusMm2 = Math.PI * wall * (conductorDia + wall);
+      insulationMassKgPerKm += g.count * annulusMm2 * PHYSICAL.xlpeDensity;
+    } else {
+      largestInsulatedDiaMm = Math.max(largestInsulatedDiaMm, conductor.compactedDiaMm);
+    }
+  }
+
+  // Bundle diameter scales with how many cores are twisted together, not just the largest core.
+  const bundleFactor = PHYSICAL.bundleDiaFactor * Math.sqrt(Math.max(coreCount, 1) / 4);
+  const overallDiaMm = largestInsulatedDiaMm * bundleFactor;
+  const massKgPerKm = (conductorMassKgPerKm + insulationMassKgPerKm) * PHYSICAL.layUpFactor;
+
+  return {
+    overallDiaMm,
+    massKgPerKm,
+    workings:
+      `largest insulated core ${largestInsulatedDiaMm.toFixed(2)} mm × bundle factor ` +
+      `${bundleFactor.toFixed(2)} (${coreCount} cores); mass = conductor ` +
+      `${conductorMassKgPerKm.toFixed(0)} + insulation ${insulationMassKgPerKm.toFixed(0)} kg/km × ` +
+      `lay-up ${PHYSICAL.layUpFactor}`,
+  };
+}
+
+function finishedAndComplianceFields(quirks: DerivationQuirks, groups: ConductorGroup[]): ResolvedField[] {
   const drumLength = quirks.drumLengthM ?? 1000;
   const drumTol = quirks.drumLengthTolerance ?? "±5%";
+  const bundle = finishedBundle(groups);
   return [
     { key: "cable.ratedVoltage", label: "Rated voltage", value: FIXED.ratedVoltage, tag: "FIXED", source: "profile", trace: "IS 14255:1995 scope (up to and including 1100 V)", editable: false },
-    // GAP: overall diameter & total mass need the full build-up (lay factor + all cores).
-    { key: "fin.overallDia", label: "Overall diameter (approx.)", value: "—", tag: "CALC", source: "calc", trace: "Needs lay-factor build-up over all cores (T2-7 constants)", editable: false, gap: true },
-    { key: "fin.totalMass", label: "Total mass (approx.)", value: "—", tag: "CALC", source: "calc", trace: "Needs agreed densities + lay factor (T2-7 constants)", editable: false, gap: true },
+    bundle
+      ? { key: "fin.overallDia", label: "Overall diameter (approx.)", value: `${bundle.overallDiaMm.toFixed(1)} mm`, tag: "CALC" as const, source: "calc" as const, trace: bundle.workings, editable: false }
+      : { key: "fin.overallDia", label: "Overall diameter (approx.)", value: "—", tag: "CALC" as const, source: "calc" as const, trace: "A conductor size in this cable has no IS row yet", editable: false, gap: true },
+    bundle
+      ? { key: "fin.totalMass", label: "Total mass (approx.)", value: `${bundle.massKgPerKm.toFixed(0)} kg/km ±5%`, tag: "CALC" as const, source: "calc" as const, trace: bundle.workings, editable: false }
+      : { key: "fin.totalMass", label: "Total mass (approx.)", value: "—", tag: "CALC" as const, source: "calc" as const, trace: "A conductor size in this cable has no IS row yet", editable: false, gap: true },
     { key: "fin.layDirection", label: "Direction of lay", value: IS14255_1995_LAY.direction, tag: "LOOKUP", source: "is-table", trace: IS14255_1995_LAY.ref, editable: false },
     { key: "fin.maxLay", label: "Max lay ratio", value: `${IS14255_1995_LAY.maxLayRatio} × dia of insulated phase`, tag: "LOOKUP", source: "is-table", trace: IS14255_1995_LAY.ref, editable: false },
     { key: "drum.length", label: "Standard length per drum", value: `${drumLength} m ${drumTol}`, tag: "CHOICE", source: "order", trace: `${quirks.customerName ?? "Customer"} default`, editable: true },
@@ -328,7 +409,7 @@ export function deriveFields(construction: CableConstruction, quirks: Derivation
     fields.push({ key: "fin.layRatio", label: "Lay ratio factor", value: quirks.layRatioFactor, tag: "QUIRK", source: "profile", trace: `${quirks.customerName ?? "Customer"} profile`, editable: true });
   }
 
-  fields.push(...finishedAndComplianceFields(quirks));
+  fields.push(...finishedAndComplianceFields(quirks, construction.groups));
 
   return fields;
 }
