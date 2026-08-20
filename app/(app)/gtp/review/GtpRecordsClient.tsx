@@ -3,15 +3,18 @@
 import {
   AlertTriangleIcon,
   CheckCircle2Icon,
+  ClipboardListIcon,
   CopyIcon,
   FileCheckIcon,
   InboxIcon,
   ListIcon,
   LockKeyholeIcon,
+  ReceiptIcon,
   RefreshCwIcon,
   SaveIcon,
   StampIcon,
   Table2Icon,
+  TagIcon,
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -36,6 +39,7 @@ import {
 } from "@/lib/services";
 import { actorFromSession, useSessionStore } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
+import { StatusTracker } from "./StatusTracker";
 
 type LoadState = {
   store: CableStore | null;
@@ -43,7 +47,8 @@ type LoadState = {
 
 const statusTone: Record<GtpStatus, string> = {
   Draft: "border-border bg-muted text-muted-foreground",
-  "Pending sign-off": "border-warning/30 bg-warning/10 text-warning",
+  Submitted: "border-primary/30 bg-primary/10 text-primary",
+  "Corrections received": "border-warning/30 bg-warning/10 text-warning",
   Approved: "border-success/30 bg-success/10 text-success",
 };
 
@@ -493,6 +498,44 @@ export function GtpRecordsClient() {
                   </div>
                 </div>
 
+                {/* The four-status lifecycle, always visible rather than a lone badge. */}
+                {!selected.isTemplate ? (
+                  <div className="mt-4 print:hidden">
+                    <StatusTracker
+                      status={selected.status}
+                      disabled={!canTransition || busy}
+                      onChange={(next) => {
+                        if (next === "Submitted") {
+                          void run(
+                            () => gtpService.submitForSignOff(selected.id, actorFromSession()),
+                            `${selected.id} marked as submitted.`,
+                          );
+                        } else if (next === "Corrections received") {
+                          void run(
+                            () =>
+                              gtpService.recordCorrections(
+                                selected.id,
+                                { note: "Returned with corrections.", diffs: [] },
+                                actorFromSession(),
+                              ),
+                            `${selected.id} marked as returned with corrections — stamps cleared.`,
+                          );
+                        } else if (next === "Approved") {
+                          setFeedback({
+                            tone: "danger",
+                            text: "Record both engineer stamps below to approve — the status can't be set directly.",
+                          });
+                        } else if (next === "Draft") {
+                          void run(
+                            () => gtpService.save({ ...selected, status: "Draft" }, actorFromSession()),
+                            `${selected.id} moved back to draft.`,
+                          );
+                        }
+                      }}
+                    />
+                  </div>
+                ) : null}
+
                 {linkedOrder && selected.status !== "Approved" ? (
                   <div className="mt-4 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning print:hidden">
                     <LockKeyholeIcon className="mt-0.5 size-4 shrink-0" />
@@ -503,6 +546,53 @@ export function GtpRecordsClient() {
                       </Link>{" "}
                       until this GTP is approved.
                     </span>
+                  </div>
+                ) : null}
+
+                {/* What an approved GTP unlocks. The same canonical cable data feeds all three,
+                    which is why they stay consistent with the approved document by construction. */}
+                {!selected.isTemplate ? (
+                  <div
+                    className={cn(
+                      "mt-4 rounded-md border p-3 print:hidden",
+                      selected.status === "Approved" ? "border-success/30 bg-success/5" : "border-border bg-muted/40",
+                    )}
+                  >
+                    <p className="text-sm font-medium text-foreground">
+                      {selected.status === "Approved"
+                        ? "This GTP can now be used to create:"
+                        : "Once approved, this GTP can be used to create:"}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {[
+                        { label: "Job card", href: linkedOrder ? `/job-card?orderId=${linkedOrder.id}` : "/job-card", icon: ClipboardListIcon },
+                        { label: "Quotation", href: linkedOrder ? `/quote?orderId=${linkedOrder.id}` : "/quote", icon: ReceiptIcon },
+                        { label: "Drum sticker", href: linkedOrder ? `/dispatch?orderId=${linkedOrder.id}` : "/dispatch", icon: TagIcon },
+                      ].map(({ label, href, icon: Icon }) =>
+                        selected.status === "Approved" ? (
+                          <Button key={label} asChild type="button" variant="outline" size="sm">
+                            <Link href={href}>
+                              <Icon className="mr-2 size-4" />
+                              {label}
+                            </Link>
+                          </Button>
+                        ) : (
+                          <span
+                            key={label}
+                            className="inline-flex items-center gap-2 rounded-md border border-dashed border-border px-3 py-1.5 text-sm text-muted-foreground"
+                          >
+                            <Icon className="size-4" />
+                            {label}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                    {selected.status !== "Approved" ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        The inspector checks the drum sticker against the approved GTP, so these are
+                        held until both stamps are recorded.
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -612,7 +702,7 @@ export function GtpRecordsClient() {
                             <p className="mt-2 text-xs text-muted-foreground">
                               {stamp.name} · {formatDate(stamp.stampedAt)}
                             </p>
-                          ) : selected.status === "Pending sign-off" && canTransition ? (
+                          ) : selected.status === "Submitted" && canTransition ? (
                             <Button
                               type="button"
                               variant="outline"
@@ -630,7 +720,7 @@ export function GtpRecordsClient() {
                     })}
                   </div>
 
-                  {selected.status === "Pending sign-off" && canTransition ? (
+                  {selected.status === "Submitted" && canTransition ? (
                     <div className="mt-3 max-w-sm space-y-1.5">
                       <Label htmlFor="stamp-name">Engineer name for the next stamp</Label>
                       <Input
@@ -658,7 +748,7 @@ export function GtpRecordsClient() {
                         Submit for sign-off
                       </Button>
                     ) : null}
-                    {selected.status === "Pending sign-off" && canTransition ? (
+                    {selected.status === "Submitted" && canTransition ? (
                       <Button
                         type="button"
                         variant="outline"

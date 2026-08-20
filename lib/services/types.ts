@@ -330,7 +330,18 @@ export interface Order {
 // ── GTP (Guaranteed Technical Particulars) ────────────────────────────────────
 // Hard production gate: an order cannot move to "In Production" until its GTP is
 // Approved (divisional engineer + AE stamped). See kamble-meeting-improvements.md §1.
-export type GtpStatus = "Draft" | "Pending sign-off" | "Approved";
+/**
+ * The GTP lifecycle (PRD §5.2). Four statuses, deliberately no more — the tracker is meant to be
+ * dumb enough that a documentation person updates it without training.
+ *
+ *   Draft → Submitted → Corrections received → Approved
+ *                   ↖________________________↙
+ *
+ * "Corrections received" is the one that earns its place: it's where a returned mark-up is
+ * captured, and each captured diff is what teaches the customer profile for the next GTP.
+ * Only "Approved" opens the production gate.
+ */
+export type GtpStatus = "Draft" | "Submitted" | "Corrections received" | "Approved";
 export type GtpFormat = "client-fixed" | "self-generated";
 export type GtpSectionSource = "client-fixed" | "is-standard";
 
@@ -383,6 +394,18 @@ export interface Gtp {
   designation?: string;
   /** Which standard editions produced `derivedFields`. */
   standardsPin?: { standardId: string; edition: string }[];
+  /**
+   * Mark-ups received from the buyer, newest last. Each captured diff is a candidate quirk for
+   * the customer profile — the mechanism by which the next GTP absorbs this correction.
+   */
+  corrections?: GtpCorrection[];
+}
+
+export interface GtpCorrection {
+  receivedAt: string;
+  /** What the engineer said, in the operator's words. */
+  note: string;
+  diffs: { fieldKey: string; from: string; to: string }[];
 }
 
 /** A `ResolvedField` as persisted on a GTP record (structurally identical, kept independent). */

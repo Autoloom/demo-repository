@@ -703,7 +703,7 @@ export const gtpService = {
     mutateStore((store) => {
       const gtp = store.gtps.find((entry) => entry.id === gtpId);
       if (!gtp) throw new Error("GTP not found");
-      gtp.status = "Pending sign-off";
+      gtp.status = "Submitted";
       gtp.updatedAt = isoNow();
       addActivity(store, {
         actorRole: actor.role,
@@ -712,6 +712,39 @@ export const gtpService = {
         recordType: "gtp",
         recordId: gtpId,
         text: `${gtpId} sent for divisional engineer + AE sign-off.`,
+      });
+      return gtp;
+    }),
+  /**
+   * The engineer sent it back with changes (PRD §5.2). Captures what they changed, so the next
+   * GTP for this customer can absorb it — this is the loop that makes the product compound.
+   * Any stamps are cleared: they applied to the version that was rejected.
+   */
+  recordCorrections: (
+    gtpId: string,
+    input: { note: string; diffs: { fieldKey: string; from: string; to: string }[] },
+    actor: Actor,
+  ) =>
+    mutateStore((store) => {
+      const gtp = store.gtps.find((entry) => entry.id === gtpId);
+      if (!gtp) throw new Error("GTP not found");
+      gtp.status = "Corrections received";
+      gtp.signOffs = [];
+      gtp.corrections = [
+        ...(gtp.corrections ?? []),
+        { receivedAt: isoNow(), note: input.note, diffs: input.diffs },
+      ];
+      gtp.updatedAt = isoNow();
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "gtp.corrections_received",
+        recordType: "gtp",
+        recordId: gtpId,
+        text:
+          `${gtpId} came back with corrections` +
+          (input.diffs.length > 0 ? ` — ${input.diffs.length} change(s) noted.` : ".") +
+          " Stamps cleared; revise and resubmit.",
       });
       return gtp;
     }),
@@ -725,7 +758,7 @@ export const gtpService = {
       }
       gtp.signOffs.push({ ...stamp, stampedAt: isoNow() });
       const approved = gtp.signOffs.length >= 2;
-      gtp.status = approved ? "Approved" : "Pending sign-off";
+      gtp.status = approved ? "Approved" : "Submitted";
       gtp.updatedAt = isoNow();
       const order = store.orders.find(
         (entry) => entry.gtpId === gtpId || entry.id === gtp.orderId,
