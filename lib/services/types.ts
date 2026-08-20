@@ -399,6 +399,11 @@ export interface Gtp {
    * the customer profile — the mechanism by which the next GTP absorbs this correction.
    */
   corrections?: GtpCorrection[];
+  /**
+   * Order-specific quantities. Not part of the cable's construction — the same cable can be sold
+   * in any quantity — but printed on the GTP and checked against the drum plan.
+   */
+  orderQuantities?: { totalLengthM: number; drumLengthM: number; drumCount: number };
 }
 
 export interface GtpCorrection {

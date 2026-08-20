@@ -35,6 +35,10 @@ export interface GtpPdfMeta {
   standardsPin?: { standardId: string; edition: string }[];
   /** Stamps already recorded. Roles without one print as blank signature lines. */
   signOffs?: { role: string; name: string; stampedAt: string }[];
+  /** Order-specific quantities (DHBVN Appendix-I items 8/9: standard length, length per drum). */
+  orderQuantities?: { totalLengthM: number; drumLengthM: number; drumCount: number };
+  /** Buyer's PO / tender reference. */
+  poReference?: string;
 }
 
 /** The two stamps a GTP needs before production can start. */
@@ -77,6 +81,28 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     });
   }
 
+  // Order quantities (Appendix-I 8/9). Kept separate from the construction sections because they
+  // describe this order, not the cable — the same cable ships in different quantities.
+  if (meta.orderQuantities) {
+    const q = meta.orderQuantities;
+    const remainder = q.drumLengthM > 0 ? q.totalLengthM % q.drumLengthM : 0;
+    sections.push({
+      title: "Quantity & drums",
+      table: {
+        headers: ["Particular", "Value"],
+        widths: [260, 254],
+        rows: [
+          ["Total length ordered", `${q.totalLengthM} m`],
+          ["Standard length per drum", `${q.drumLengthM} m`],
+          [
+            "Number of drums",
+            remainder > 0 ? `${q.drumCount} (last drum ${remainder} m)` : `${q.drumCount}`,
+          ],
+        ],
+      },
+    });
+  }
+
   // Sign-off block. This is the point of the document — it exists to be stamped — so unsigned
   // roles print as blank ruled lines for a wet signature rather than being omitted.
   sections.push({
@@ -107,6 +133,7 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     title: `Guaranteed Technical Particulars — ${meta.customerName}`,
     subtitle: meta.designation,
     meta: [
+      ...(meta.poReference ? [`Order / PO: ${meta.poReference}`] : []),
       `GTP: ${meta.gtpId} v${meta.version}`,
       `Status: ${meta.status}`,
       `Destination state: ${meta.state}`,

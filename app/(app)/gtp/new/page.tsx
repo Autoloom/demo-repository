@@ -73,6 +73,25 @@ interface Choices {
   drumLength: string;
 }
 
+/**
+ * Order-specific quantities. Distinct from the cable's construction: the same cable can be sold
+ * in any quantity, on any drum length, against any PO. These feed the drum-vs-quantity validation
+ * — a real-world failure the corpus notes as "someone was burned by that".
+ */
+interface OrderDetails {
+  totalLengthM: number;
+  drumLengthM: number;
+  poReference: string;
+}
+
+const DEFAULT_ORDER_DETAILS: OrderDetails = { totalLengthM: 1000, drumLengthM: 1000, poReference: "" };
+
+/** Drums needed to ship the ordered length — whole drums, so the last one may be partial. */
+function drumCount(details: OrderDetails): number {
+  if (details.drumLengthM <= 0) return 0;
+  return Math.ceil(details.totalLengthM / details.drumLengthM);
+}
+
 /** DOM id for a field's row, so validation issues can link straight to it. */
 function fieldRowId(key: string): string {
   return `field-${key.replace(/\./g, "-")}`;
@@ -254,6 +273,7 @@ function GtpBuilderInner() {
   const [selection, setSelection] = useState<SizeSelection>(defaultSelection);
   const sizeInput = buildSizeString(selection);
   const [confirmed, setConfirmed] = useState(false);
+  const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
   const [choices, setChoices] = useState<Choices | null>(null);
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const [ackWarnings, setAckWarnings] = useState(false);
@@ -293,7 +313,11 @@ function GtpBuilderInner() {
   // lay any manual overrides on top (the "order" layer of the three-layer cascade).
   const fields = useMemo<ResolvedField[]>(() => {
     if (!profile || !confirmed) return [];
-    const derived = deriveFields(construction, profile.quirks);
+    // The order's drum length overrides the customer's default — it's the more specific layer.
+    const derived = deriveFields(construction, {
+      ...profile.quirks,
+      drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
+    });
     return derived.map((f) => {
       const value = overrides[f.key];
       if (value === undefined) return f;
@@ -311,17 +335,19 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, confirmed, overrides, overrideReasons]);
+  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM]);
 
-  // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo; drum matches order.
+  // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo.
   const validation = useMemo(() => {
     if (fields.length === 0) return null;
     return validateGtp(fields, {
       deratingFactors: [1.22, 1.16, 1.09, 1.0, 0.9],
-      drumLengthM: 1000,
-      orderedLengthM: 1000,
+      // Real order quantities, so the drum-vs-quantity check can actually fire. These were
+      // hardcoded to 1000/1000, which made the rule always pass — dead safety.
+      drumLengthM: orderDetails.drumLengthM,
+      orderedLengthM: orderDetails.totalLengthM,
     });
-  }, [fields]);
+  }, [fields, orderDetails.drumLengthM, orderDetails.totalLengthM]);
 
   function pickProfile(p: CustomerProfile) {
     setProfile(p);
@@ -398,8 +424,14 @@ function GtpBuilderInner() {
         cableType: `LT Aerial Bunched, XLPE — ${sizeInput}`,
         format: "self-generated",
         designation: sizeInput,
+        tenderNo: orderDetails.poReference || undefined,
         standardsPin: profile.standardsPin,
         derivedFields: fields,
+        orderQuantities: {
+          totalLengthM: orderDetails.totalLengthM,
+          drumLengthM: orderDetails.drumLengthM,
+          drumCount: drumCount(orderDetails),
+        },
         // Mirror the fields into sections so the existing detail view can render this record.
         sections: fields.map((f) => ({
           id: f.key,
@@ -428,6 +460,8 @@ function GtpBuilderInner() {
           standardsPin: profile.standardsPin,
           // A freshly generated GTP has no stamps yet — the block prints blank lines to sign.
           signOffs: gtp.signOffs,
+          orderQuantities: gtp.orderQuantities,
+          poReference: orderDetails.poReference || undefined,
         }),
       );
       // Land on the record either way — it's where the stamps get recorded, which is the next
@@ -757,6 +791,71 @@ function GtpBuilderInner() {
                     <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> Confirmed
                   </p>
                 )}
+              </div>
+            ) : null}
+
+            {/* Order-specific quantities. Separate from the construction above: the same cable
+                can be sold in any quantity, on any drum length, against any PO. */}
+            {confirmed ? (
+              <div className="mt-4 space-y-3 border-t border-border pt-4">
+                <p className="text-sm font-medium text-foreground">How much of it?</p>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="total-length">Total length</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="total-length"
+                        type="number"
+                        min={1}
+                        value={orderDetails.totalLengthM}
+                        onChange={(e) =>
+                          setOrderDetails((d) => ({ ...d, totalLengthM: Number(e.target.value) }))
+                        }
+                        className="h-11 font-mono"
+                      />
+                      <span className="text-sm text-muted-foreground">m</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="drum-length">Length per drum</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="drum-length"
+                        type="number"
+                        min={1}
+                        value={orderDetails.drumLengthM}
+                        onChange={(e) =>
+                          setOrderDetails((d) => ({ ...d, drumLengthM: Number(e.target.value) }))
+                        }
+                        className="h-11 font-mono"
+                      />
+                      <span className="text-sm text-muted-foreground">m</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="po-ref">Order / PO reference</Label>
+                    <Input
+                      id="po-ref"
+                      value={orderDetails.poReference}
+                      placeholder="Optional"
+                      onChange={(e) => setOrderDetails((d) => ({ ...d, poReference: e.target.value }))}
+                      className="h-11"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {drumCount(orderDetails) > 0 ? (
+                    <>
+                      That&rsquo;s <span className="font-medium text-foreground">{drumCount(orderDetails)} drum
+                      {drumCount(orderDetails) === 1 ? "" : "s"}</span>
+                      {orderDetails.totalLengthM % orderDetails.drumLengthM !== 0
+                        ? ` — the last one part-filled with ${orderDetails.totalLengthM % orderDetails.drumLengthM} m.`
+                        : ", all full."}
+                    </>
+                  ) : (
+                    "Enter a drum length to see how many drums this needs."
+                  )}
+                </p>
               </div>
             ) : null}
           </div>

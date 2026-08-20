@@ -40,18 +40,40 @@ function checkDeratingMonotonic(factors: number[]): ValidationIssue[] {
   return issues;
 }
 
-/** Drum length must match the ordered quantity (the handwritten-note bug on the real GTP). */
+/**
+ * The drum plan must account for the ordered quantity (the handwritten-note bug on the real GTP).
+ *
+ * An order legitimately spans several drums, so this is NOT an equality check. What matters is
+ * whether the ordered length divides evenly: a remainder means the last drum ships short, which is
+ * exactly the situation that needs a human to confirm rather than silently pass.
+ */
 function checkDrumLength(drumLengthM: number, orderedLengthM: number): ValidationIssue[] {
-  if (drumLengthM === orderedLengthM) return [];
+  if (drumLengthM <= 0 || orderedLengthM <= 0) {
+    return [
+      {
+        id: "drum-length-invalid",
+        severity: "error",
+        fieldKeys: ["drum.length"],
+        rule: "drum.length-invalid",
+        message: "Drum length and ordered length must both be greater than zero.",
+      },
+    ];
+  }
+
+  const fullDrums = Math.floor(orderedLengthM / drumLengthM);
+  const remainder = orderedLengthM % drumLengthM;
+  if (remainder === 0) return [];
+
   return [
     {
-      id: "drum-length-mismatch",
+      id: "drum-length-remainder",
       severity: "warning",
       fieldKeys: ["drum.length"],
       rule: "drum.length-mismatch",
       message:
-        `The drum length (${drumLengthM} m) doesn't match the ordered length (${orderedLengthM} m). ` +
-        `Confirm the drum plan covers the full quantity.`,
+        `${orderedLengthM} m on ${drumLengthM} m drums leaves a part-drum: ` +
+        `${fullDrums} full drum${fullDrums === 1 ? "" : "s"} plus ${remainder} m. ` +
+        `Confirm the buyer accepts a short last drum.`,
     },
   ];
 }

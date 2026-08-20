@@ -203,6 +203,29 @@ test("neither bundle CALC is a blocking gap for an encoded cable", () => {
   }
 });
 
+test("drum plan — exact multiples pass, part-drums warn", () => {
+  // An order legitimately spans many drums, so this is not an equality check: what needs a
+  // human is a remainder, i.e. a short last drum.
+  const rule = (ordered: number, drum: number) =>
+    validateGtp([], { orderedLengthM: ordered, drumLengthM: drum }).issues.filter((i) =>
+      i.rule.startsWith("drum."),
+    );
+
+  assert.equal(rule(1000, 1000).length, 0, "one full drum is fine");
+  assert.equal(rule(5000, 1000).length, 0, "five full drums is fine");
+
+  const partial = rule(2500, 1000);
+  assert.equal(partial.length, 1, "a remainder must be flagged");
+  assert.equal(partial[0].severity, "warning", "a short last drum is possible, not impossible");
+  assert.match(partial[0].message, /500 m/, "the message should name the shortfall");
+});
+
+test("drum plan — zero or negative lengths are an error, not a warning", () => {
+  const issues = validateGtp([], { orderedLengthM: 1000, drumLengthM: 0 }).issues;
+  assert.equal(issues.filter((i) => i.rule === "drum.length-invalid").length, 1);
+  assert.equal(issues.find((i) => i.rule === "drum.length-invalid")?.severity, "error");
+});
+
 test("parser — unsupported size returns a suggestion state, never throws", () => {
   const result = parseSizeString("3Cx400");
   assert.equal(result.ok, false);
