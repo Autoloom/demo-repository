@@ -36,8 +36,12 @@ export interface GtpPdfMeta {
 }
 
 /**
- * Build the printable document. Overridden fields are marked so a reviewer can see at a glance
- * which values departed from the standards — the same information the audit trail carries.
+ * Build the printable document.
+ *
+ * The tables print particular + value only — the internal tag (LOOKUP/CALC/QUIRK/FIXED) is
+ * working-out for the operator, not something a discom's schedule asks for. Provenance still
+ * reaches the reader via the derivation record at the end, which names the standards pin and
+ * every override with its reason.
  */
 export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): PdfDocument {
   const used = new Set<string>();
@@ -47,10 +51,10 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
       .filter((f) => match(f.key))
       .map((f) => {
         used.add(f.key);
-        return [f.label, String(f.value), f.override ? `${f.tag} (overridden)` : f.tag];
+        return [f.label, String(f.value)];
       });
     return rows.length > 0
-      ? { title, table: { headers: ["Particular", "Value", "Source"], widths: [230, 190, 94], rows } }
+      ? { title, table: { headers: ["Particular", "Value"], widths: [260, 254], rows } }
       : null;
   }).filter((s): s is NonNullable<typeof s> => s !== null);
 
@@ -61,9 +65,9 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     sections.push({
       title: "Other particulars",
       table: {
-        headers: ["Particular", "Value", "Source"],
-        widths: [230, 190, 94],
-        rows: leftovers.map((f) => [f.label, String(f.value), f.tag]),
+        headers: ["Particular", "Value"],
+        widths: [260, 254],
+        rows: leftovers.map((f) => [f.label, String(f.value)]),
       },
     });
   }
