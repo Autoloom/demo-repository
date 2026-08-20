@@ -2,6 +2,8 @@
 
 import { adapter } from "@/lib/adapters/mock-adapter";
 import { now } from "@/lib/domain/clock";
+import { buildGtpSections, findReusableGtp, gtpForOrder } from "@/lib/domain/gtp";
+import { inspectorEtaFrom } from "@/lib/domain/inspection";
 import { COMPUTED_SIGNAL_TYPES, computeSalesSignals } from "@/lib/domain/signals";
 import { cablePresets, type CablePreset } from "@/lib/seed/cable-presets";
 import type {
@@ -15,11 +17,17 @@ import type {
   ConnectorId,
   Customer,
   Dispatch,
+  FinishedCableQc,
+  Gtp,
+  GtpSignOff,
   Inquiry,
+  InspectionReport,
   Invoice,
   JobCard,
+  MachineIncident,
   Order,
   Quote,
+  RawMaterialCheck,
   Role,
   SyncLog,
   User,
@@ -56,6 +64,111 @@ function addActivity(
 
 function checklistComplete(dispatch: Dispatch) {
   return dispatch.checklist.filter((item) => item.required).every((item) => item.done);
+}
+
+/** Standard dispatch checklist — per-drum certs, GTP-matched sticker, DI clearance. */
+function standardDispatchChecklist(ewayRequired: boolean): Dispatch["checklist"] {
+  return [
+    { id: "marking", label: "Drum stickers printed", done: false, required: true },
+    { id: "sticker", label: "Sticker matches GTP", done: false, required: true },
+    { id: "test", label: "Test certificates attached (all drums)", done: false, required: true },
+    { id: "clearance", label: "Inspection clearance (DI received)", done: false, required: true },
+    { id: "packing", label: "Packing list ready", done: false, required: true },
+    { id: "invoice", label: "Invoice ready", done: false, required: true },
+    { id: "eway", label: "E-way bill generated", done: false, required: ewayRequired },
+  ];
+}
+
+/**
+ * Auto-tick the "test certificates" item only when EVERY planned drum has a
+ * verified cert (certs are per drum, not per order — client-confirmed).
+ */
+function syncTestCertItem(store: CableStore, orderId: string) {
+  const dispatch = store.dispatches.find((entry) => entry.orderId === orderId);
+  if (!dispatch) return;
+  const jobCard = store.jobCards.find((entry) => entry.orderId === orderId);
+  const drums = jobCard?.drumPlan.map((drum) => drum.drumNo) ?? [];
+  const item = dispatch.checklist.find((entry) => entry.id === "test");
+  if (!item) return;
+  item.done =
+    drums.length > 0 &&
+    drums.every((drumNo) =>
+      dispatch.drumTestCerts.some((cert) => cert.drumNo === drumNo && cert.verified),
+    );
+}
+
+/**
+ * Production gate (kamble-meeting-improvements.md §1–2): an order may only move
+ * to "In Production" once its GTP is engineer-approved AND incoming raw material
+ * QC has fully passed. Returns human-readable blockers for the UI.
+ */
+function productionGateBlockers(store: CableStore, order: Order): string[] {
+  const blockers: string[] = [];
+  const gtp = gtpForOrder(store.gtps, order);
+  if (!gtp || gtp.status !== "Approved") {
+    blockers.push(
+      gtp
+        ? `GTP ${gtp.id} is ${gtp.status} — divisional engineer sign-off required.`
+        : "No GTP on file — create and approve one in the GTP Generator.",
+    );
+  }
+  const rmc = store.rawMaterialChecks.find((entry) => entry.orderId === order.id);
+  if (!rmc || !rmc.checks.every((check) => check.result === "Pass")) {
+    blockers.push(
+      rmc
+        ? "Incoming raw material QC has pending or failed checks."
+        : "Incoming raw material QC has not been recorded.",
+    );
+  }
+  return blockers;
+}
+
+/** Draft (or reuse) a GTP for a freshly won order. Reuse = zero re-entry. */
+function createGtpForOrder(store: CableStore, order: Order, specId: string, actor: Actor): Gtp {
+  const customer = store.customers.find((entry) => entry.id === order.customerId);
+  const spec = store.specs.find((entry) => entry.id === specId);
+  const reusable = findReusableGtp(store.gtps, {
+    customerId: order.customerId,
+    specId,
+    state: customer?.state,
+  });
+  const gtpId = id("GTP", store.gtps.filter((entry) => !entry.isTemplate).length);
+  const reuseApproved = reusable && !reusable.isTemplate && reusable.status === "Approved";
+  const gtp: Gtp = {
+    id: gtpId,
+    orderId: order.id,
+    customerId: order.customerId,
+    state: customer?.state ?? reusable?.state ?? "",
+    boardName: reusable?.boardName ?? customer?.name,
+    specId,
+    cableType: spec?.designation ?? order.specSummary,
+    format: reusable?.format ?? "self-generated",
+    sections: reusable
+      ? reusable.sections.map((section) => ({ ...section }))
+      : spec
+        ? buildGtpSections(spec)
+        : [],
+    // Same board + same cable type reuses the already-stamped GTP outright.
+    status: reuseApproved ? "Approved" : "Draft",
+    signOffs: reuseApproved ? reusable.signOffs.map((stamp) => ({ ...stamp })) : [],
+    version: 1,
+    reusedFromGtpId: reusable?.id,
+    createdAt: isoNow(),
+    updatedAt: isoNow(),
+  };
+  store.gtps.unshift(gtp);
+  order.gtpId = gtp.id;
+  addActivity(store, {
+    actorRole: actor.role,
+    actorName: actor.name,
+    type: reuseApproved ? "gtp.reused" : "gtp.drafted",
+    recordType: "gtp",
+    recordId: gtp.id,
+    text: reuseApproved
+      ? `${gtp.id} reused from ${reusable?.id} — already approved, production unblocked for ${order.id}.`
+      : `${gtp.id} drafted for ${order.id}${reusable ? ` (prefilled from ${reusable.id})` : ""} — awaiting engineer sign-off.`,
+  });
+  return gtp;
 }
 
 async function mutateStore<T>(fn: (store: CableStore) => T): Promise<T> {
@@ -232,30 +345,29 @@ export const quotesService = {
         customerId: quote.customerId,
         title: firstSpec?.designation ?? "Cable order",
         specSummary: firstSpec?.designation ?? "Cable order",
-        stage: "In Production",
+        // Orders land in "Won": production is gated until the GTP is approved
+        // and incoming raw material QC passes (see productionGateBlockers).
+        stage: "Won",
         priority: quote.marginReviewRequired ? "High" : "Medium",
         amountInr: quote.totalInr,
         promisedDate: "2026-07-08",
-        completionPct: 0,
+        completionPct: 20,
         ownerRole: "Operations",
         dispatchId,
         invoiceId,
         jobCardId,
+        inspectionStatus: "Not called",
         createdAt: isoNow(),
       };
+      const ewayRequired = quote.totalInr > store.policies.ewayThresholdInr;
       const dispatch: Dispatch = {
         id: dispatchId,
         orderId,
         transporter: "To be assigned",
         vehicleNo: "",
-        ewayBillRequired: quote.totalInr > store.policies.ewayThresholdInr,
-        checklist: [
-          { id: "marking", label: "Drum markings verified", done: false, required: true },
-          { id: "test", label: "Test certificate attached", done: false, required: true },
-          { id: "packing", label: "Packing list ready", done: false, required: true },
-          { id: "invoice", label: "Invoice ready", done: false, required: true },
-          { id: "eway", label: "E-way bill generated", done: false, required: quote.totalInr > store.policies.ewayThresholdInr },
-        ],
+        ewayBillRequired: ewayRequired,
+        checklist: standardDispatchChecklist(ewayRequired),
+        drumTestCerts: [],
         createdAt: isoNow(),
       };
       const invoice: Invoice = {
@@ -303,15 +415,16 @@ export const quotesService = {
       store.dispatches.unshift(dispatch);
       store.invoices.unshift(invoice);
       store.jobCards.unshift(jobCard);
+      const gtp = createGtpForOrder(store, order, jobCard.specId, actor);
       addActivity(store, {
         actorRole: actor.role,
         actorName: actor.name,
         type: "quote.sent_to_board",
         recordType: "quote",
         recordId: quoteId,
-        text: `${quoteId} created ${orderId}, ${dispatchId}, ${invoiceId}, and ${jobCardId}.`,
+        text: `${quoteId} created ${orderId}, ${dispatchId}, ${invoiceId}, ${jobCardId}, and ${gtp.id}.`,
       });
-      return { order, dispatch, invoice, jobCard };
+      return { order, dispatch, invoice, jobCard, gtp };
     }),
 };
 
@@ -337,6 +450,12 @@ export const ordersService = {
     mutateStore((store) => {
       const order = store.orders.find((item) => item.id === orderId);
       if (!order) throw new Error("Order not found");
+      if (stage === "In Production" && order.stage !== "In Production") {
+        const blockers = productionGateBlockers(store, order);
+        if (blockers.length > 0) {
+          throw new Error(`Production is gated for ${orderId}: ${blockers.join(" ")}`);
+        }
+      }
       order.stage = stage;
       order.completionPct =
         stage === "Quoted" ? 0 : stage === "Won" ? 20 : stage === "In Production" ? 60 : stage === "Ready for Dispatch" ? 90 : 100;
@@ -349,6 +468,162 @@ export const ordersService = {
         text: `${orderId} moved to ${stage}.`,
       });
       return order;
+    }),
+  /** Blockers preventing an order from entering production (empty = clear). */
+  productionBlockers: async (orderId: string): Promise<string[]> => {
+    const store = await adapter.read();
+    const order = store.orders.find((item) => item.id === orderId);
+    if (!order) return [];
+    return productionGateBlockers(store, order);
+  },
+  /**
+   * Repeat Order Fast Lane (kamble-meeting-improvements.md §8): clone a previous
+   * order with zero re-entry — GTP reused (already stamped), job card + drum plan
+   * copied, pricing carried from the source quote with the commodity delta flagged.
+   */
+  repeatOrder: (sourceOrderId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const source = store.orders.find((item) => item.id === sourceOrderId);
+      if (!source) throw new Error("Source order not found");
+      const sourceQuote = store.quotes.find((item) => item.id === source.quoteId);
+      if (!sourceQuote) throw new Error("Source quote not found — cannot carry pricing.");
+      const sourceJobCard = store.jobCards.find((item) => item.orderId === source.id);
+
+      const quoteId = id("Q-2606", store.quotes.length + 117);
+      const orderId = id("ORD", store.orders.length + 7740);
+      const dispatchId = id("DSP", store.dispatches.length + 3390);
+      const invoiceId = id("INV", store.invoices.length + 2606061);
+      const jobCardId = id("JC", store.jobCards.length + 8813);
+
+      // Flag the commodity price delta instead of silently repricing.
+      const currentMetalRate = (specId: string) => {
+        const spec = store.specs.find((entry) => entry.id === specId);
+        const baseMaterial =
+          spec?.conductorMaterial === "Tinned Copper" || spec?.conductorMaterial === "Thermocouple Alloy"
+            ? "Copper"
+            : spec?.conductorMaterial === "Aluminium Alloy" || spec?.conductorMaterial === "AAAC" || spec?.conductorMaterial === "ACSR"
+              ? "Aluminium"
+              : spec?.conductorMaterial;
+        return store.materials.find(
+          (material) =>
+            material.category === "Conductor" && material.matchMaterial === baseMaterial,
+        )?.ratePerKg;
+      };
+      const deltas = sourceQuote.lines
+        .map((line) => {
+          const rate = currentMetalRate(line.specId);
+          return rate !== undefined && rate !== line.metalRatePerKg
+            ? `${line.specId}: metal ₹${line.metalRatePerKg}/kg → ₹${rate}/kg`
+            : null;
+        })
+        .filter((entry): entry is string => entry !== null);
+
+      const quote: Quote = {
+        ...structuredClone(sourceQuote),
+        id: quoteId,
+        inquiryId: undefined,
+        status: "On board",
+        convertedOrderId: orderId,
+        marginReviewRequired: false,
+        notes: deltas.length > 0 ? `Repeat of ${sourceQuote.id}. Commodity delta: ${deltas.join("; ")}` : `Repeat of ${sourceQuote.id}.`,
+        createdAt: isoNow(),
+      };
+
+      const order: Order = {
+        ...source,
+        id: orderId,
+        quoteId,
+        inquiryId: undefined,
+        title: `${source.title} (repeat)`,
+        stage: "Won",
+        completionPct: 20,
+        dispatchId,
+        invoiceId,
+        jobCardId,
+        gtpId: undefined,
+        estimatedCompletionDate: undefined,
+        inspectionStatus: "Not called",
+        inspectionCallDate: undefined,
+        inspectorEtaDate: undefined,
+        createdAt: isoNow(),
+      };
+
+      const ewayRequired = quote.totalInr > store.policies.ewayThresholdInr;
+      const dispatch: Dispatch = {
+        id: dispatchId,
+        orderId,
+        transporter: "To be assigned",
+        vehicleNo: "",
+        ewayBillRequired: ewayRequired,
+        checklist: standardDispatchChecklist(ewayRequired),
+        drumTestCerts: [],
+        createdAt: isoNow(),
+      };
+
+      const invoice: Invoice = {
+        id: invoiceId,
+        kind: "Draft",
+        orderId,
+        customerId: order.customerId,
+        taxableInr: quote.subtotalInr,
+        igstInr: quote.gstInr,
+        totalInr: quote.totalInr,
+        hsnCode: "8544",
+        status: "Draft",
+        syncStatus: "Missing dispatch data",
+        risk: "Medium",
+        dueDate: "2026-08-08",
+        createdAt: isoNow(),
+      };
+
+      const oldOrdNo = source.id.replace("ORD-", "");
+      const newOrdNo = orderId.replace("ORD-", "");
+      const jobCard: JobCard = sourceJobCard
+        ? {
+            ...structuredClone(sourceJobCard),
+            id: jobCardId,
+            orderId,
+            drumPlan: sourceJobCard.drumPlan.map((drum) => ({
+              ...drum,
+              drumNo: drum.drumNo.replaceAll(oldOrdNo, newOrdNo),
+              markings: drum.markings.replaceAll(source.id, orderId).replaceAll(oldOrdNo, newOrdNo),
+            })),
+            qualityChecks: sourceJobCard.qualityChecks.map((check) => ({
+              ...check,
+              result: "Pending" as const,
+            })),
+            operatorNotes: "",
+            updatedAt: isoNow(),
+          }
+        : {
+            id: jobCardId,
+            orderId,
+            specId: quote.lines[0]?.specId ?? "SPEC-PENDING",
+            conductorDetail: "Copied from repeat order",
+            insulationDetail: "",
+            armourDetail: "",
+            sheathDetail: "",
+            drumPlan: [],
+            operatorNotes: "",
+            qualityChecks: [],
+            updatedAt: isoNow(),
+          };
+
+      store.quotes.unshift(quote);
+      store.orders.unshift(order);
+      store.dispatches.unshift(dispatch);
+      store.invoices.unshift(invoice);
+      store.jobCards.unshift(jobCard);
+      const gtp = createGtpForOrder(store, order, jobCard.specId, actor);
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "order.repeated",
+        recordType: "order",
+        recordId: orderId,
+        text: `${orderId} created as a repeat of ${source.id} — GTP ${gtp.status === "Approved" ? "reused (already approved)" : "drafted"}, drum plan and pricing carried over.${deltas.length > 0 ? ` ⚠ ${deltas.join("; ")}` : ""}`,
+      });
+      return { order, quote, dispatch, invoice, jobCard, gtp };
     }),
 };
 
@@ -370,6 +645,354 @@ export const jobCardsService = {
         text: `Job card ${next.id} updated.`,
       });
       return next;
+    }),
+};
+
+export const gtpService = {
+  list: () => list("gtps"),
+  get: (gtpId: string) => get("gtps", gtpId),
+  getByOrder: async (orderId: string) => {
+    const store = await adapter.read();
+    const order = store.orders.find((entry) => entry.id === orderId);
+    return order ? (gtpForOrder(store.gtps, order) ?? null) : null;
+  },
+  /** Draft a GTP for an order that has none, reusing a prior GTP/template when possible. */
+  createForOrder: (orderId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const order = store.orders.find((entry) => entry.id === orderId);
+      if (!order) throw new Error("Order not found");
+      const existing = gtpForOrder(store.gtps, order);
+      if (existing) return existing;
+      const jobCard = store.jobCards.find((entry) => entry.orderId === orderId);
+      const specId =
+        jobCard?.specId ??
+        store.quotes.find((entry) => entry.id === order.quoteId)?.lines[0]?.specId ??
+        store.specs[0]?.id ??
+        "SPEC-PENDING";
+      return createGtpForOrder(store, order, specId, actor);
+    }),
+  save: (gtp: Gtp, actor: Actor) =>
+    mutateStore((store) => {
+      const index = store.gtps.findIndex((entry) => entry.id === gtp.id);
+      const previous = index >= 0 ? store.gtps[index] : undefined;
+      // Editing an approved GTP re-opens it as a new version; the stamps no
+      // longer apply to the changed content.
+      const reopened = previous?.status === "Approved" && !gtp.isTemplate;
+      const next: Gtp = {
+        ...gtp,
+        status: reopened ? "Draft" : gtp.status,
+        signOffs: reopened ? [] : gtp.signOffs,
+        version: reopened ? previous.version + 1 : gtp.version,
+        updatedAt: isoNow(),
+      };
+      if (index >= 0) store.gtps[index] = next;
+      else store.gtps.unshift(next);
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: reopened ? "gtp.reopened" : "gtp.saved",
+        recordType: "gtp",
+        recordId: next.id,
+        text: reopened
+          ? `${next.id} edited after approval — reopened as v${next.version}, sign-offs cleared.`
+          : `${next.id} saved (v${next.version}, ${next.status}).`,
+      });
+      return next;
+    }),
+  submitForSignOff: (gtpId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const gtp = store.gtps.find((entry) => entry.id === gtpId);
+      if (!gtp) throw new Error("GTP not found");
+      gtp.status = "Pending sign-off";
+      gtp.updatedAt = isoNow();
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "gtp.submitted",
+        recordType: "gtp",
+        recordId: gtpId,
+        text: `${gtpId} sent for divisional engineer + AE sign-off.`,
+      });
+      return gtp;
+    }),
+  /** Record an engineer's stamp. Both stamps → Approved, production unblocked. */
+  recordStamp: (gtpId: string, stamp: Omit<GtpSignOff, "stampedAt">, actor: Actor) =>
+    mutateStore((store) => {
+      const gtp = store.gtps.find((entry) => entry.id === gtpId);
+      if (!gtp) throw new Error("GTP not found");
+      if (gtp.signOffs.some((entry) => entry.role === stamp.role)) {
+        throw new Error(`${stamp.role} stamp is already recorded.`);
+      }
+      gtp.signOffs.push({ ...stamp, stampedAt: isoNow() });
+      const approved = gtp.signOffs.length >= 2;
+      gtp.status = approved ? "Approved" : "Pending sign-off";
+      gtp.updatedAt = isoNow();
+      const order = store.orders.find(
+        (entry) => entry.gtpId === gtpId || entry.id === gtp.orderId,
+      );
+      if (order && !order.gtpId) order.gtpId = gtpId;
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: approved ? "gtp.approved" : "gtp.stamped",
+        recordType: "gtp",
+        recordId: gtpId,
+        text: approved
+          ? `${gtpId} approved — both stamps recorded.${order ? ` Production unblocked for ${order.id}.` : ""}`
+          : `${stamp.role} stamp recorded on ${gtpId} by ${stamp.name}.`,
+      });
+      return gtp;
+    }),
+  /** Engineer rejection: back to Draft as a new version (old one is history). */
+  reject: (gtpId: string, note: string, actor: Actor) =>
+    mutateStore((store) => {
+      const gtp = store.gtps.find((entry) => entry.id === gtpId);
+      if (!gtp) throw new Error("GTP not found");
+      gtp.status = "Draft";
+      gtp.signOffs = [];
+      gtp.version += 1;
+      gtp.updatedAt = isoNow();
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "gtp.rejected",
+        recordType: "gtp",
+        recordId: gtpId,
+        text: `${gtpId} rejected by engineer${note ? `: ${note}` : ""} — reopened as v${gtp.version}.`,
+      });
+      return gtp;
+    }),
+};
+
+export const rawMaterialQcService = {
+  getByOrder: async (orderId: string) => {
+    const store = await adapter.read();
+    return store.rawMaterialChecks.find((entry) => entry.orderId === orderId) ?? null;
+  },
+  save: (check: RawMaterialCheck, actor: Actor) =>
+    mutateStore((store) => {
+      const allPassed = check.checks.every((item) => item.result === "Pass");
+      const anyFailed = check.checks.some((item) => item.result === "Fail");
+      const next: RawMaterialCheck = {
+        ...check,
+        passedAt: allPassed ? (check.passedAt ?? isoNow()) : undefined,
+        approvedBy: allPassed ? (check.approvedBy ?? actor.name) : check.approvedBy,
+      };
+      const index = store.rawMaterialChecks.findIndex((entry) => entry.id === next.id);
+      if (index >= 0) store.rawMaterialChecks[index] = next;
+      else store.rawMaterialChecks.unshift(next);
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: anyFailed ? "rawmaterial.failed" : allPassed ? "rawmaterial.passed" : "rawmaterial.saved",
+        recordType: "order",
+        recordId: next.orderId,
+        // A failed incoming check escalates to the Owner via the activity trail.
+        text: anyFailed
+          ? `Raw material QC FAILED on ${next.orderId} (${next.materialType}) — escalated to Owner; production stays gated.`
+          : allPassed
+            ? `Raw material QC passed on ${next.orderId} — pre-production gate cleared.`
+            : `Raw material QC updated on ${next.orderId}.`,
+      });
+      return next;
+    }),
+};
+
+export const finishedQcService = {
+  listByOrder: async (orderId: string) => {
+    const store = await adapter.read();
+    return store.finishedCableQc.filter((entry) => entry.orderId === orderId);
+  },
+  save: (qc: FinishedCableQc, actor: Actor) =>
+    mutateStore((store) => {
+      const next: FinishedCableQc = {
+        ...qc,
+        testedAt: qc.result !== "Pending" ? (qc.testedAt ?? isoNow()) : qc.testedAt,
+      };
+      const index = store.finishedCableQc.findIndex((entry) => entry.id === next.id);
+      if (index >= 0) store.finishedCableQc[index] = next;
+      else store.finishedCableQc.unshift(next);
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "finishedqc.saved",
+        recordType: "order",
+        recordId: next.orderId,
+        text: `Finished cable QC for drum ${next.drumNo}: ${next.result}.`,
+      });
+      return next;
+    }),
+  /**
+   * The QC results ARE the test certificate: stamp a certRef and push it onto the
+   * dispatch's per-drum certs. The "test certificates" checklist item auto-ticks
+   * only when every planned drum has a verified cert.
+   */
+  generateCertificate: (qcId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const qc = store.finishedCableQc.find((entry) => entry.id === qcId);
+      if (!qc) throw new Error("QC record not found");
+      if (qc.result !== "Pass") throw new Error("Certificate needs a passing QC result.");
+      qc.certRef = qc.certRef ?? `TC-${qc.orderId.replace("ORD-", "")}-${qc.drumNo.split("-").at(-1)}`;
+      const dispatch = store.dispatches.find((entry) => entry.orderId === qc.orderId);
+      if (dispatch && !dispatch.drumTestCerts.some((cert) => cert.drumNo === qc.drumNo)) {
+        dispatch.drumTestCerts.push({ drumNo: qc.drumNo, certRef: qc.certRef, verified: true });
+      }
+      syncTestCertItem(store, qc.orderId);
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "finishedqc.cert_generated",
+        recordType: "dispatch",
+        recordId: dispatch?.id ?? qc.orderId,
+        text: `Test certificate ${qc.certRef} generated for drum ${qc.drumNo}.`,
+      });
+      return qc;
+    }),
+};
+
+export const incidentsService = {
+  list: () => list("machineIncidents"),
+  listByOrder: async (orderId: string) => {
+    const store = await adapter.read();
+    return store.machineIncidents.filter((entry) => entry.orderId === orderId);
+  },
+  /** Operator flags an issue → production holds → Owner approval requested. */
+  log: (
+    input: Omit<MachineIncident, "id" | "status" | "reportedAt" | "resolvedAt">,
+    actor: Actor,
+  ) =>
+    mutateStore((store) => {
+      const incident: MachineIncident = {
+        ...input,
+        id: id("MI", store.machineIncidents.length),
+        status: "Awaiting approval",
+        reportedAt: isoNow(),
+      };
+      store.machineIncidents.unshift(incident);
+      store.approvals.unshift({
+        id: id("APR", store.approvals.length),
+        kind: "Machine incident",
+        recordType: "incident",
+        recordId: incident.id,
+        requestedByRole: actor.role,
+        status: "Pending",
+        reason: `${incident.machineType}: ${incident.failureMode} on ${incident.orderId} — fix: ${incident.proposedFix}`,
+        createdAt: isoNow(),
+      });
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "incident.logged",
+        recordType: "incident",
+        recordId: incident.id,
+        text: `Machine incident ${incident.id} logged on ${incident.machineType} — production hold pending Owner approval.`,
+      });
+      return incident;
+    }),
+  /** After the approved fix is applied, the operator resolves and restarts. */
+  resolve: (incidentId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const incident = store.machineIncidents.find((entry) => entry.id === incidentId);
+      if (!incident) throw new Error("Incident not found");
+      if (incident.status !== "Approved") {
+        throw new Error("The proposed fix needs Owner approval before restart.");
+      }
+      incident.status = "Resolved";
+      incident.resolvedAt = isoNow();
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "incident.resolved",
+        recordType: "incident",
+        recordId: incidentId,
+        text: `${incidentId} resolved — machine hold lifted.`,
+      });
+      return incident;
+    }),
+};
+
+export const inspectionService = {
+  reportsByOrder: async (orderId: string) => {
+    const store = await adapter.read();
+    return store.inspectionReports.filter((entry) => entry.orderId === orderId);
+  },
+  /** Set at job-card issue; drives the "call inspection by" countdown. */
+  setEstimatedCompletion: (orderId: string, dateIso: string, actor: Actor) =>
+    mutateStore((store) => {
+      const order = store.orders.find((entry) => entry.id === orderId);
+      if (!order) throw new Error("Order not found");
+      order.estimatedCompletionDate = dateIso;
+      order.inspectionStatus = order.inspectionStatus ?? "Not called";
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "inspection.ecd_set",
+        recordType: "inspection",
+        recordId: orderId,
+        text: `Estimated completion for ${orderId} set to ${dateIso} — inspection call is due 10 days before.`,
+      });
+      return order;
+    }),
+  /** Marketing places the call; the inspector arrives ~11 days later. */
+  placeCall: (orderId: string, actor: Actor) =>
+    mutateStore((store) => {
+      const order = store.orders.find((entry) => entry.id === orderId);
+      if (!order) throw new Error("Order not found");
+      const openDrumQc = store.finishedCableQc.filter(
+        (entry) => entry.orderId === orderId && entry.result !== "Pass",
+      );
+      if (openDrumQc.length > 0) {
+        throw new Error(
+          `Finished cable QC incomplete for ${openDrumQc.map((entry) => entry.drumNo).join(", ")} — all drums must pass before the inspection call.`,
+        );
+      }
+      const callDate = isoNow().slice(0, 10);
+      order.inspectionCallDate = callDate;
+      order.inspectorEtaDate = inspectorEtaFrom(callDate);
+      order.inspectionStatus = "Called";
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "inspection.called",
+        recordType: "inspection",
+        recordId: orderId,
+        text: `Inspection call placed for ${orderId} — inspector expected by ${order.inspectorEtaDate}.`,
+      });
+      return order;
+    }),
+  /**
+   * Digital inspection log (replaces the QC manager's diary). Pass + clearance
+   * auto-ticks the dispatch "Inspection clearance" item; Fail keeps the order in
+   * production with a re-inspection needed.
+   */
+  logReport: (input: Omit<InspectionReport, "id">, actor: Actor) =>
+    mutateStore((store) => {
+      const report: InspectionReport = { ...input, id: id("IR", store.inspectionReports.length) };
+      store.inspectionReports.unshift(report);
+      const order = store.orders.find((entry) => entry.id === report.orderId);
+      if (order) {
+        order.inspectionStatus = report.result;
+      }
+      if (report.result === "Passed" && report.clearanceIssued) {
+        const dispatch = store.dispatches.find((entry) => entry.orderId === report.orderId);
+        const clearance = dispatch?.checklist.find((entry) => entry.id === "clearance");
+        if (clearance) clearance.done = true;
+        if (dispatch && checklistComplete(dispatch)) {
+          completeDispatchHandoff(store, dispatch, actor);
+        }
+      }
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: report.result === "Passed" ? "inspection.passed" : "inspection.failed",
+        recordType: "inspection",
+        recordId: report.id,
+        text:
+          report.result === "Passed"
+            ? `Inspection passed for ${report.orderId} (${report.drumsChecked.length} drums)${report.clearanceIssued ? ` — clearance issued${report.diRef ? `, DI ${report.diRef}` : ""}.` : "."}`
+            : `Inspection FAILED for ${report.orderId} — ${report.nonConformances?.join("; ") ?? "non-conformances recorded"}. Re-inspection required.`,
+      });
+      return report;
     }),
 };
 
@@ -456,6 +1079,28 @@ export const dispatchService = {
         recordType: "dispatch",
         recordId: dispatchId,
         text: `Transporter set to ${patch.transporter || "—"}, vehicle ${patch.vehicleNo || "—"}.`,
+      });
+      return dispatch;
+    }),
+  /** Mark a per-drum test certificate as physically verified against the drum. */
+  setDrumCertVerified: (dispatchId: string, drumNo: string, verified: boolean, actor: Actor) =>
+    mutateStore((store) => {
+      const dispatch = store.dispatches.find((item) => item.id === dispatchId);
+      if (!dispatch) throw new Error("Dispatch not found");
+      const cert = dispatch.drumTestCerts.find((entry) => entry.drumNo === drumNo);
+      if (!cert) throw new Error("No certificate logged for this drum");
+      cert.verified = verified;
+      syncTestCertItem(store, dispatch.orderId);
+      if (checklistComplete(dispatch)) {
+        completeDispatchHandoff(store, dispatch, actor);
+      }
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "dispatch.cert_verified",
+        recordType: "dispatch",
+        recordId: dispatchId,
+        text: `Cert ${cert.certRef} for drum ${drumNo} marked ${verified ? "verified" : "unverified"}.`,
       });
       return dispatch;
     }),
@@ -560,6 +1205,14 @@ export const approvalsService = {
         const item = store.compliance.find((entry) => entry.id === approval.recordId);
         if (item) item.status = "Draft requested";
       }
+      // Machine incident: Owner's decision moves the incident so the operator can
+      // apply the fix and restart (Approved) or keep the machine held (Open).
+      if (approval.kind === "Machine incident") {
+        const incident = store.machineIncidents.find((entry) => entry.id === approval.recordId);
+        if (incident && incident.status === "Awaiting approval") {
+          incident.status = decision === "Approved" ? "Approved" : "Open";
+        }
+      }
       addActivity(store, {
         actorRole: actor.role,
         actorName: actor.name,
@@ -585,6 +1238,7 @@ export const signalsService = {
       inquiries: store.inquiries,
       orders: store.orders,
       customers: store.customers,
+      gtps: store.gtps,
     });
     // Drop any stale persisted copies of computed types, then prepend the fresh computed set.
     const seeded = store.signals.filter((signal) => !COMPUTED_SIGNAL_TYPES.has(signal.type));
@@ -746,6 +1400,7 @@ export const searchService = {
       ...store.inquiries.map((item) => hit("Inquiry", item.id, item.requirement, item.stage, `/records/${item.id}`)),
       ...store.quotes.map((item) => hit("Quote", item.id, item.customerId, item.status, `/records/${item.id}`)),
       ...store.orders.map((item) => hit("Order", item.id, item.title, item.stage, `/records/${item.id}`)),
+      ...store.gtps.filter((item) => !item.isTemplate).map((item) => hit("GTP", item.id, item.cableType, item.status, `/gtp/review?gtpId=${item.id}`)),
       ...store.dispatches.map((item) => hit("Dispatch", item.id, item.orderId, item.ewayBillRequired ? "E-way required" : "Local", `/records/${item.orderId}`)),
       ...store.invoices.map((item) => hit("Invoice", item.id, item.orderId, item.syncStatus, `/records/${item.orderId}`)),
       ...store.customers.map((item) => hit("Contact", item.id, item.name, item.gstin, `/contacts?customerId=${item.id}`)),
@@ -835,7 +1490,12 @@ export const services = {
   materials: materialsService,
   quotes: quotesService,
   orders: ordersService,
+  gtp: gtpService,
   jobCards: jobCardsService,
+  rawMaterialQc: rawMaterialQcService,
+  finishedQc: finishedQcService,
+  incidents: incidentsService,
+  inspection: inspectionService,
   dispatch: dispatchService,
   invoices: invoicesService,
   compliance: complianceService,

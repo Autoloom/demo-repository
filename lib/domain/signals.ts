@@ -12,8 +12,10 @@
  * See: cable os plans/foundation/data-models.md §11, pages/02-sales-board.md, pages/01-dashboard.md.
  */
 import { daysUntil } from "@/lib/domain/clock";
+import { inspectionCallUrgency } from "@/lib/domain/inspection";
 import type {
   Customer,
+  Gtp,
   Inquiry,
   Order,
   Signal,
@@ -25,6 +27,7 @@ export interface SignalInputs {
   inquiries: Inquiry[];
   orders: Order[];
   customers: Customer[];
+  gtps?: Gtp[];
 }
 
 /** Inquiry stages that are still live (a lost/won/converted inquiry is not actionable). */
@@ -219,6 +222,59 @@ export function repeatOrderSignals(
   return signals.sort((a, b) => (b.severity === "High" ? 1 : 0) - (a.severity === "High" ? 1 : 0));
 }
 
+// ── 4. GTP gate watchdog ─────────────────────────────────────────────────────
+// The GTP is a hard production gate: no divisional-engineer-approved GTP, no
+// production. Any order sitting in Won/In Production without one is a blocker.
+
+const GTP_GATED_STAGES: ReadonlyArray<Order["stage"]> = ["Won", "In Production"];
+
+export function gtpMissingSignals(inputs: SignalInputs): Signal[] {
+  const gtps = inputs.gtps ?? [];
+  return inputs.orders
+    .filter((order) => GTP_GATED_STAGES.includes(order.stage))
+    .filter((order) => {
+      const gtp = gtps.find((item) => item.id === order.gtpId || item.orderId === order.id);
+      return !gtp || gtp.status !== "Approved";
+    })
+    .map(
+      (order): Signal => ({
+        id: `SIG-GTP-${order.id}`,
+        type: "GTP missing",
+        severity: order.stage === "In Production" ? "High" : "Medium",
+        route: `/gtp/review?orderId=${order.id}`,
+        recordId: order.id,
+        text: `${order.title}: no approved GTP on file — production is gated until the divisional engineer signs off.`,
+      }),
+    );
+}
+
+// ── 5. Inspection call countdown ─────────────────────────────────────────────
+// The call must go out ~10 days before completion; the inspector takes ~11 days
+// to arrive. A late call means finished cable idling on the floor.
+
+export function inspectionCallSignals(inputs: SignalInputs): Signal[] {
+  return inputs.orders
+    .filter((order) => order.stage === "In Production" || order.stage === "Won")
+    .map((order) => ({ order, urgency: inspectionCallUrgency(order) }))
+    .filter(({ urgency }) => urgency.state === "due" || urgency.state === "overdue")
+    .map(({ order, urgency }): Signal => {
+      const overdue = urgency.state === "overdue";
+      const when = overdue
+        ? `overdue by ${(urgency as { overdueBy: number }).overdueBy} day(s)`
+        : `due in ${(urgency as { daysLeft: number }).daysLeft} day(s)`;
+      return {
+        id: `SIG-INSP-${order.id}`,
+        type: "Inspection call due",
+        severity: overdue ? "High" : "Medium",
+        route: `/dispatch?orderId=${order.id}`,
+        recordId: order.id,
+        text: `${order.title}: inspection call ${when} (call by ${
+          (urgency as { callBy: string }).callBy
+        }) — inspector needs ~11 days to arrive.`,
+      };
+    });
+}
+
 // ── Aggregate ────────────────────────────────────────────────────────────────
 
 /**
@@ -231,6 +287,8 @@ export function computeSalesSignals(inputs: SignalInputs): Signal[] {
     ...leadSignals(inputs),
     ...followUpSignals(inputs),
     ...repeatOrderSignals(inputs),
+    ...gtpMissingSignals(inputs),
+    ...inspectionCallSignals(inputs),
   ].sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
 }
 
@@ -239,4 +297,6 @@ export const COMPUTED_SIGNAL_TYPES: ReadonlySet<SignalType> = new Set([
   "Hot lead",
   "Follow-up due",
   "Repeat-order due",
+  "GTP missing",
+  "Inspection call due",
 ]);
