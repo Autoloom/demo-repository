@@ -843,19 +843,6 @@ function GtpBuilderInner() {
                     />
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {drumCount(orderDetails) > 0 ? (
-                    <>
-                      That&rsquo;s <span className="font-medium text-foreground">{drumCount(orderDetails)} drum
-                      {drumCount(orderDetails) === 1 ? "" : "s"}</span>
-                      {orderDetails.totalLengthM % orderDetails.drumLengthM !== 0
-                        ? ` — the last one part-filled with ${orderDetails.totalLengthM % orderDetails.drumLengthM} m.`
-                        : ", all full."}
-                    </>
-                  ) : (
-                    "Enter a drum length to see how many drums this needs."
-                  )}
-                </p>
               </div>
             ) : null}
           </div>
