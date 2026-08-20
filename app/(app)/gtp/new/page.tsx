@@ -14,14 +14,15 @@ import {
   CircleAlert,
   FileText,
   LayoutTemplate,
+  Link as LinkIcon,
   Lock,
   Save,
   Users,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -247,7 +248,7 @@ function Moment({
   );
 }
 
-export default function GtpBuilderPage() {
+function GtpBuilderInner() {
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   // The size is chosen via pickers; `sizeInput` is the composed designation the parser reads.
   const [selection, setSelection] = useState<SizeSelection>(defaultSelection);
@@ -275,6 +276,9 @@ export default function GtpBuilderPage() {
   // Only AB cable is derivable today; the other lines render as disabled placeholders.
   const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
   const router = useRouter();
+  // Arriving from an order card: link the GTP to that order so it lands on the board and the
+  // production gate can see it.
+  const orderId = useSearchParams().get("orderId") ?? "";
   /** Manual edits, keyed by field. Applied over the derived values. */
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   /** Reasons for overriding a LOOKUP/CALC field — required, stored in the audit trail. */
@@ -384,6 +388,9 @@ export default function GtpBuilderPage() {
       const now = new Date().toISOString();
       const gtp: Gtp = {
         id: `GTP-${Date.now().toString(36).toUpperCase()}`,
+        // Linking to the order is what puts this GTP on the order board's card and lets the
+        // production gate see it. Without it the GTP exists but no board knows about it.
+        orderId: orderId || undefined,
         state: profile.state,
         boardName: profile.name,
         customerId: profile.id,
@@ -423,6 +430,8 @@ export default function GtpBuilderPage() {
           signOffs: gtp.signOffs,
         }),
       );
+      // Land on the record either way — it's where the stamps get recorded, which is the next
+      // real step whether or not this GTP came from an order card.
       router.push(`/gtp/review?gtpId=${gtp.id}`);
     } catch (err) {
       setSavedNotice(
@@ -485,6 +494,13 @@ export default function GtpBuilderPage() {
           Answer a few questions — the rest fills itself in from the IS standards and this
           customer&rsquo;s profile, and shows its working.
         </p>
+        {orderId ? (
+          <p className="flex items-center gap-1.5 text-sm text-primary">
+            <LinkIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            For order <span className="font-mono">{orderId}</span> — approving this GTP unblocks its
+            production.
+          </p>
+        ) : null}
       </header>
 
       {savedNotice ? (
@@ -988,4 +1004,16 @@ function renderPlayback(playback: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+/**
+ * useSearchParams needs a Suspense boundary, otherwise the whole route opts out of static
+ * rendering (and Next fails the build with a missing-suspense error).
+ */
+export default function GtpBuilderPage() {
+  return (
+    <Suspense fallback={<main className="mx-auto max-w-3xl p-4 sm:p-6 text-sm text-muted-foreground">Loading…</main>}>
+      <GtpBuilderInner />
+    </Suspense>
+  );
 }

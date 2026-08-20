@@ -645,16 +645,39 @@ function OrderCardContent({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* The GTP badge is the fix-it link: a gated card should let you act, not just worry.
+            No GTP yet → the builder; one exists → its record. */}
         {flags.gtpGated ? (
-          <Badge className={flags.gtpStatus ? "border-warning/30 bg-warning/10 text-warning" : "border-danger/30 bg-danger/10 text-danger"}>
-            <FileCheckIcon className="mr-1 size-3" />
-            {flags.gtpStatus ? `GTP ${flags.gtpStatus}` : "GTP missing"}
-          </Badge>
+          <Link
+            href={flags.gtpStatus ? `/gtp/review?orderId=${order.id}` : `/gtp/new?orderId=${order.id}`}
+            onClick={(event) => event.stopPropagation()}
+            title={flags.gtpStatus ? "Open this GTP" : "Create a GTP for this order"}
+            className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Badge
+              className={cn(
+                "hover:brightness-95",
+                flags.gtpStatus
+                  ? "border-warning/30 bg-warning/10 text-warning"
+                  : "border-danger/30 bg-danger/10 text-danger",
+              )}
+            >
+              <FileCheckIcon className="mr-1 size-3" />
+              {flags.gtpStatus ? `GTP ${flags.gtpStatus}` : "GTP missing"}
+            </Badge>
+          </Link>
         ) : flags.gtpStatus === "Approved" ? (
-          <Badge className="border-success/30 bg-success/10 text-success">
-            <FileCheckIcon className="mr-1 size-3" />
-            GTP ✓
-          </Badge>
+          <Link
+            href={`/gtp/review?orderId=${order.id}`}
+            onClick={(event) => event.stopPropagation()}
+            title="Open the approved GTP"
+            className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Badge className="border-success/30 bg-success/10 text-success hover:brightness-95">
+              <FileCheckIcon className="mr-1 size-3" />
+              GTP ✓
+            </Badge>
+          </Link>
         ) : null}
         {flags.machineHold ? (
           <Badge className="border-danger/30 bg-danger/10 text-danger">
