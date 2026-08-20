@@ -136,6 +136,89 @@ function SizePicker({
   );
 }
 
+/**
+ * A field's value cell.
+ *
+ * CHOICE/QUIRK fields are editable directly. LOOKUP/CALC fields are locked and need two
+ * deliberate actions plus a written reason before they can be changed — overriding a standards
+ * value should be rare and always leave a trace (design-doc §3.4, "two-speed friction").
+ */
+function FieldValueCell({
+  field,
+  override,
+  unlocked,
+  reason,
+  onEdit,
+  onRequestUnlock,
+  onReasonChange,
+  onRevert,
+}: {
+  field: ResolvedField;
+  override: string | undefined;
+  unlocked: boolean;
+  reason: string;
+  onEdit: (value: string) => void;
+  onRequestUnlock: () => void;
+  onReasonChange: (reason: string) => void;
+  onRevert: () => void;
+}) {
+  const isOverridden = override !== undefined;
+  const canEditNow = field.editable || unlocked;
+
+  if (!canEditNow) {
+    return (
+      <div className="flex items-center gap-2">
+        <Lock className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="font-mono">{String(field.value)}</span>
+        <button
+          type="button"
+          onClick={onRequestUnlock}
+          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Input
+          value={override ?? String(field.value)}
+          onChange={(e) => onEdit(e.target.value)}
+          className="h-9 max-w-56 font-mono text-sm"
+          aria-label={`${field.label} value`}
+        />
+        {isOverridden ? (
+          <button
+            type="button"
+            onClick={onRevert}
+            className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            Undo
+          </button>
+        ) : null}
+      </div>
+      {/* A locked field that's been unlocked must say why it was changed. */}
+      {!field.editable ? (
+        <div>
+          <Input
+            value={reason}
+            onChange={(e) => onReasonChange(e.target.value)}
+            placeholder="Why are you changing this? (required)"
+            className={cn("h-8 max-w-72 text-xs", isOverridden && !reason.trim() && "border-danger")}
+            aria-label={`Reason for changing ${field.label}`}
+          />
+          {isOverridden && !reason.trim() ? (
+            <p className="mt-1 text-xs text-danger">A reason is required to override a standards value.</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Moment({
   n,
   title,
@@ -182,15 +265,39 @@ export default function GtpBuilderPage() {
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   /** Field key the user was last sent to from a validation issue — briefly highlighted. */
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
+  /** Manual edits, keyed by field. Applied over the derived values. */
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  /** Reasons for overriding a LOOKUP/CALC field — required, stored in the audit trail. */
+  const [overrideReasons, setOverrideReasons] = useState<Record<string, string>>({});
+  /** Locked fields the user has deliberately unlocked (two actions before editing). */
+  const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
 
-  // Moment 4 — derive the full field map once a profile + confirmed construction exist.
+  // Moment 4 — derive the full field map once a profile + confirmed construction exist, then
+  // lay any manual overrides on top (the "order" layer of the three-layer cascade).
   const fields = useMemo<ResolvedField[]>(() => {
     if (!profile || !confirmed) return [];
-    return deriveFields(construction, profile.quirks);
-  }, [profile, construction, confirmed]);
+    const derived = deriveFields(construction, profile.quirks);
+    return derived.map((f) => {
+      const value = overrides[f.key];
+      if (value === undefined) return f;
+      return {
+        ...f,
+        value,
+        source: "override" as const,
+        // An overridden field is no longer an unsourced gap — the user supplied the value.
+        gap: false,
+        override: {
+          previous: f.value,
+          reason: overrideReasons[f.key] ?? "",
+          by: "current user",
+          at: new Date().toISOString(),
+        },
+      };
+    });
+  }, [profile, construction, confirmed, overrides, overrideReasons]);
 
   // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo; drum matches order.
   const validation = useMemo(() => {
@@ -209,6 +316,17 @@ export default function GtpBuilderPage() {
     setSelection(defaultSelection());
     setAckWarnings(false);
     setHighlightedField(null);
+  }
+
+  function setOverride(key: string, value: string) {
+    setOverrides((current) => ({ ...current, [key]: value }));
+  }
+
+  /** Undo a manual edit and go back to the standards-derived value. */
+  function revertOverride(key: string) {
+    setOverrides(({ [key]: _removed, ...rest }) => rest);
+    setOverrideReasons(({ [key]: _r, ...rest }) => rest);
+    setUnlockedFields((keys) => keys.filter((k) => k !== key));
   }
 
   /** Change one part of the size; any edit invalidates the earlier confirmation. */
@@ -272,8 +390,16 @@ export default function GtpBuilderPage() {
     });
   }
 
+  // An override of a locked (LOOKUP/CALC) value without a written reason blocks generation —
+  // otherwise the "reason required" rule would be decorative.
+  const missingReasons = fields.filter(
+    (f) => overrides[f.key] !== undefined && !f.editable && !(overrideReasons[f.key] ?? "").trim(),
+  );
+
   const canGenerate =
-    validation?.passesHardGate && (validation.warningCount === 0 || ackWarnings);
+    validation?.passesHardGate &&
+    (validation.warningCount === 0 || ackWarnings) &&
+    missingReasons.length === 0;
   const canSaveTemplate = Boolean(profile && choices && confirmed && templateName.trim());
 
   return (
@@ -600,15 +726,26 @@ export default function GtpBuilderPage() {
                     >
                       <td className="p-3 text-foreground">{f.label}</td>
                       <td className="p-3">
-                        <span className="flex items-center gap-1.5">
-                          {!f.editable ? <Lock className="h-3 w-3 text-muted-foreground" aria-hidden="true" /> : null}
-                          <span className="font-mono">{String(f.value)}</span>
-                        </span>
+                        <FieldValueCell
+                          field={f}
+                          override={overrides[f.key]}
+                          unlocked={unlockedFields.includes(f.key)}
+                          onEdit={(value) => setOverride(f.key, value)}
+                          onRequestUnlock={() => setUnlockedFields((keys) => [...keys, f.key])}
+                          reason={overrideReasons[f.key] ?? ""}
+                          onReasonChange={(reason) => setOverrideReasons((r) => ({ ...r, [f.key]: reason }))}
+                          onRevert={() => revertOverride(f.key)}
+                        />
                       </td>
                       <td className="p-3">
                         <span className={cn("mr-2 inline-block rounded-sm border px-1.5 py-0.5 text-[10px] font-medium", TAG_TONE[f.tag])}>
                           {f.tag}
                         </span>
+                        {overrides[f.key] !== undefined ? (
+                          <span className="mr-2 inline-block rounded-sm border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                            MANUAL OVERRIDE
+                          </span>
+                        ) : null}
                         <span className="text-xs text-muted-foreground">{f.trace}</span>
                       </td>
                     </tr>
@@ -686,6 +823,12 @@ export default function GtpBuilderPage() {
           {!canGenerate && validation.errorCount > 0 ? (
             <p className="mt-2 text-xs text-danger">
               Fix the errors above before generating — the GTP can&rsquo;t be issued on unverified data.
+            </p>
+          ) : null}
+          {missingReasons.length > 0 ? (
+            <p className="mt-2 text-xs text-danger">
+              You changed {missingReasons.length === 1 ? "a standards value" : `${missingReasons.length} standards values`} —
+              write why below {missingReasons.map((f) => `"${f.label}"`).join(", ")} before generating.
             </p>
           ) : null}
         </div>

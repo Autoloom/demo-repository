@@ -8,7 +8,6 @@ import {
   InboxIcon,
   ListIcon,
   LockKeyholeIcon,
-  PlusIcon,
   RefreshCwIcon,
   SaveIcon,
   StampIcon,
@@ -36,6 +35,7 @@ import {
   type Order,
 } from "@/lib/services";
 import { actorFromSession, useSessionStore } from "@/lib/store/session";
+import { GtpHome } from "./GtpHome";
 import { cn } from "@/lib/utils";
 
 type LoadState = {
@@ -287,14 +287,6 @@ export default function GtpPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          {canCreate ? (
-            <Button asChild>
-              <Link href="/gtp/new">
-                <PlusIcon className="mr-2 size-4" />
-                New GTP
-              </Link>
-            </Button>
-          ) : null}
           {canCreate && ordersWithoutGtp.length > 0 ? (
             <div className="min-w-64">
               <Label htmlFor="gtp-order">New GTP for order</Label>
@@ -320,6 +312,9 @@ export default function GtpPage() {
           </Button>
         </div>
       </header>
+
+      {/* The three things people come to this tab to do. */}
+      <GtpHome />
 
       {feedback ? (
         <div
