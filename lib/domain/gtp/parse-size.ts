@@ -77,20 +77,31 @@ function tokenize(input: string): RawGroup[] {
 function assignRoles(raw: RawGroup[]): ConductorGroup[] {
   if (raw.length === 0) return [];
 
-  const power = [...raw].sort((a, b) => b.count - a.count || b.sizeSqMm - a.sizeSqMm)[0];
+  // Power = the group with the most cores. On a tie (e.g. single-core service drops, where every
+  // group is 1C) fall back to WRITING ORDER, not size: the phase is conventionally written first,
+  // and a 1Cx16 + 1Cx25 cable is a 16 phase with a 25 messenger, not the other way round.
+  const power = [...raw].sort((a, b) => b.count - a.count || a.idx - b.idx)[0];
   const remaining = raw.filter((g) => g !== power).sort((a, b) => a.idx - b.idx);
 
   const groups: ConductorGroup[] = [{ role: "power", count: power.count, sizeSqMm: power.sizeSqMm }];
 
-  let messenger: RawGroup | undefined;
-  const dhbvnStyle = power.count > 1 && remaining.length > 0 && remaining.every((g) => g.bare);
-  if (dhbvnStyle) {
-    messenger = remaining[remaining.length - 1]; // last bare size = bare messenger wire
-  } else {
+  // The messenger is written LAST in both notations (DHBVN's Annexure-II note says so explicitly,
+  // and the counted style follows the same convention). Prefer that over guessing by size, which
+  // breaks when a street-light core happens to be larger than the messenger.
+  // Which group is the messenger? Real designations disagree on ordering:
+  //   • KRYFS/WBSEDCL write  3Cx70 + 1Cx50 + 1Cx16  → messenger SECOND, street light last
+  //   • DHBVN writes         3Cx25 + 16 + 25        → street light middle, messenger LAST
+  // So position alone can't decide. Use the IS 14255 pairing when it identifies exactly one
+  // candidate (the strongest evidence available), and fall back to last-written otherwise.
+  let messenger: RawGroup | undefined = remaining[remaining.length - 1];
+  if (remaining.length > 1) {
     const pairing = messengerSizeForPhase(power.sizeSqMm);
-    if (pairing) messenger = remaining.find((g) => g.sizeSqMm === pairing.messengerSqMm);
-    if (!messenger && remaining.length > 0) {
-      messenger = [...remaining].sort((a, b) => b.sizeSqMm - a.sizeSqMm)[0];
+    const matches = pairing ? remaining.filter((g) => g.sizeSqMm === pairing.messengerSqMm) : [];
+    if (matches.length === 1) {
+      messenger = matches[0];
+    } else if (remaining.every((g) => g.bare)) {
+      // DHBVN bare-size shorthand is explicit that the last value is the messenger.
+      messenger = remaining[remaining.length - 1];
     }
   }
   if (messenger) {

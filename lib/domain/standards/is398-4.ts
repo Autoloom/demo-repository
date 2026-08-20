@@ -85,4 +85,7 @@ export function findMessengerRow(csaSqMm: number): MessengerRow | undefined {
   return IS398_4_MESSENGER.find((r) => r.csaSqMm === csaSqMm);
 }
 
+/** Messenger sizes with encoded alloy data — the closed set the size picker offers. */
+export const IS398_4_ENCODED_SIZES: number[] = IS398_4_MESSENGER.map((r) => r.csaSqMm);
+
 export const IS398_4_EDITION = "1994";

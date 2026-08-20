@@ -16,7 +16,6 @@ import {
   LayoutTemplate,
   Lock,
   Save,
-  Search,
   Users,
   X,
 } from "lucide-react";
@@ -26,8 +25,20 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  buildSizeString,
+  constructionFromSelection,
+  CORE_COUNT_OPTIONS,
+  defaultSelection,
+  describeSelection,
+  MESSENGER_SIZE_OPTIONS,
+  pairedMessengerFor,
+  PHASE_SIZE_OPTIONS,
+  selectionFromSizeString,
+  STREET_LIGHT_SIZE_OPTIONS,
+  type SizeSelection,
+} from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
-import { parseSizeString } from "@/lib/domain/gtp/parse-size";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
 import {
   loadTemplates,
@@ -77,6 +88,54 @@ function getTemplatesSnapshot(version: number): GtpTemplate[] {
   return templatesCache.value;
 }
 
+/** A fixed symbol printed between the size pickers (the "C x" and "+" the user never types). */
+function Symbol({ children }: { children: React.ReactNode }) {
+  return (
+    <span aria-hidden="true" className="pb-2 text-base font-medium text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+/** One part of the cable designation. Closed set — an unsupported size can't be expressed. */
+function SizePicker({
+  id,
+  label,
+  value,
+  options,
+  allowNone,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  options: readonly number[];
+  /** Adds a "None" option (value 0) — used by the optional street-light core. */
+  allowNone?: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={id} className="text-xs text-muted-foreground">
+        {label}
+      </Label>
+      <select
+        id={id}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-11 min-w-20 rounded-md border border-input bg-background px-3 text-center font-mono text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {allowNone ? <option value={0}>None</option> : null}
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function Moment({
   n,
   title,
@@ -101,7 +160,9 @@ function Moment({
 
 export default function GtpBuilderPage() {
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
-  const [sizeInput, setSizeInput] = useState("");
+  // The size is chosen via pickers; `sizeInput` is the composed designation the parser reads.
+  const [selection, setSelection] = useState<SizeSelection>(defaultSelection);
+  const sizeInput = buildSizeString(selection);
   const [confirmed, setConfirmed] = useState(false);
   const [choices, setChoices] = useState<Choices | null>(null);
   const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -122,14 +183,14 @@ export default function GtpBuilderPage() {
   /** Field key the user was last sent to from a validation issue — briefly highlighted. */
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
 
-  // Moment 2 — parse live as they type; confirm gates the rest.
-  const parsed = useMemo(() => (sizeInput.trim() ? parseSizeString(sizeInput) : null), [sizeInput]);
+  // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
+  const construction = useMemo(() => constructionFromSelection(selection), [selection]);
 
   // Moment 4 — derive the full field map once a profile + confirmed construction exist.
   const fields = useMemo<ResolvedField[]>(() => {
-    if (!profile || !parsed?.ok || !confirmed) return [];
-    return deriveFields(parsed.construction, profile.quirks);
-  }, [profile, parsed, confirmed]);
+    if (!profile || !confirmed) return [];
+    return deriveFields(construction, profile.quirks);
+  }, [profile, construction, confirmed]);
 
   // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo; drum matches order.
   const validation = useMemo(() => {
@@ -145,13 +206,19 @@ export default function GtpBuilderPage() {
     setProfile(p);
     setConfirmed(false);
     setChoices(null);
-    setSizeInput("");
+    setSelection(defaultSelection());
     setAckWarnings(false);
     setHighlightedField(null);
   }
 
+  /** Change one part of the size; any edit invalidates the earlier confirmation. */
+  function updateSelection(patch: Partial<SizeSelection>) {
+    setSelection((current) => ({ ...current, ...patch }));
+    setConfirmed(false);
+  }
+
   function confirmSize() {
-    if (!profile || !parsed?.ok) return;
+    if (!profile) return;
     setConfirmed(true);
     setChoices({
       aluminiumVendor: profile.choices.aluminiumVendors[0],
@@ -166,7 +233,8 @@ export default function GtpBuilderPage() {
     const p = findProfile(template.profileId);
     if (!p) return;
     setProfile(p);
-    setSizeInput(template.sizeInput);
+    // Templates store the designation string; recover the picker state from it.
+    setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
     setChoices(template.choices);
     setConfirmed(true);
     setAckWarnings(false);
@@ -347,44 +415,81 @@ export default function GtpBuilderPage() {
       {profile ? (
         <Moment n={2} title="What's the cable?">
           <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="size">Cable size (type it the way it&rsquo;s on the order)</Label>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                <Input
-                  id="size"
-                  value={sizeInput}
-                  placeholder="3Cx70 + 1Cx50 + 1Cx16"
-                  className="pl-9"
-                  onChange={(e) => {
-                    setSizeInput(e.target.value);
-                    setConfirmed(false);
-                  }}
-                />
-              </div>
+            <p className="text-sm text-muted-foreground">
+              Pick each part of the cable. Only sizes we have IS tables for are offered, so the
+              cable you build here is always one we can produce a GTP for.
+            </p>
+
+            {/* Segmented pickers — the fixed symbols are printed, not typed. */}
+            <div className="flex flex-wrap items-end gap-x-2 gap-y-3 rounded-md border border-border bg-muted/50 p-4">
+              <SizePicker
+                id="core-count"
+                label="Cores"
+                value={selection.coreCount}
+                options={CORE_COUNT_OPTIONS}
+                onChange={(v) => updateSelection({ coreCount: v })}
+              />
+              <Symbol>C &times;</Symbol>
+              <SizePicker
+                id="phase-size"
+                label="Phase size"
+                value={selection.phaseSizeSqMm}
+                options={PHASE_SIZE_OPTIONS}
+                onChange={(v) =>
+                  // Re-pair the messenger whenever the phase size changes (IS 14255).
+                  updateSelection({
+                    phaseSizeSqMm: v,
+                    messengerSizeSqMm: pairedMessengerFor(v)?.messengerSqMm ?? selection.messengerSizeSqMm,
+                  })
+                }
+              />
+              <Symbol>+</Symbol>
+              <SizePicker
+                id="street-light"
+                label="Street light"
+                value={selection.streetLightSizeSqMm ?? 0}
+                options={STREET_LIGHT_SIZE_OPTIONS}
+                allowNone
+                onChange={(v) => updateSelection({ streetLightSizeSqMm: v === 0 ? null : v })}
+              />
+              <Symbol>+</Symbol>
+              <SizePicker
+                id="messenger"
+                label="Messenger"
+                value={selection.messengerSizeSqMm}
+                options={MESSENGER_SIZE_OPTIONS}
+                onChange={(v) => updateSelection({ messengerSizeSqMm: v })}
+              />
+              <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
             </div>
 
-            {parsed && !parsed.ok ? (
-              <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
-                <p className="text-foreground">{parsed.reason}</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {parsed.suggestions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setSizeInput(s)}
-                      className="rounded-sm border border-border bg-card px-2 py-1 font-mono text-xs hover:bg-muted"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* Why the messenger is what it is — and a nudge when it's been overridden. */}
+            {pairedMessengerFor(selection.phaseSizeSqMm) ? (
+              <p className="text-xs text-muted-foreground">
+                {pairedMessengerFor(selection.phaseSizeSqMm)!.messengerSqMm === selection.messengerSizeSqMm ? (
+                  <>
+                    Messenger auto-filled from{" "}
+                    {pairedMessengerFor(selection.phaseSizeSqMm)!.ref}. You can change it if the
+                    order says otherwise.
+                  </>
+                ) : (
+                  <span className="text-warning">
+                    Note: {pairedMessengerFor(selection.phaseSizeSqMm)!.ref} pairs{" "}
+                    {selection.phaseSizeSqMm} sq mm with a{" "}
+                    {pairedMessengerFor(selection.phaseSizeSqMm)!.messengerSqMm} sq mm messenger —
+                    you&rsquo;ve chosen {selection.messengerSizeSqMm}.
+                  </span>
+                )}
+              </p>
             ) : null}
 
-            {parsed?.ok ? (
+            <p className="font-mono text-xs text-muted-foreground">
+              Designation: {sizeInput}
+            </p>
+
+            {true ? (
               <div className="rounded-md border border-border bg-muted p-3">
-                <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(parsed.playback) }} />
+                <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(`${describeSelection(selection)} Correct?`) }} />
                 {!confirmed ? (
                   <Button type="button" size="sm" className="mt-3" onClick={confirmSize}>
                     Yes, continue
