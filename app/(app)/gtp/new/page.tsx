@@ -419,6 +419,8 @@ export default function GtpBuilderPage() {
           state: profile.state,
           designation: sizeInput,
           standardsPin: profile.standardsPin,
+          // A freshly generated GTP has no stamps yet — the block prints blank lines to sign.
+          signOffs: gtp.signOffs,
         }),
       );
       router.push(`/gtp/review?gtpId=${gtp.id}`);

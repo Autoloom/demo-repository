@@ -33,7 +33,12 @@ export interface GtpPdfMeta {
   state: string;
   designation: string;
   standardsPin?: { standardId: string; edition: string }[];
+  /** Stamps already recorded. Roles without one print as blank signature lines. */
+  signOffs?: { role: string; name: string; stampedAt: string }[];
 }
+
+/** The two stamps a GTP needs before production can start. */
+const REQUIRED_STAMPS = ["Divisional Engineer", "Assistant Engineer"] as const;
 
 /**
  * Build the printable document.
@@ -71,6 +76,18 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
       },
     });
   }
+
+  // Sign-off block. This is the point of the document — it exists to be stamped — so unsigned
+  // roles print as blank ruled lines for a wet signature rather than being omitted.
+  sections.push({
+    title: "Sign-off",
+    lines: REQUIRED_STAMPS.flatMap((role) => {
+      const stamp = meta.signOffs?.find((s) => s.role === role);
+      return stamp
+        ? [`${role}: ${stamp.name} — stamped ${stamp.stampedAt.slice(0, 10)}`, ""]
+        : [`${role}: ______________________________`, "Name / signature / date / office stamp", ""];
+    }),
+  });
 
   // The provenance appendix is what makes the document trustworthy rather than a black box.
   sections.push({
