@@ -40,6 +40,8 @@ import {
   type SizeSelection,
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
+import { buildGtpPdfDocument } from "@/lib/domain/gtp/pdf-document";
+import { PRODUCT_LINES } from "@/lib/domain/gtp/product-lines";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
 import {
   loadTemplates,
@@ -48,8 +50,9 @@ import {
   templatesForProfile,
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
-import type { ResolvedField } from "@/lib/domain/gtp/types";
+import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
+import { downloadPdf } from "@/lib/domain/pdf";
 import { gtpService, type Gtp } from "@/lib/services";
 import { actorFromSession } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
@@ -269,6 +272,8 @@ export default function GtpBuilderPage() {
   /** Field key the user was last sent to from a validation issue — briefly highlighted. */
   const [highlightedField, setHighlightedField] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  // Only AB cable is derivable today; the other lines render as disabled placeholders.
+  const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
   const router = useRouter();
   /** Manual edits, keyed by field. Applied over the derived values. */
   const [overrides, setOverrides] = useState<Record<string, string>>({});
@@ -402,6 +407,20 @@ export default function GtpBuilderPage() {
         updatedAt: now,
       };
       await gtpService.save(gtp, actorFromSession());
+      // The document is the deliverable — hand it over as part of generating, not as a
+      // separate step the user has to discover.
+      downloadPdf(
+        `${gtp.id}-${profile.name.replace(/\s+/g, "-")}`,
+        buildGtpPdfDocument(fields, {
+          gtpId: gtp.id,
+          version: gtp.version,
+          status: gtp.status,
+          customerName: profile.name,
+          state: profile.state,
+          designation: sizeInput,
+          standardsPin: profile.standardsPin,
+        }),
+      );
       router.push(`/gtp/review?gtpId=${gtp.id}`);
     } catch (err) {
       setSavedNotice(
@@ -530,6 +549,52 @@ export default function GtpBuilderPage() {
             </>
           )}
         </section>
+      ) : null}
+
+      {/* Cable type — the first real choice, since it decides which standards apply. Planned
+          lines are shown rather than hidden so the roadmap is visible and expectations are set. */}
+      {startMode === "scratch" ? (
+      <section className="rounded-lg border border-border bg-card p-5 shadow-sm">
+        <h2 className="text-base font-semibold text-foreground">What kind of cable?</h2>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          {PRODUCT_LINES.map((line) => {
+            const isAvailable = line.status === "available";
+            const isActive = isAvailable && productLine === line.id;
+            return (
+              <button
+                key={line.id}
+                type="button"
+                disabled={!isAvailable}
+                aria-pressed={isActive}
+                onClick={() => isAvailable && setProductLine(line.id)}
+                title={line.blockedBy}
+                className={cn(
+                  "flex flex-col items-start gap-1 rounded-md border p-4 text-left transition-colors",
+                  isActive && "border-primary bg-primary/5",
+                  !isActive && isAvailable && "border-border hover:bg-muted",
+                  !isAvailable && "cursor-not-allowed border-dashed border-border opacity-60",
+                )}
+              >
+                <span className="flex w-full items-start justify-between gap-2">
+                  <span className="font-medium text-foreground">{line.name}</span>
+                  {!isAvailable ? (
+                    <span className="shrink-0 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                      Coming soon
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-sm text-muted-foreground">{line.description}</span>
+                <span className="mt-1 font-mono text-xs text-muted-foreground">
+                  {line.standards.join(" · ")}
+                </span>
+                {!isAvailable && line.blockedBy ? (
+                  <span className="mt-1 text-xs text-warning">{line.blockedBy}</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </section>
       ) : null}
 
       {/* Moment 1 — Who is this for? */}
