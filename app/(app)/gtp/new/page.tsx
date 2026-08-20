@@ -13,19 +13,29 @@ import {
   ChevronDown,
   CircleAlert,
   FileText,
+  LayoutTemplate,
   Lock,
+  Save,
   Search,
   Users,
+  X,
 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { parseSizeString } from "@/lib/domain/gtp/parse-size";
-import { CUSTOMER_PROFILES, type CustomerProfile } from "@/lib/domain/gtp/profiles";
+import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
+import {
+  loadTemplates,
+  recordTemplateUse,
+  saveTemplate,
+  templatesForProfile,
+  type GtpTemplate,
+} from "@/lib/domain/gtp/templates";
 import type { ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
 import { cn } from "@/lib/utils";
@@ -43,6 +53,23 @@ interface Choices {
   xlpeVendor: string;
   curing: string;
   drumLength: string;
+}
+
+/** Stable empty array so the SSR snapshot never changes identity between renders. */
+const EMPTY_TEMPLATES: GtpTemplate[] = [];
+
+/** Templates only change via this page's own actions, so no external subscription is needed. */
+function subscribeToTemplates(): () => void {
+  return () => {};
+}
+
+/** Cached snapshot — useSyncExternalStore requires referential stability between versions. */
+let templatesCache: { version: number; value: GtpTemplate[] } | null = null;
+function getTemplatesSnapshot(version: number): GtpTemplate[] {
+  if (!templatesCache || templatesCache.version !== version) {
+    templatesCache = { version, value: loadTemplates() };
+  }
+  return templatesCache.value;
 }
 
 function Moment({
@@ -74,6 +101,19 @@ export default function GtpBuilderPage() {
   const [choices, setChoices] = useState<Choices | null>(null);
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const [ackWarnings, setAckWarnings] = useState(false);
+
+  // Templates = saved starting points (customer + size + choices), persisted in localStorage.
+  // useSyncExternalStore keeps SSR (empty) and client (stored) in step without a hydration
+  // mismatch; `version` bumps re-read the store after a save/delete/use.
+  const [version, setVersion] = useState(0);
+  const templates = useSyncExternalStore(
+    subscribeToTemplates,
+    () => getTemplatesSnapshot(version),
+    () => EMPTY_TEMPLATES,
+  );
+  const [startMode, setStartMode] = useState<"choose" | "scratch">("choose");
+  const [templateName, setTemplateName] = useState("");
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   // Moment 2 — parse live as they type; confirm gates the rest.
   const parsed = useMemo(() => (sizeInput.trim() ? parseSizeString(sizeInput) : null), [sizeInput]);
@@ -113,8 +153,34 @@ export default function GtpBuilderPage() {
     });
   }
 
+  /** Start from a saved template: restore its inputs, then re-derive from live IS tables. */
+  function startFromTemplate(template: GtpTemplate) {
+    const p = findProfile(template.profileId);
+    if (!p) return;
+    setProfile(p);
+    setSizeInput(template.sizeInput);
+    setChoices(template.choices);
+    setConfirmed(true);
+    setAckWarnings(false);
+    setStartMode("scratch");
+    recordTemplateUse(template.id);
+    setVersion((v) => v + 1);
+    setSavedNotice(`Started from "${template.name}". Every value below was re-derived from the current IS tables.`);
+  }
+
+  /** Save the inputs just used as a reusable named starting point. */
+  function handleSaveTemplate() {
+    const name = templateName.trim();
+    if (!name || !profile || !choices) return;
+    saveTemplate({ name, profileId: profile.id, sizeInput, choices });
+    setVersion((v) => v + 1);
+    setTemplateName("");
+    setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
+  }
+
   const canGenerate =
     validation?.passesHardGate && (validation.warningCount === 0 || ackWarnings);
+  const canSaveTemplate = Boolean(profile && choices && confirmed && templateName.trim());
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6">
@@ -131,7 +197,74 @@ export default function GtpBuilderPage() {
         </p>
       </header>
 
+      {savedNotice ? (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-success/30 bg-success/10 p-3 text-sm" role="status">
+          <span className="text-foreground">{savedNotice}</span>
+          <button type="button" onClick={() => setSavedNotice(null)} aria-label="Dismiss" className="shrink-0 text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
+      {/* Start step — templates lead when they exist (playbook rule #3: lead with the shortcut). */}
+      {startMode === "choose" ? (
+        <section className="rounded-lg border border-border bg-card p-5 shadow-sm">
+          <h2 className="text-base font-semibold text-foreground">How do you want to start?</h2>
+          {templates.length > 0 ? (
+            <>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Start from one of your saved templates — it fills in the customer, size and answers.
+              </p>
+              <ul className="mt-4 space-y-2">
+                {templates.map((t) => {
+                  const p = findProfile(t.profileId);
+                  return (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        onClick={() => startFromTemplate(t)}
+                        className="flex w-full items-center justify-between gap-3 rounded-md border border-border p-4 text-left hover:bg-muted"
+                      >
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-2 font-medium text-foreground">
+                            <LayoutTemplate className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                            {t.name}
+                          </span>
+                          <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+                            {p?.name ?? t.profileId} · <span className="font-mono">{t.sizeInput}</span>
+                            {t.useCount > 0 ? ` · used ${t.useCount}×` : ""}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-sm font-medium text-primary">Use →</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <button
+                type="button"
+                onClick={() => setStartMode("scratch")}
+                className="mt-4 text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+              >
+                Or start from scratch
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-sm text-muted-foreground">
+                You haven&rsquo;t saved any templates yet. Build a GTP below, then save its answers as a
+                template so the next one takes a few taps.
+              </p>
+              <Button type="button" className="mt-4" onClick={() => setStartMode("scratch")}>
+                Start a new GTP
+              </Button>
+            </>
+          )}
+        </section>
+      ) : null}
+
       {/* Moment 1 — Who is this for? */}
+      {startMode === "scratch" ? (
       <Moment n={1} title="Who is this GTP for?">
         <div className="grid gap-3 sm:grid-cols-2">
           {CUSTOMER_PROFILES.map((p) => {
@@ -159,7 +292,30 @@ export default function GtpBuilderPage() {
             );
           })}
         </div>
+
+        {/* This customer's saved templates — the fastest path once one exists. */}
+        {profile && templatesForProfile(templates, profile.id).length > 0 ? (
+          <div className="mt-4 border-t border-border pt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Saved templates for {profile.name}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {templatesForProfile(templates, profile.id).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => startFromTemplate(t)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted"
+                >
+                  <LayoutTemplate className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </Moment>
+      ) : null}
 
       {/* Moment 2 — What's the cable? */}
       {profile ? (
@@ -250,6 +406,27 @@ export default function GtpBuilderPage() {
           <p className="mt-3 text-xs text-muted-foreground">
             Pre-filled from {profile.name}&rsquo;s last approved GTPs. Change only what&rsquo;s different.
           </p>
+
+          {/* Save these inputs as a reusable starting point. Secondary to Generate. */}
+          <div className="mt-4 border-t border-border pt-4">
+            <Label htmlFor="tpl-name">Save these answers as a template (optional)</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Saves the customer, size and answers above — not the calculated values, so it stays
+              correct when standards change.
+            </p>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+              <Input
+                id="tpl-name"
+                value={templateName}
+                placeholder={`e.g. ${profile.name} ${sizeInput || "3-core AB"} standard`}
+                onChange={(e) => setTemplateName(e.target.value)}
+              />
+              <Button type="button" variant="secondary" disabled={!canSaveTemplate} onClick={handleSaveTemplate}>
+                <Save className="mr-2 h-4 w-4" aria-hidden="true" />
+                Save template
+              </Button>
+            </div>
+          </div>
         </Moment>
       ) : null}
 
