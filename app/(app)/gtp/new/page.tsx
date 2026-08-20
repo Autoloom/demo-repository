@@ -55,6 +55,11 @@ interface Choices {
   drumLength: string;
 }
 
+/** DOM id for a field's row, so validation issues can link straight to it. */
+function fieldRowId(key: string): string {
+  return `field-${key.replace(/\./g, "-")}`;
+}
+
 /** Stable empty array so the SSR snapshot never changes identity between renders. */
 const EMPTY_TEMPLATES: GtpTemplate[] = [];
 
@@ -114,6 +119,8 @@ export default function GtpBuilderPage() {
   const [startMode, setStartMode] = useState<"choose" | "scratch">("choose");
   const [templateName, setTemplateName] = useState("");
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  /** Field key the user was last sent to from a validation issue — briefly highlighted. */
+  const [highlightedField, setHighlightedField] = useState<string | null>(null);
 
   // Moment 2 — parse live as they type; confirm gates the rest.
   const parsed = useMemo(() => (sizeInput.trim() ? parseSizeString(sizeInput) : null), [sizeInput]);
@@ -140,6 +147,7 @@ export default function GtpBuilderPage() {
     setChoices(null);
     setSizeInput("");
     setAckWarnings(false);
+    setHighlightedField(null);
   }
 
   function confirmSize() {
@@ -176,6 +184,24 @@ export default function GtpBuilderPage() {
     setVersion((v) => v + 1);
     setTemplateName("");
     setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
+  }
+
+  /**
+   * Jump from a validation issue to the field it's about. The field table is collapsed by
+   * default, so expand it first, then scroll/focus once the row has actually rendered —
+   * otherwise the click looks like it did nothing.
+   */
+  function goToField(fieldKey: string) {
+    const isDerivedField = fields.some((f) => f.key === fieldKey);
+    if (!isDerivedField) return; // e.g. "derating" — no row to jump to (see issue rendering)
+    setFieldsOpen(true);
+    setHighlightedField(fieldKey);
+    requestAnimationFrame(() => {
+      const row = document.getElementById(fieldRowId(fieldKey));
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.focus({ preventScroll: true });
+    });
   }
 
   const canGenerate =
@@ -456,7 +482,17 @@ export default function GtpBuilderPage() {
                 </thead>
                 <tbody>
                   {fields.map((f) => (
-                    <tr key={f.key} className={cn("border-t border-border", f.gap && "bg-danger/5")}>
+                    <tr
+                      key={f.key}
+                      id={fieldRowId(f.key)}
+                      tabIndex={-1}
+                      className={cn(
+                        "scroll-mt-24 border-t border-border transition-colors",
+                        f.gap && "bg-danger/5",
+                        // Flash the row the user was sent to, so the jump is unmistakable.
+                        highlightedField === f.key && "bg-primary/10 ring-2 ring-inset ring-primary",
+                      )}
+                    >
                       <td className="p-3 text-foreground">{f.label}</td>
                       <td className="p-3">
                         <span className="flex items-center gap-1.5">
@@ -484,15 +520,40 @@ export default function GtpBuilderPage() {
         <div className="sticky bottom-4 rounded-lg border border-border bg-card p-4 shadow-lg">
           {validation.issues.length > 0 ? (
             <ul className="mb-3 space-y-2">
-              {validation.issues.map((issue) => (
-                <li key={issue.id} className="flex items-start gap-2 text-sm">
+              {validation.issues.map((issue) => {
+                // Only link issues whose field actually has a row to jump to.
+                const target = issue.fieldKeys.find((k) => fields.some((f) => f.key === k));
+                const icon = (
                   <CircleAlert
                     className={cn("mt-0.5 h-4 w-4 shrink-0", issue.severity === "error" ? "text-danger" : "text-warning")}
                     aria-hidden="true"
                   />
-                  <span className="text-foreground">{issue.message}</span>
-                </li>
-              ))}
+                );
+                return (
+                  <li key={issue.id} className="text-sm">
+                    {target ? (
+                      <button
+                        type="button"
+                        onClick={() => goToField(target)}
+                        className="flex w-full items-start gap-2 rounded-sm text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {icon}
+                        <span className="text-foreground">
+                          {issue.message}{" "}
+                          <span className="whitespace-nowrap font-medium text-primary underline underline-offset-2">
+                            Show me
+                          </span>
+                        </span>
+                      </button>
+                    ) : (
+                      <span className="flex items-start gap-2">
+                        {icon}
+                        <span className="text-foreground">{issue.message}</span>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="mb-3 flex items-center gap-1.5 text-sm text-success">
