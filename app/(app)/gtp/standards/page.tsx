@@ -19,6 +19,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { IS14255_1995_EDITION, IS14255_1995_MESSENGER_PAIRING, IS14255_1995_PHASE } from "@/lib/domain/standards/is14255-1995";
 import { IS398_4_EDITION, IS398_4_MESSENGER } from "@/lib/domain/standards/is398-4";
+import { PRODUCT_LINES } from "@/lib/domain/gtp/product-lines";
 import { IS8130_2013_CLASS2_AL, IS8130_2013_EDITION } from "@/lib/domain/standards/is8130-2013";
 import { cn } from "@/lib/utils";
 
@@ -75,7 +76,8 @@ export default function StandardsPage() {
           </Link>
         </div>
         <p className="text-sm text-muted-foreground">
-          These are the tables every GTP is derived from. Each row shows the clause it came from.
+          The IS tables GTPs are derived from, grouped by cable type. Each row shows the clause it
+          came from.
         </p>
       </header>
 
@@ -132,6 +134,19 @@ export default function StandardsPage() {
           </p>
         </div>
       </div>
+
+      {/* Standards are grouped by the product line they serve. Every table below is AB-specific,
+          which wasn't obvious when they were a flat list. */}
+      <div className="flex items-center gap-3 pt-2">
+        <h2 className="text-lg font-semibold text-foreground">Aerial Bunched (AB) cable</h2>
+        <span className="rounded-sm border border-success/30 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+          In use
+        </span>
+        <span className="h-px flex-1 bg-border" aria-hidden="true" />
+      </div>
+      <p className="-mt-2 text-sm text-muted-foreground">
+        The four tables every AB-cable GTP is derived from.
+      </p>
 
       <StandardSection
         id="is8130"
@@ -264,6 +279,30 @@ export default function StandardsPage() {
           </tbody>
         </table>
       </StandardSection>
+
+      {/* Other product lines, from the same registry the builder uses — so this page can't claim
+          a line is coming that the builder doesn't offer, or vice versa. */}
+      {PRODUCT_LINES.filter((line) => line.status === "planned").map((line) => (
+        <section key={line.id} className="space-y-2">
+          <div className="flex items-center gap-3 pt-2">
+            <h2 className="text-lg font-semibold text-muted-foreground">{line.name}</h2>
+            <span className="rounded-sm border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase text-muted-foreground">
+              Not encoded yet
+            </span>
+            <span className="h-px flex-1 bg-border" aria-hidden="true" />
+          </div>
+          <div className="rounded-lg border border-dashed border-border bg-muted/30 p-4">
+            <p className="text-sm text-muted-foreground">{line.description}</p>
+            <p className="mt-2 text-sm text-foreground">
+              Would be derived from:{" "}
+              <span className="font-mono text-xs">{line.standards.join(" · ")}</span>
+            </p>
+            {line.blockedBy ? (
+              <p className="mt-2 text-xs text-warning">{line.blockedBy}</p>
+            ) : null}
+          </div>
+        </section>
+      ))}
     </main>
   );
 }
