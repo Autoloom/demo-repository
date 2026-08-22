@@ -12,6 +12,7 @@ export const ROLE_PERMISSIONS: Record<Exclude<Role, "Owner">, Set<PermissionKey>
     "edit:quote",
     "transition:quote",
     "view:order",
+    "view:gtp",
     "view:contact",
     "create:contact",
     "edit:contact",
@@ -29,6 +30,10 @@ export const ROLE_PERMISSIONS: Record<Exclude<Role, "Owner">, Set<PermissionKey>
     "view:order",
     "edit:order",
     "transition:order",
+    "view:gtp",
+    "create:gtp",
+    "edit:gtp",
+    "transition:gtp",
     "view:jobcard",
     "edit:jobcard",
     "view:dispatch",
@@ -42,6 +47,7 @@ export const ROLE_PERMISSIONS: Record<Exclude<Role, "Owner">, Set<PermissionKey>
   Accounts: new Set([
     "view:dashboard",
     "view:order",
+    "view:gtp",
     "transition:order",
     "view:dispatch",
     "view:invoice",
@@ -89,6 +95,7 @@ export function resourceForPath(pathname: string): Resource {
   if (pathname.startsWith("/contacts")) return "contact";
   if (pathname.startsWith("/compliance")) return "compliance";
   if (pathname.startsWith("/orders")) return "order";
+  if (pathname.startsWith("/gtp")) return "gtp";
   if (pathname.startsWith("/job-card")) return "jobcard";
   if (pathname.startsWith("/dispatch")) return "dispatch";
   if (pathname.startsWith("/accounting")) return "invoice";

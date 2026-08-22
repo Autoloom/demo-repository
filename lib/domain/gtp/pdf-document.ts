@@ -47,10 +47,12 @@ const REQUIRED_STAMPS = ["Divisional Engineer", "Assistant Engineer"] as const;
 /**
  * Build the printable document.
  *
- * The tables print particular + value only — the internal tag (LOOKUP/CALC/QUIRK/FIXED) is
- * working-out for the operator, not something a discom's schedule asks for. Provenance still
- * reaches the reader via the derivation record at the end, which names the standards pin and
- * every override with its reason.
+ * The tables print particular + value only. Two things are deliberately withheld from the
+ * customer-facing document:
+ *   • the internal tag (LOOKUP/CALC/QUIRK/FIXED) — working-out for the operator, not something
+ *     a discom's schedule asks for;
+ *   • internal override reasons (build-plan-v2 D10) — operational context that must never be
+ *     disclosed to the buyer. Both stay fully visible inside the app.
  */
 export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): PdfDocument {
   const used = new Set<string>();
@@ -115,19 +117,23 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     }),
   });
 
-  // The provenance appendix is what makes the document trustworthy rather than a black box.
-  sections.push({
-    title: "Derivation record",
-    lines: [
-      ...(meta.standardsPin?.length
-        ? [`Standards: ${meta.standardsPin.map((p) => `${p.standardId}:${p.edition}`).join(" · ")}`]
-        : []),
-      ...fields
-        .filter((f) => f.override)
-        .map((f) => `OVERRIDE — ${f.label}: "${f.override!.previous}" → "${f.value}". Reason: ${f.override!.reason}`),
-      ...(fields.some((f) => f.override) ? [] : ["No manual overrides — every value derived from the standards above."]),
-    ],
-  });
+  // Standards provenance — which editions this document was derived from. This belongs on the
+  // customer-facing GTP: it tells the approving engineer what the values were computed against.
+  //
+  // ⚠️ INTERNAL NOTES ARE DELIBERATELY EXCLUDED (build-plan-v2 D10). An earlier version of this
+  // function printed every override with its reason, on the theory that showing the working made
+  // the document trustworthy. That is wrong for a *customer-facing* document: override reasons
+  // are internal operational context ("customer asked verbally", "matching their last order") and
+  // disclosing them to the buyer exposes our reasoning. Overrides remain fully visible inside the
+  // app and on the stored record; they never reach the PDF. Guarded by a regression test.
+  if (meta.standardsPin?.length) {
+    sections.push({
+      title: "Standards",
+      lines: [
+        `Derived from: ${meta.standardsPin.map((p) => `${p.standardId}:${p.edition}`).join(" · ")}`,
+      ],
+    });
+  }
 
   return {
     title: `Guaranteed Technical Particulars — ${meta.customerName}`,

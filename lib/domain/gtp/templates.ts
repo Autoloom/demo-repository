@@ -25,8 +25,6 @@ import type { CustomerProfile } from "./profiles";
 
 /** The CHOICE answers a template carries. Mirrors the builder's Moment-3 questions. */
 export interface TemplateChoices {
-  aluminiumVendor: string;
-  xlpeVendor: string;
   curing: string;
   drumLength: string;
 }

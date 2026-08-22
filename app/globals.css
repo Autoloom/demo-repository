@@ -240,3 +240,29 @@
     width: 100%;
   }
 }
+
+/*
+  Board-format GTP sheet (/gtp → "Board format" view). The sheet prints as the
+  submission document itself: A4 portrait, no app chrome (hidden via print:hidden
+  utilities on every other card), table rows kept whole across page breaks.
+*/
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 14mm;
+  }
+
+  .gtp-print-sheet {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+    overflow: visible;
+  }
+
+  .gtp-sheet-inner {
+    min-width: 0;
+  }
+
+  .gtp-print-sheet tr {
+    break-inside: avoid;
+  }
+}

@@ -567,7 +567,7 @@ export function GtpRecordsClient() {
                       {[
                         { label: "Job card", href: linkedOrder ? `/job-card?orderId=${linkedOrder.id}` : "/job-card", icon: ClipboardListIcon },
                         { label: "Quotation", href: linkedOrder ? `/quote?orderId=${linkedOrder.id}` : "/quote", icon: ReceiptIcon },
-                        { label: "Drum sticker", href: linkedOrder ? `/dispatch?orderId=${linkedOrder.id}` : "/dispatch", icon: TagIcon },
+                        { label: "Drum marking", href: linkedOrder ? `/dispatch?orderId=${linkedOrder.id}` : "/dispatch", icon: TagIcon },
                       ].map(({ label, href, icon: Icon }) =>
                         selected.status === "Approved" ? (
                           <Button key={label} asChild type="button" variant="outline" size="sm">
@@ -589,7 +589,7 @@ export function GtpRecordsClient() {
                     </div>
                     {selected.status !== "Approved" ? (
                       <p className="mt-2 text-xs text-muted-foreground">
-                        The inspector checks the drum sticker against the approved GTP, so these are
+                        The inspector checks the drum marking against the approved GTP, so these are
                         held until both stamps are recorded.
                       </p>
                     ) : null}

@@ -66,11 +66,11 @@ function checklistComplete(dispatch: Dispatch) {
   return dispatch.checklist.filter((item) => item.required).every((item) => item.done);
 }
 
-/** Standard dispatch checklist — per-drum certs, GTP-matched sticker, DI clearance. */
+/** Standard dispatch checklist — per-drum certs, GTP-matched marking, DI clearance. */
 function standardDispatchChecklist(ewayRequired: boolean): Dispatch["checklist"] {
   return [
-    { id: "marking", label: "Drum stickers printed", done: false, required: true },
-    { id: "sticker", label: "Sticker matches GTP", done: false, required: true },
+    { id: "marking", label: "Drum markings stencilled", done: false, required: true },
+    { id: "marking-verified", label: "Drum marking matches GTP", done: false, required: true },
     { id: "test", label: "Test certificates attached (all drums)", done: false, required: true },
     { id: "clearance", label: "Inspection clearance (DI received)", done: false, required: true },
     { id: "packing", label: "Packing list ready", done: false, required: true },

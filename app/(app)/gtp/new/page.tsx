@@ -66,9 +66,11 @@ const TAG_TONE: Record<ResolvedField["tag"], string> = {
   FIXED: "bg-muted text-muted-foreground border-border",
 };
 
+/**
+ * The CHOICE answers still asked of the operator. Supplier fields are deliberately absent
+ * (build-plan-v2 D8) — see the note in Moment 3.
+ */
 interface Choices {
-  aluminiumVendor: string;
-  xlpeVendor: string;
   curing: string;
   drumLength: string;
 }
@@ -379,8 +381,6 @@ function GtpBuilderInner() {
     if (!profile) return;
     setConfirmed(true);
     setChoices({
-      aluminiumVendor: profile.choices.aluminiumVendors[0],
-      xlpeVendor: profile.choices.xlpeVendors[0],
       curing: profile.choices.curingMethods[0],
       drumLength: profile.choices.drumLengthOptions[0],
     });
@@ -852,19 +852,11 @@ function GtpBuilderInner() {
       {/* Moment 3 — A few questions */}
       {confirmed && profile && choices ? (
         <Moment n={3} title="A few questions">
+          {/* Supplier questions removed (build-plan-v2 D8): suppliers are chosen per purchase on
+              price, and disclosing sourcing on a GTP is commercially sensitive. The field remains
+              optional and blank in the editable field list — it is never asked for here, never
+              pre-filled, and never printed when blank. */}
           <div className="grid gap-4 sm:grid-cols-2">
-            <ChoiceField
-              label="Aluminium supplier (this batch)"
-              value={choices.aluminiumVendor}
-              options={profile.choices.aluminiumVendors}
-              onChange={(v) => setChoices({ ...choices, aluminiumVendor: v })}
-            />
-            <ChoiceField
-              label="XLPE compound supplier"
-              value={choices.xlpeVendor}
-              options={profile.choices.xlpeVendors}
-              onChange={(v) => setChoices({ ...choices, xlpeVendor: v })}
-            />
             <ChoiceField
               label="Curing method"
               value={choices.curing}

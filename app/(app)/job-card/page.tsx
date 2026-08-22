@@ -16,7 +16,7 @@ import {
   Printer,
   RefreshCw,
   Save,
-  Sticker,
+  Sticker as DrumMarkingIcon,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -28,7 +28,7 @@ import { AlertBadge, Button, Input, Label } from "@/components/ui";
 import { formatDate, formatINR } from "@/lib/domain/format";
 import { gtpForOrder } from "@/lib/domain/gtp";
 import { inspectionCallByDate } from "@/lib/domain/inspection";
-import { buildDrumSticker, drumStickerHtml } from "@/lib/domain/sticker";
+import { buildDrumMarking, drumMarkingHtml } from "@/lib/domain/drum-marking";
 import {
   dataService,
   finishedQcService,
@@ -312,7 +312,7 @@ function estimatedGrossWeight(spec: CableSpec | undefined, lengthM: number) {
   return Math.round((spec.approxWeightKgPerKm * lengthM) / 1000);
 }
 
-function buildDrumMarking(
+function drumMarkingLine(
   order: Order,
   spec: CableSpec | undefined,
   drum: Pick<DrumPlanItem, "drumNo" | "lengthM">,
@@ -590,22 +590,22 @@ function JobCardClient() {
     });
   }
 
-  function printSticker(drum: DrumPlanItem) {
+  function printMarking(drum: DrumPlanItem) {
     if (!selectedOrder) return;
-    const sticker = buildDrumSticker(
+    const marking = buildDrumMarking(
       drum,
       selectedSpec,
       selectedOrder,
       selectedCustomer,
       data.org ?? undefined,
     );
-    const stickerWindow = window.open("", "_blank", "width=680,height=560");
-    if (!stickerWindow) {
-      setNotice({ tone: "error", label: "Pop-up blocked — allow pop-ups to print stickers." });
+    const markingWindow = window.open("", "_blank", "width=680,height=560");
+    if (!markingWindow) {
+      setNotice({ tone: "error", label: "Pop-up blocked — allow pop-ups to print markings." });
       return;
     }
-    stickerWindow.document.write(drumStickerHtml(sticker));
-    stickerWindow.document.close();
+    markingWindow.document.write(drumMarkingHtml(marking));
+    markingWindow.document.close();
   }
 
   const lengthMismatch =
@@ -650,7 +650,7 @@ function JobCardClient() {
           markings:
             patch.markings !== undefined
               ? patch.markings
-              : buildDrumMarking(selectedOrder, selectedSpec, nextRow),
+              : drumMarkingLine(selectedOrder, selectedSpec, nextRow),
         };
       });
 
@@ -673,7 +673,7 @@ function JobCardClient() {
         drumType: "Steel-Wood",
         lengthM,
         grossWeightKg: estimatedGrossWeight(selectedSpec, lengthM),
-        markings: buildDrumMarking(selectedOrder, selectedSpec, { drumNo, lengthM }),
+        markings: drumMarkingLine(selectedOrder, selectedSpec, { drumNo, lengthM }),
       };
 
       return { ...base, drumPlan: [...base.drumPlan, row] };
@@ -1192,14 +1192,14 @@ function JobCardClient() {
                           <td className="px-2 py-3 print:hidden lg:px-3">
                             <div className="flex items-center gap-1">
                               <Button
-                                aria-label={`Print sticker for drum ${row.drumNo}`}
-                                onClick={() => printSticker(row)}
+                                aria-label={`Print marking for drum ${row.drumNo}`}
+                                onClick={() => printMarking(row)}
                                 size="icon"
-                                title="Print drum sticker (BIS/ISI label)"
+                                title="Print drum marking (BIS/ISI label)"
                                 type="button"
                                 variant="ghost"
                               >
-                                <Sticker className="size-4" aria-hidden={true} />
+                                <DrumMarkingIcon className="size-4" aria-hidden={true} />
                               </Button>
                               {canEdit ? (
                                 <Button

@@ -27,7 +27,14 @@ export interface CustomerProfile {
   choices: {
     aluminiumVendors: string[];
     xlpeVendors: string[];
-    curingMethods: ("Steam" | "Sioplas")[];
+    /**
+     * Curing method. Steam is the default; Water is the secondary option.
+     * NOT "Sioplas"/"Cyoplast" — that is an XLPE compound brand, not a curing process, and it
+     * is cured by the steam method (build-plan-v2 §3.2). Nitrogen curing is real but used only
+     * by very large manufacturers, so it is deliberately not offered.
+     * Compound name, if ever captured, is a SEPARATE field — never an option in this list.
+     */
+    curingMethods: ("Steam" | "Water")[];
     drumLengthOptions: string[]; // e.g. "1000 m ±5%"
   };
 }
@@ -60,7 +67,7 @@ export const CUSTOMER_PROFILES: CustomerProfile[] = [
     choices: {
       aluminiumVendors: ["NALCO", "BALCO", "HINDALCO"], // JSR struck off, absent by design
       xlpeVendors: ["KLJ", "Kalpana"],
-      curingMethods: ["Steam", "Sioplas"],
+      curingMethods: ["Steam", "Water"],
       drumLengthOptions: ["1000 m ±5%", "500 m ±5%"],
     },
   },
@@ -92,7 +99,7 @@ export const CUSTOMER_PROFILES: CustomerProfile[] = [
     choices: {
       aluminiumVendors: ["NALCO", "BALCO", "HINDALCO", "VEDANTA"],
       xlpeVendors: ["KLJ", "Kalpana"],
-      curingMethods: ["Steam", "Sioplas"],
+      curingMethods: ["Steam", "Water"],
       drumLengthOptions: ["1000 m ±5%", "500 m ±5%"],
     },
   },
@@ -115,7 +122,7 @@ export const CUSTOMER_PROFILES: CustomerProfile[] = [
     choices: {
       aluminiumVendors: ["NALCO", "BALCO", "HINDALCO", "VEDANTA"],
       xlpeVendors: ["KLJ", "Kalpana", "Fine Organics"],
-      curingMethods: ["Steam", "Sioplas"],
+      curingMethods: ["Steam", "Water"],
       drumLengthOptions: ["1000 m ±5%", "500 m ±5%", "250 m ±5%"],
     },
   },

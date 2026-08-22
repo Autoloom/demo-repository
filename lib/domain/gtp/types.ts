@@ -30,7 +30,7 @@ export interface ConductorGroup {
 
 /**
  * The canonical parsed cable, e.g. `3Cx70 + 1Cx50 + 1Cx16`.
- * This is the single object every downstream document (GTP, drum sticker, job ticket) renders from.
+ * This is the single object every downstream document (GTP, drum marking, job ticket) renders from.
  */
 export interface CableConstruction {
   productLine: ProductLine;
