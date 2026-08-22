@@ -188,17 +188,18 @@ const PVC_CONTROL: CableTypeDefinition = {
   configSchema: [
     { kind: "number", key: "coreCount", label: "Number of cores", min: 2, defaultValue: 7, hint: "Control cables run to 61 cores and beyond" },
     { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6], defaultValue: 2.5, hint: "sq mm" },
-    { kind: "choice", key: "material", label: "Conductor material", options: ["Aluminium", "Copper"], defaultValue: "Copper", hint: "Open question: the manufacturer says aluminium; every control spec in the corpus is copper" },
+    { kind: "choice", key: "material", label: "Conductor material", options: ["Copper", "Aluminium"], defaultValue: "Copper", hint: "Both are supported. Copper is the corpus norm for control; the manufacturer also runs aluminium. IS 8130 specifies both, and the minimum wire counts differ." },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },
   ],
   derivationChain: LT_POWER_XLPE.derivationChain, // structurally identical (build-plan-v1 §0.3)
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],
   available: false,
   blockedReason:
-    "Same remaining work as LT power (IS 1554-1 Tables 4/5/7 and IS 8130 to encode) — the " +
-    "calculated-diameter method itself is no longer a blocker. Also still open: whether these " +
-    "are aluminium or copper conductors. The manufacturer said aluminium, but every control spec " +
-    "in our corpus is copper, and it decides which IS 8130 columns we need.",
+    "IS 1554-1 Tables 4/5/7 (insulation, inner sheath, outer sheath) are not yet encoded. " +
+    "Conductor material is no longer an open question — both copper and aluminium are supported " +
+    "and chosen per order, since IS 8130 fully specifies both. Note that no COPPER works " +
+    "construction is verified yet: there is no approved copper GTP in the corpus, so copper " +
+    "conductor dimensions are estimates until production supplies real figures.",
 };
 
 const SOLAR_DC: CableTypeDefinition = {

@@ -15,7 +15,8 @@
  */
 import { findMessengerRow } from "@/lib/domain/standards/is398-4";
 import { IS14255_1995_LAY, findPhaseRow } from "@/lib/domain/standards/is14255-1995";
-import { findConductor } from "@/lib/domain/standards/is8130-2013";
+import { IS8130_2013_TABLE2_STRANDED, findConductor } from "@/lib/domain/standards/is8130-2013";
+import type { ConductorForm, ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { findWorksConductor, unverifiedWorksDataWarning } from "@/lib/domain/standards/works-conductor-data";
 
 import type { CableConstruction, ConductorGroup, ResolvedField } from "./types";
@@ -35,6 +36,13 @@ export interface DerivationQuirks {
   coreIdentification?: string;
   drumLengthM?: number;
   drumLengthTolerance?: string; // e.g. "±5%"
+  /**
+   * Conductor material. AB cable is aluminium by definition (IS 14255), but LT power and control
+   * are built in both — the manufacturer runs aluminium, while most control specs in the corpus
+   * are copper. IS 8130 Table 2 covers both fully, and the wire-count minima genuinely differ
+   * (4 sq mm: 7 wires for Cu, 3 for Al), so this is a real branch, not a label swap.
+   */
+  conductorMaterial?: ConductorMaterialCode;
 }
 
 const FIXED = {
@@ -55,6 +63,19 @@ function phraseThickness(mm: number, quirks: DerivationQuirks): { value: string;
   return { value: `${fixed} mm ±5%` };
 }
 
+
+/**
+ * Which construction form IS 8130 specifies for a size/material.
+ *
+ * Table 2 gives compacted minima only from 10 sq mm (copper) / 16 sq mm (aluminium) upward;
+ * below that the cell is a dash and only the circular non-compacted column applies.
+ */
+function conductorFormFor(csaSqMm: number, material: ConductorMaterialCode): ConductorForm {
+  const row = IS8130_2013_TABLE2_STRANDED.find((r) => r.csaSqMm === csaSqMm);
+  const compactedMin = material === "AL" ? row?.minWiresCompactedAl : row?.minWiresCompactedCu;
+  return compactedMin == null ? "circular-non-compacted" : "compacted-or-shaped";
+}
+
 function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedField[] {
   const size = group.sizeSqMm;
   // Two DIFFERENT sources, deliberately kept apart (see works-conductor-data.ts):
@@ -62,10 +83,15 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   //   • Works data gives the physical construction (wires, wire dia, conductor dia), because
   //     IS 8130 specifies no dimensions at all for Class 2 (§3.2).
   // Tagging works dimensions as an IS lookup would be a provenance claim that fails inspection.
-  const conductor = findWorksConductor(size, { material: "AL", form: "compacted-or-shaped" });
+  const material = quirks.conductorMaterial ?? "AL";
+  // IS 8130 Table 2 has no compacted wire count below 10 sq mm (the cell is a dash) — small
+  // conductors are made circular non-compacted. Ask for the form the standard actually
+  // specifies rather than assuming compacted and tripping the no-fallback lookup.
+  const form = conductorFormFor(size, material);
+  const conductor = findWorksConductor(size, { material, form });
   const isSpec = (() => {
     try {
-      return findConductor({ csaSqMm: size, material: "AL", klass: "Class 2", form: "compacted-or-shaped" });
+      return findConductor({ csaSqMm: size, material, klass: "Class 2", form });
     } catch {
       return undefined;
     }
@@ -93,7 +119,9 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     label: "No. of strands (power)",
     value: conductor.wires,
     tag: "LOOKUP",
-    source: "is-table",
+    // The COUNT is our construction; the MINIMUM it must meet is the standard's. The trace
+    // carries both so a reviewer can see the constraint as well as the choice.
+    source: "works-data",
     trace: `${conductor.wires} wires — ${conductor.origin}. IS 8130 Table 2 minimum for this size is ${isSpec.minWires}.`,
     editable: false,
   });
@@ -348,10 +376,14 @@ function streetLightFields(group: ConductorGroup): ResolvedField[] {
   //   • Works data gives the physical construction (wires, wire dia, conductor dia), because
   //     IS 8130 specifies no dimensions at all for Class 2 (§3.2).
   // Tagging works dimensions as an IS lookup would be a provenance claim that fails inspection.
-  const conductor = findWorksConductor(size, { material: "AL", form: "compacted-or-shaped" });
+  //
+  // Aluminium is not a default here, it is the standard: IS 14255 is an aluminium-conductor
+  // specification throughout, so an AB street-light core has no material choice to offer.
+  const material = "AL" as const;
+  const conductor = findWorksConductor(size, { material, form: "compacted-or-shaped" });
   const isSpec = (() => {
     try {
-      return findConductor({ csaSqMm: size, material: "AL", klass: "Class 2", form: "compacted-or-shaped" });
+      return findConductor({ csaSqMm: size, material, klass: "Class 2", form: "compacted-or-shaped" });
     } catch {
       return undefined;
     }
