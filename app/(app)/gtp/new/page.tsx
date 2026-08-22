@@ -42,7 +42,7 @@ import {
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { buildGtpPdfDocument } from "@/lib/domain/gtp/pdf-document";
-import { PRODUCT_LINES } from "@/lib/domain/gtp/product-lines";
+import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
 import {
   loadTemplates,
@@ -609,8 +609,8 @@ function GtpBuilderInner() {
       <section className="rounded-lg border border-border bg-card p-5 shadow-sm">
         <h2 className="text-base font-semibold text-foreground">What kind of cable?</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          {PRODUCT_LINES.map((line) => {
-            const isAvailable = line.status === "available";
+          {CABLE_TYPES.map((line) => {
+            const isAvailable = line.available;
             const isActive = isAvailable && productLine === line.id;
             return (
               <button
@@ -619,7 +619,7 @@ function GtpBuilderInner() {
                 disabled={!isAvailable}
                 aria-pressed={isActive}
                 onClick={() => isAvailable && setProductLine(line.id)}
-                title={line.blockedBy}
+                title={line.blockedReason}
                 className={cn(
                   "flex flex-col items-start gap-1 rounded-md border p-4 text-left transition-colors",
                   isActive && "border-primary bg-primary/5",
@@ -628,7 +628,7 @@ function GtpBuilderInner() {
                 )}
               >
                 <span className="flex w-full items-start justify-between gap-2">
-                  <span className="font-medium text-foreground">{line.name}</span>
+                  <span className="font-medium text-foreground">{line.label}</span>
                   {!isAvailable ? (
                     <span className="shrink-0 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
                       Coming soon
@@ -637,10 +637,12 @@ function GtpBuilderInner() {
                 </span>
                 <span className="text-sm text-muted-foreground">{line.description}</span>
                 <span className="mt-1 font-mono text-xs text-muted-foreground">
-                  {line.standards.join(" · ")}
+                  {[line.primaryStandard, ...line.supportingStandards]
+                    .map((s) => `${s.id}:${s.edition}`)
+                    .join(" · ")}
                 </span>
-                {!isAvailable && line.blockedBy ? (
-                  <span className="mt-1 text-xs text-warning">{line.blockedBy}</span>
+                {!isAvailable && line.blockedReason ? (
+                  <span className="mt-1 text-xs text-warning">{line.blockedReason}</span>
                 ) : null}
               </button>
             );

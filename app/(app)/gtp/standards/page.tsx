@@ -19,7 +19,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { IS14255_1995_EDITION, IS14255_1995_MESSENGER_PAIRING, IS14255_1995_PHASE } from "@/lib/domain/standards/is14255-1995";
 import { IS398_4_EDITION, IS398_4_MESSENGER } from "@/lib/domain/standards/is398-4";
-import { PRODUCT_LINES } from "@/lib/domain/gtp/product-lines";
+import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
 import { IS8130_2013_CLASS2_AL, IS8130_2013_EDITION } from "@/lib/domain/standards/is8130-2013";
 import { cn } from "@/lib/utils";
 
@@ -282,10 +282,10 @@ export default function StandardsPage() {
 
       {/* Other product lines, from the same registry the builder uses — so this page can't claim
           a line is coming that the builder doesn't offer, or vice versa. */}
-      {PRODUCT_LINES.filter((line) => line.status === "planned").map((line) => (
+      {CABLE_TYPES.filter((line) => !line.available).map((line) => (
         <section key={line.id} className="space-y-2">
           <div className="flex items-center gap-3 pt-2">
-            <h2 className="text-lg font-semibold text-muted-foreground">{line.name}</h2>
+            <h2 className="text-lg font-semibold text-muted-foreground">{line.label}</h2>
             <span className="rounded-sm border border-border bg-muted px-2 py-0.5 text-xs font-medium uppercase text-muted-foreground">
               Not encoded yet
             </span>
@@ -295,10 +295,12 @@ export default function StandardsPage() {
             <p className="text-sm text-muted-foreground">{line.description}</p>
             <p className="mt-2 text-sm text-foreground">
               Would be derived from:{" "}
-              <span className="font-mono text-xs">{line.standards.join(" · ")}</span>
+              <span className="font-mono text-xs">
+                {[line.primaryStandard, ...line.supportingStandards].map((s) => `${s.id}:${s.edition}`).join(" · ")}
+              </span>
             </p>
-            {line.blockedBy ? (
-              <p className="mt-2 text-xs text-warning">{line.blockedBy}</p>
+            {line.blockedReason ? (
+              <p className="mt-2 text-xs text-warning">{line.blockedReason}</p>
             ) : null}
           </div>
         </section>

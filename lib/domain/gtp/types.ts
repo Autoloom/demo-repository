@@ -13,8 +13,12 @@ export type FieldTag = "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED";
 /** Where a resolved value came from, most-specific-wins cascade (design-doc §0.3). */
 export type FieldSource = "is-table" | "profile" | "order" | "override" | "calc";
 
-/** Product lines. Only AB_CABLE is encoded for MVP; the enum grows as data modules are added. */
-export type ProductLine = "AB_CABLE" | "XLPE_POWER" | "PVC_CONTROL";
+/**
+ * Cable types in scope (build-plan-v2 D5), in build order. Screened and instrumentation cables
+ * are deliberately absent — the manufacturer does not make them.
+ * The authoritative definitions live in cable-types.ts.
+ */
+export type ProductLine = "AB_CABLE" | "XLPE_POWER" | "PVC_CONTROL" | "SOLAR_DC";
 
 /**
  * A single conductor group within a cable construction, e.g. "3 power cores @ 70 sq mm".

@@ -11,7 +11,7 @@
  * path exercises exactly the same code as a pasted designation.
  */
 import { IS398_4_ENCODED_SIZES } from "@/lib/domain/standards/is398-4";
-import { messengerSizeForPhase } from "@/lib/domain/standards/is14255-1995";
+import { IS14255_1995_PHASE, messengerSizeForPhase } from "@/lib/domain/standards/is14255-1995";
 import { IS8130_2013_ENCODED_SIZES } from "@/lib/domain/standards/is8130-2013";
 
 import { parseSizeString } from "./parse-size";
@@ -28,8 +28,17 @@ export interface SizeSelection {
 /** Core counts AB cable is built in (1-phase service drops and 3-phase mains). */
 export const CORE_COUNT_OPTIONS = [1, 3] as const;
 
-/** Phase/street-light sizes with encoded IS 8130 rows. */
-export const PHASE_SIZE_OPTIONS = IS8130_2013_ENCODED_SIZES;
+/**
+ * Phase sizes offerable for AB cable.
+ *
+ * Constrained by IS 14255, not by IS 8130. The conductor tables go further, but IS 14255 Table 3
+ * (messenger pairing) and Table 4 (insulation thickness) both END AT 95 sq mm — so a 120 sq mm
+ * AB cable has no messenger pairing and no insulation thickness in the standard. Offering it
+ * would be a selectable dead end.
+ */
+export const PHASE_SIZE_OPTIONS = IS8130_2013_ENCODED_SIZES.filter((s) =>
+  IS14255_1995_PHASE.some((row) => row.csaSqMm === s),
+);
 
 /** Messenger sizes with encoded IS 398-4 alloy rows. */
 export const MESSENGER_SIZE_OPTIONS = IS398_4_ENCODED_SIZES;
