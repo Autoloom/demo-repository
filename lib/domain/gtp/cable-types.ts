@@ -152,26 +152,26 @@ const LT_POWER_XLPE: CableTypeDefinition = {
   // The build-up chain. Each `keyedBy` step needs the PREVIOUS step's output as its lookup key.
   derivationChain: [
     { id: "conductor.rule", describes: "Solid or stranded, flexibility class, from size and material", standardId: "IS 7098-1" },
-    { id: "conductor", describes: "Strands, diameter, resistance", standardId: "IS 8130" },
+    { id: "conductor", describes: "Strands, diameter, resistance", standardId: "IS 8130", blockedBy: "IS 8130 tables not encoded" },
     { id: "neutral.reduced", describes: "Reduced-neutral CSA", standardId: "IS 7098-1" },
-    { id: "insulation", describes: "Insulation thickness", standardId: "IS 7098-1" },
-    { id: "calc.diaOverCore", describes: "Fictitious diameter over insulation", standardId: "IS 10462-1", blockedBy: "IS 10462 (Part 1) not held" },
+    { id: "insulation", describes: "Insulation thickness", standardId: "IS 7098-1", blockedBy: "IS 7098-1 Table 4 not encoded" },
+    { id: "calc.diaOverCore", describes: "Fictitious diameter over insulation (D_c)", standardId: "IS 10462-1" },
     { id: "layup", describes: "Lay-up pattern by core count", standardId: "IS 7098-1" },
-    { id: "calc.diaOverLaidUp", describes: "Calculated diameter over laid-up cores", standardId: "IS 10462-1", blockedBy: "IS 10462 (Part 1) not held" },
-    { id: "innerSheath", describes: "Inner sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaOverLaidUp" },
-    { id: "calc.diaUnderArmour", describes: "Calculated diameter under armour", standardId: "IS 10462-1", blockedBy: "IS 10462 (Part 1) not held" },
-    { id: "armour", describes: "Armour wire diameter or strip thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderArmour" },
-    { id: "calc.diaUnderSheath", describes: "Calculated diameter under outer sheath", standardId: "IS 10462-1", blockedBy: "IS 10462 (Part 1) not held" },
-    { id: "outerSheath", describes: "Outer sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderSheath" },
+    { id: "calc.diaOverLaidUp", describes: "Fictitious diameter over laid-up cores (D_f)", standardId: "IS 10462-1", keyedBy: "calc.diaOverCore" },
+    { id: "innerSheath", describes: "Inner sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaOverLaidUp", blockedBy: "IS 7098-1 Table 5 not encoded" },
+    { id: "calc.diaUnderArmour", describes: "Fictitious diameter over inner sheath = under armour (D_B)", standardId: "IS 10462-1", keyedBy: "innerSheath" },
+    { id: "armour", describes: "Armour wire diameter or strip thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderArmour", blockedBy: "IS 7098-1 Table 6 not encoded" },
+    { id: "calc.diaUnderSheath", describes: "Fictitious diameter over armour = under outer sheath (D_X)", standardId: "IS 10462-1", keyedBy: "armour" },
+    { id: "outerSheath", describes: "Outer sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderSheath", blockedBy: "IS 7098-1 Table 7 not encoded" },
     { id: "calc.overall", describes: "Overall diameter and mass by component" },
   ],
   validationRules: ["buildup.dia-mismatch", "band.coverage", "neutral.reduced", "field.missing-source"],
   available: false,
   blockedReason:
-    "IS 10462 (Part 1) — the fictitious calculation method — is not held. Every sheath and armour " +
-    "table in IS 7098-1 is keyed by a calculated diameter that only this standard defines. The " +
-    "tables can be encoded, but the lookup key cannot be computed, and approximating it would put " +
-    "invented numbers on a legally-binding document.",
+    "IS 10462 (Part 1) is now encoded, so the calculated-diameter chain that keys every sheath and " +
+    "armour lookup CAN be computed. What remains is data entry: IS 7098-1 Tables 4-7 (insulation, " +
+    "inner sheath, armour, outer sheath) and the IS 8130 conductor tables. The PDFs for both are " +
+    "held — no missing standard blocks this any more.",
 };
 
 const PVC_CONTROL: CableTypeDefinition = {
@@ -195,9 +195,10 @@ const PVC_CONTROL: CableTypeDefinition = {
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],
   available: false,
   blockedReason:
-    "Blocked on IS 10462 (Part 1), same as LT power. Also open: whether these are aluminium or " +
-    "copper conductors — the manufacturer said aluminium, but every control spec in our corpus " +
-    "is copper, and it decides which IS 8130 columns we need.",
+    "Same remaining work as LT power (IS 1554-1 Tables 4/5/7 and IS 8130 to encode) — the " +
+    "calculated-diameter method itself is no longer a blocker. Also still open: whether these " +
+    "are aluminium or copper conductors. The manufacturer said aluminium, but every control spec " +
+    "in our corpus is copper, and it decides which IS 8130 columns we need.",
 };
 
 const SOLAR_DC: CableTypeDefinition = {

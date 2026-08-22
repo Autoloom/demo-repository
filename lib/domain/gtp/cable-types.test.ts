@@ -35,14 +35,49 @@ test("only AB cable is derivable today", () => {
   assert.deepEqual(availableCableTypes().map((t) => t.id), ["AB_CABLE"]);
 });
 
-test("LT power and control are blocked on IS 10462 (Part 1), not on engine work", () => {
+test("the calculated-diameter chain is no longer blocked — IS 10462-1 is encoded", () => {
+  // Was: these steps were blocked because the fictitious calculation method wasn't held.
+  // The standard is now encoded (is10462-1-1983.ts), so nothing in the chain may claim otherwise.
   for (const id of ["XLPE_POWER", "PVC_CONTROL"] as const) {
     const type = findCableType(id);
     assert.ok(type);
-    assert.match(type.blockedReason ?? "", /10462/, `${type.label} must name the missing standard`);
-    const fictitious = blockedSteps(type).filter((s) => s.standardId === "IS 10462-1");
-    assert.ok(fictitious.length >= 3, "the fictitious-diameter steps must be marked blocked, never approximated");
+    const stillBlocked = blockedSteps(type).filter((s) => s.standardId === "IS 10462-1");
+    assert.deepEqual(stillBlocked, [], `${type?.label}: no step may be blocked on IS 10462-1 now`);
   }
+});
+
+test("LT power and control remain blocked, but only on data entry", () => {
+  // The distinction that matters: a MISSING STANDARD is an external blocker we cannot clear;
+  // an UNENCODED TABLE is our own work queue. Every remaining blocker must be the latter.
+  for (const id of ["XLPE_POWER", "PVC_CONTROL"] as const) {
+    const type = findCableType(id);
+    assert.ok(type && !type.available);
+    const blocked = blockedSteps(type);
+    assert.ok(blocked.length > 0, `${type.label} is unavailable so something must be blocked`);
+    for (const step of blocked) {
+      assert.match(
+        step.blockedBy ?? "", /not encoded/,
+        `${type.label} step ${step.id}: remaining blockers must be encoding work, not missing standards`,
+      );
+    }
+    assert.doesNotMatch(
+      type.blockedReason ?? "", /not held/,
+      `${type.label}: the reason must no longer claim a standard is missing`,
+    );
+  }
+});
+
+test("the fictitious steps are chained, each keyed by the previous", () => {
+  // IS 10462-1 §0.7 requires staged rounding, which only makes sense if the steps run in order.
+  // If someone flattens this into independent lookups, the ordering guarantee is silently lost.
+  const chain = findCableType("XLPE_POWER")?.derivationChain ?? [];
+  const idx = (id: string) => chain.findIndex((s) => s.id === id);
+  assert.ok(idx("calc.diaOverCore") < idx("calc.diaOverLaidUp"));
+  assert.ok(idx("calc.diaOverLaidUp") < idx("innerSheath"));
+  assert.ok(idx("innerSheath") < idx("calc.diaUnderArmour"));
+  assert.ok(idx("calc.diaUnderArmour") < idx("armour"));
+  assert.ok(idx("armour") < idx("calc.diaUnderSheath"));
+  assert.ok(idx("calc.diaUnderSheath") < idx("outerSheath"));
 });
 
 test("LT power and control share a derivation chain — one schema, two datasets", () => {
