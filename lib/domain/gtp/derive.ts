@@ -15,7 +15,8 @@
  */
 import { findMessengerRow } from "@/lib/domain/standards/is398-4";
 import { IS14255_1995_LAY, findPhaseRow } from "@/lib/domain/standards/is14255-1995";
-import { findConductorRow } from "@/lib/domain/standards/is8130-2013";
+import { findConductor } from "@/lib/domain/standards/is8130-2013";
+import { findWorksConductor, unverifiedWorksDataWarning } from "@/lib/domain/standards/works-conductor-data";
 
 import type { CableConstruction, ConductorGroup, ResolvedField } from "./types";
 
@@ -56,8 +57,21 @@ function phraseThickness(mm: number, quirks: DerivationQuirks): { value: string;
 
 function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedField[] {
   const size = group.sizeSqMm;
-  const conductor = findConductorRow(size, { klass: "Class 2", material: "AL" });
+  // Two DIFFERENT sources, deliberately kept apart (see works-conductor-data.ts):
+  //   • IS 8130 gives the max DC resistance — the only conductor property the standard specifies.
+  //   • Works data gives the physical construction (wires, wire dia, conductor dia), because
+  //     IS 8130 specifies no dimensions at all for Class 2 (§3.2).
+  // Tagging works dimensions as an IS lookup would be a provenance claim that fails inspection.
+  const conductor = findWorksConductor(size, { material: "AL", form: "compacted-or-shaped" });
+  const isSpec = (() => {
+    try {
+      return findConductor({ csaSqMm: size, material: "AL", klass: "Class 2", form: "compacted-or-shaped" });
+    } catch {
+      return undefined;
+    }
+  })();
   const phase = findPhaseRow(size);
+  if (!isSpec) return [];
   const fields: ResolvedField[] = [];
 
   if (!conductor) {
@@ -77,29 +91,29 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   fields.push({
     key: "power.strands",
     label: "No. of strands (power)",
-    value: conductor.strands,
+    value: conductor.wires,
     tag: "LOOKUP",
     source: "is-table",
-    trace: `${conductor.strands} — ${conductor.ref}`,
+    trace: `${conductor.wires} wires — ${conductor.origin}. IS 8130 Table 2 minimum for this size is ${isSpec.minWires}.`,
     editable: false,
   });
   fields.push({
     key: "power.strandDia",
     label: "Min strand diameter (power)",
-    value: `${conductor.strandDiaMinMm.toFixed(2)} mm`,
+    value: `${conductor.wireDiaMm.toFixed(2)} mm`,
     tag: "LOOKUP",
-    source: "is-table",
-    trace: conductor.ref,
+    source: "works-data",
+    trace: conductor.origin,
     editable: false,
   });
   // Buyer schedules (DHBVN Appendix-I 3.iii) ask for "No. & size of strands" as ONE cell.
   fields.push({
     key: "power.strandsAndSize",
     label: "No. & size of strands (power)",
-    value: `${conductor.strands} / ${conductor.strandDiaMinMm.toFixed(2)} mm`,
+    value: `${conductor.wires} / ${conductor.wireDiaMm.toFixed(2)} mm`,
     tag: "CALC",
     source: "calc",
-    trace: `${conductor.strands} strands × ${conductor.strandDiaMinMm.toFixed(2)} mm — ${conductor.ref}`,
+    trace: `${conductor.wires} wires × ${conductor.wireDiaMm.toFixed(2)} mm — ${conductor.origin}`,
     editable: false,
   });
   fields.push({
@@ -114,19 +128,23 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   fields.push({
     key: "power.compactedDia",
     label: "Compacted conductor dia (power)",
-    value: `${conductor.compactedDiaMm.toFixed(2)} mm`,
+    value: `${conductor.conductorDiaMm.toFixed(2)} mm`,
     tag: "LOOKUP",
-    source: "is-table",
-    trace: conductor.ref,
+    source: "works-data",
+    trace: conductor.verified
+      ? conductor.origin
+      : `${conductor.origin}. ${unverifiedWorksDataWarning}`,
     editable: false,
   });
   fields.push({
     key: "power.maxDcResistance",
     label: "Max DC resistance @20°C (power)",
-    value: `${conductor.maxDcResistanceOhmPerKm} ohm/km`,
+    // The one conductor property IS 8130 actually specifies — and the property a conductor is
+    // judged conformant by (§3.2 / §7.3.1). This is a genuine standards lookup.
+    value: `${isSpec.maxDcResistanceOhmPerKm} ohm/km`,
     tag: "LOOKUP",
     source: "is-table",
-    trace: conductor.ref,
+    trace: isSpec.ref,
     editable: false,
   });
 
@@ -143,14 +161,14 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     });
 
     // CALC: dia over insulation = compacted dia + 2 × insulation thickness.
-    const diaOverInsulation = conductor.compactedDiaMm + 2 * phase.insulationThicknessMinMm;
+    const diaOverInsulation = conductor.conductorDiaMm + 2 * phase.insulationThicknessMinMm;
     fields.push({
       key: "power.diaOverInsulation",
       label: "Dia over insulation (power)",
       value: `${diaOverInsulation.toFixed(2)} mm`,
       tag: "CALC",
       source: "calc",
-      trace: `${conductor.compactedDiaMm} + 2 × ${phase.insulationThicknessMinMm} = ${diaOverInsulation.toFixed(2)} mm`,
+      trace: `${conductor.conductorDiaMm} + 2 × ${phase.insulationThicknessMinMm} = ${diaOverInsulation.toFixed(2)} mm`,
       editable: false,
     });
     fields.push({
@@ -164,14 +182,14 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     });
   }
 
-  if (conductor.approxMassKgPerKm != null) {
+  if (conductor.massKgPerKm != null) {
     fields.push({
       key: "power.massPerKm",
       label: "Approx mass (power core)",
-      value: `${conductor.approxMassKgPerKm} kg/km ±3%`,
+      value: `${conductor.massKgPerKm} kg/km ±3%`,
       tag: "LOOKUP",
-      source: "is-table",
-      trace: conductor.ref,
+      source: "works-data",
+      trace: conductor.origin,
       editable: false,
     });
   }
@@ -251,7 +269,7 @@ function finishedBundle(
 
   for (const g of groups) {
     const isMessenger = g.role === "messenger";
-    const conductor = isMessenger ? findMessengerRow(g.sizeSqMm) : findConductorRow(g.sizeSqMm);
+    const conductor = isMessenger ? findMessengerRow(g.sizeSqMm) : findWorksConductor(g.sizeSqMm);
     if (!conductor) return undefined; // an unsourced size means we must not invent a number
     const phase = isMessenger ? undefined : findPhaseRow(g.sizeSqMm);
     if (!isMessenger && !phase) return undefined;
@@ -262,7 +280,7 @@ function finishedBundle(
     coreCount += g.count;
 
     if (phase) {
-      const conductorDia = conductor.compactedDiaMm;
+      const conductorDia = "conductorDiaMm" in conductor ? conductor.conductorDiaMm : conductor.compactedDiaMm;
       const wall = phase.insulationThicknessMinMm;
       const insulatedDia = conductorDia + 2 * wall;
       largestInsulatedDiaMm = Math.max(largestInsulatedDiaMm, insulatedDia);
@@ -270,7 +288,7 @@ function finishedBundle(
       const annulusMm2 = Math.PI * wall * (conductorDia + wall);
       insulationMassKgPerKm += g.count * annulusMm2 * PHYSICAL.xlpeDensity;
     } else {
-      largestInsulatedDiaMm = Math.max(largestInsulatedDiaMm, conductor.compactedDiaMm);
+      largestInsulatedDiaMm = Math.max(largestInsulatedDiaMm, "conductorDiaMm" in conductor ? conductor.conductorDiaMm : conductor.compactedDiaMm);
     }
   }
 
@@ -325,13 +343,28 @@ function finishedAndComplianceFields(quirks: DerivationQuirks, groups: Conductor
 
 function streetLightFields(group: ConductorGroup): ResolvedField[] {
   const size = group.sizeSqMm;
-  const conductor = findConductorRow(size, { klass: "Class 2", material: "AL" });
+  // Two DIFFERENT sources, deliberately kept apart (see works-conductor-data.ts):
+  //   • IS 8130 gives the max DC resistance — the only conductor property the standard specifies.
+  //   • Works data gives the physical construction (wires, wire dia, conductor dia), because
+  //     IS 8130 specifies no dimensions at all for Class 2 (§3.2).
+  // Tagging works dimensions as an IS lookup would be a provenance claim that fails inspection.
+  const conductor = findWorksConductor(size, { material: "AL", form: "compacted-or-shaped" });
+  const isSpec = (() => {
+    try {
+      return findConductor({ csaSqMm: size, material: "AL", klass: "Class 2", form: "compacted-or-shaped" });
+    } catch {
+      return undefined;
+    }
+  })();
   const phase = findPhaseRow(size);
   const fields: ResolvedField[] = [
-    { key: "streetLight.size", label: "Street-light core size", value: `${size} sq mm`, tag: "LOOKUP", source: "is-table", trace: conductor?.ref ?? "—", editable: false, gap: !conductor },
+    { key: "streetLight.size", label: "Street-light core size", value: `${size} sq mm`, tag: "LOOKUP", source: "is-table", trace: isSpec?.ref ?? "—", editable: false, gap: !isSpec },
   ];
+  if (isSpec) {
+    fields.push({ key: "streetLight.maxDcResistance", label: "Max DC resistance @20°C (street-light)", value: `${isSpec.maxDcResistanceOhmPerKm} ohm/km`, tag: "LOOKUP", source: "is-table", trace: isSpec.ref, editable: false });
+  }
   if (conductor) {
-    fields.push({ key: "streetLight.strands", label: "No. of strands (street-light)", value: conductor.strands, tag: "LOOKUP", source: "is-table", trace: `${conductor.strands} — ${conductor.ref}`, editable: false });
+    fields.push({ key: "streetLight.strands", label: "No. of strands (street-light)", value: conductor.wires, tag: "LOOKUP", source: "works-data", trace: `${conductor.wires} wires — ${conductor.origin}`, editable: false });
   }
   if (phase) {
     fields.push({ key: "streetLight.insulationThickness", label: "Insulation thickness (street-light)", value: `${phase.insulationThicknessMinMm.toFixed(2)} mm`, tag: "LOOKUP", source: "is-table", trace: phase.ref, editable: false });

@@ -20,7 +20,8 @@ import { Button } from "@/components/ui/button";
 import { IS14255_1995_EDITION, IS14255_1995_MESSENGER_PAIRING, IS14255_1995_PHASE } from "@/lib/domain/standards/is14255-1995";
 import { IS398_4_EDITION, IS398_4_MESSENGER } from "@/lib/domain/standards/is398-4";
 import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
-import { IS8130_2013_CLASS2_AL, IS8130_2013_EDITION } from "@/lib/domain/standards/is8130-2013";
+import { IS8130_2013_EDITION, IS8130_2013_TABLE2_STRANDED } from "@/lib/domain/standards/is8130-2013";
+import { findWorksConductor } from "@/lib/domain/standards/works-conductor-data";
 import { cn } from "@/lib/utils";
 
 /** A row whose value came from a real document vs. one still awaiting the licensed PDF. */
@@ -158,26 +159,42 @@ export default function StandardsPage() {
           <thead className="bg-muted text-xs text-muted-foreground">
             <tr>
               <th className="p-3 font-medium">Size (sq mm)</th>
-              <th className="p-3 font-medium">Strands</th>
-              <th className="p-3 font-medium">Strand dia (mm)</th>
-              <th className="p-3 font-medium">Compacted dia (mm)</th>
+              <th className="p-3 font-medium">Min wires (circular)</th>
+              <th className="p-3 font-medium">Min wires (compacted)</th>
               <th className="p-3 font-medium">Max DC resistance (Ω/km)</th>
+              <th className="p-3 font-medium">Conductor dia (mm)</th>
               <th className="p-3 font-medium">Source</th>
             </tr>
           </thead>
           <tbody>
-            {IS8130_2013_CLASS2_AL.map((row) => (
-              <tr key={row.csaSqMm} className="border-t border-border">
-                <td className="p-3 font-mono font-medium">{row.csaSqMm}</td>
-                <td className="p-3 font-mono">{row.strands}</td>
-                <td className="p-3 font-mono">{row.strandDiaMinMm.toFixed(2)}</td>
-                <td className="p-3 font-mono">{row.compactedDiaMm.toFixed(2)}</td>
-                <td className="p-3 font-mono">{row.maxDcResistanceOhmPerKm}</td>
-                <td className="p-3">
-                  <SourceCell refText={row.ref} />
-                </td>
-              </tr>
-            ))}
+            {IS8130_2013_TABLE2_STRANDED.filter((row) => row.alOhmPerKm !== null && row.csaSqMm <= 120).map((row) => {
+              // Dimensions are NOT in IS 8130 (§3.2) — they come from works data and are marked
+              // as such, so the table never implies the standard specifies a diameter.
+              const works = findWorksConductor(row.csaSqMm);
+              return (
+                <tr key={row.csaSqMm} className="border-t border-border">
+                  <td className="p-3 font-mono font-medium">{row.csaSqMm}</td>
+                  <td className="p-3 font-mono">{row.minWiresCircularAl ?? "—"}</td>
+                  <td className="p-3 font-mono">{row.minWiresCompactedAl ?? "—"}</td>
+                  <td className="p-3 font-mono">{row.alOhmPerKm}</td>
+                  <td className="p-3 font-mono">
+                    {works ? (
+                      <span className={cn(!works.verified && "text-amber-600 dark:text-amber-500")}>
+                        {works.conductorDiaMm.toFixed(2)}
+                        <span className="ml-1 text-[10px] uppercase tracking-wide">
+                          {works.verified ? "works" : "est."}
+                        </span>
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="p-3">
+                    <SourceCell refText={`IS 8130 : 2013, Table 2 (${row.csaSqMm} sq mm, Al)`} />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </StandardSection>

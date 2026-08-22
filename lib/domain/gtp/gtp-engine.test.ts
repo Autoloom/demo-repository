@@ -268,7 +268,10 @@ test("drum plan — zero or negative lengths are an error, not a warning", () =>
 });
 
 test("parser — unsupported size returns a suggestion state, never throws", () => {
-  const result = parseSizeString("3Cx400");
+  // 400 sq mm used to be unsupported; encoding the real IS 8130 Table 2 made it a valid
+  // conductor size. 1200 sq mm is a Milliken segmental size whose wire count the standard
+  // explicitly leaves unspecified (Table 2, footnote 3), so it stays outside the offerable set.
+  const result = parseSizeString("3Cx1200");
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.match(result.reason, /don't have IS table data/i);

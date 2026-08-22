@@ -419,7 +419,7 @@ export interface GtpDerivedField {
   label: string;
   value: string | number;
   tag: "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED";
-  source: "is-table" | "profile" | "order" | "override" | "calc";
+  source: "is-table" | "works-data" | "profile" | "order" | "override" | "calc";
   trace: string;
   editable: boolean;
   gap?: boolean;

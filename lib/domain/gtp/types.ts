@@ -11,7 +11,15 @@ import type { ConductorMaterial } from "@/lib/services/types";
 export type FieldTag = "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED";
 
 /** Where a resolved value came from, most-specific-wins cascade (design-doc §0.3). */
-export type FieldSource = "is-table" | "profile" | "order" | "override" | "calc";
+/**
+ * Where a field's value came from.
+ *
+ * `works-data` is distinct from `is-table` on purpose. Some values a GTP must state are simply
+ * not in any standard — IS 8130 specifies no conductor dimensions at all (§3.2), yet buyer
+ * schedules ask for strand count and conductor diameter. Those come from works construction data.
+ * Labelling them `is-table` would be a provenance claim that collapses under inspection.
+ */
+export type FieldSource = "is-table" | "works-data" | "profile" | "order" | "override" | "calc";
 
 /**
  * Cable types in scope (build-plan-v2 D5), in build order. Screened and instrumentation cables
