@@ -1,14 +1,30 @@
 {
-  "name": "demo-repo",
-  "version": "0.2.0",
-  "description": "Static Autoloom Cable OS client demo",
+  "name": "demo-repository-main",
+  "version": "0.1.0",
+  "private": true,
   "scripts": {
-    "setup": "npm install",
-    "start": "python3 -m http.server ${PORT:-8765}",
-    "conductor:run": "python3 -m http.server ${CONDUCTOR_PORT:?CONDUCTOR_PORT is required}"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
   },
   "dependencies": {
-    "@primer/css": "17.0.1"
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.487.0",
+    "next": "15.5.23",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.2"
   },
-  "license": "MIT"
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.23",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
 }
