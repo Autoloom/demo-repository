@@ -51,6 +51,7 @@ import {
   templatesForProfile,
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
+import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
 import { downloadPdf } from "@/lib/domain/pdf";
@@ -165,6 +166,62 @@ function SizePicker({
 }
 
 /**
+ * Conductor material control.
+ *
+ * Deliberately renders in two different SHAPES rather than one control with a disabled state:
+ *
+ *  • Where the standard fixes the material (AB cable — IS 14255 is an aluminium-conductor
+ *    specification throughout), it renders as a read-only fact with its citation. A greyed-out
+ *    dropdown would imply a choice exists and is merely unavailable, which is the wrong idea:
+ *    there is nothing to unlock here. `read-only-distinction` — read-only is not disabled.
+ *
+ *  • Where both are genuinely offered (LT power, control), it renders as a real picker. The
+ *    minimum wire count and resistance both change with the choice, so this is a live input.
+ */
+function MaterialControl({
+  value,
+  fixedBy,
+  onChange,
+}: {
+  value: ConductorMaterialCode;
+  /** Citation for why the material is fixed. Presence of this switches the control to read-only. */
+  fixedBy?: string;
+  onChange?: (value: ConductorMaterialCode) => void;
+}) {
+  const labels: Record<ConductorMaterialCode, string> = { AL: "Aluminium", CU: "Copper" };
+
+  if (fixedBy) {
+    return (
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Conductor</span>
+        <div className="flex h-11 items-center gap-2 rounded-md border border-dashed border-border bg-muted/60 px-3">
+          <Lock aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-base">{labels[value]}</span>
+        </div>
+        <span className="text-[11px] text-muted-foreground">Set by {fixedBy}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor="conductor-material" className="text-xs text-muted-foreground">
+        Conductor
+      </Label>
+      <select
+        id="conductor-material"
+        value={value}
+        onChange={(e) => onChange?.(e.target.value as ConductorMaterialCode)}
+        className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <option value="CU">Copper</option>
+        <option value="AL">Aluminium</option>
+      </select>
+    </div>
+  );
+}
+
+/**
  * A field's value cell.
  *
  * CHOICE/QUIRK fields are editable directly. LOOKUP/CALC fields are locked and need two
@@ -273,6 +330,9 @@ function GtpBuilderInner() {
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
   // The size is chosen via pickers; `sizeInput` is the composed designation the parser reads.
   const [selection, setSelection] = useState<SizeSelection>(defaultSelection);
+  // AB cable is aluminium by standard (IS 14255); LT power and control offer both. Held here so
+  // the choice survives template loading and flows into derivation as a quirk.
+  const [conductorMaterial, setConductorMaterial] = useState<ConductorMaterialCode>("AL");
   const sizeInput = buildSizeString(selection);
   const [confirmed, setConfirmed] = useState(false);
   const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
@@ -308,6 +368,8 @@ function GtpBuilderInner() {
   /** Locked fields the user has deliberately unlocked (two actions before editing). */
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
+  const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
+
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
 
@@ -319,6 +381,9 @@ function GtpBuilderInner() {
     const derived = deriveFields(construction, {
       ...profile.quirks,
       drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
+      // A standard-pinned material always wins over the picker state — the operator cannot
+      // choose copper for an AB cable, so the engine must never be told they did.
+      conductorMaterial: activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial,
     });
     return derived.map((f) => {
       const value = overrides[f.key];
@@ -337,7 +402,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM]);
+  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType]);
 
   // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo.
   const validation = useMemo(() => {
@@ -755,6 +820,17 @@ function GtpBuilderInner() {
                 onChange={(v) => updateSelection({ messengerSizeSqMm: v })}
               />
               <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
+
+              {/* Conductor material. Driven by the registry, not hardcoded: AB pins aluminium
+                  (IS 14255), so this shows as a read-only fact; LT power and control leave it
+                  open and this becomes a live picker the moment those types ship. */}
+              <div className="ml-auto border-l border-border pl-4">
+                <MaterialControl
+                  value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                  fixedBy={activeCableType?.fixedConductorMaterial?.ref}
+                  onChange={setConductorMaterial}
+                />
+              </div>
             </div>
 
             {/* Why the messenger is what it is — and a nudge when it's been overridden. */}

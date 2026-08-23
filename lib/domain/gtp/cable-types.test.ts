@@ -116,3 +116,18 @@ test("AB phase sizes stop at 95 — IS 14255 Table 3 has no larger row", () => {
   assert.ok(phase && phase.kind === "choice");
   assert.deepEqual(phase.options, [16, 25, 35, 50, 70, 95]);
 });
+
+test("AB cable fixes its conductor material; LT power and control leave it open", () => {
+  // IS 14255 is an aluminium-conductor specification throughout, so offering a Cu/Al toggle on
+  // AB cable would present a choice the standard does not permit. LT power and control DO offer
+  // both, so they must not declare a fixed material.
+  const ab = findCableType("AB_CABLE");
+  assert.equal(ab?.fixedConductorMaterial?.material, "AL");
+  assert.match(ab?.fixedConductorMaterial?.ref ?? "", /14255/);
+  for (const id of ["XLPE_POWER", "PVC_CONTROL"] as const) {
+    assert.equal(findCableType(id)?.fixedConductorMaterial, undefined,
+      `${id} supports both materials — it must not pin one`);
+  }
+  // Solar is copper by standard too: IEC 62930 and EN 50618 both specify tinned annealed copper.
+  assert.equal(findCableType("SOLAR_DC")?.fixedConductorMaterial?.material, "CU");
+});

@@ -75,6 +75,13 @@ export interface CableTypeDefinition {
   description: string;
   body: StandardsBody;
   primaryStandard: { id: string; edition: string };
+  /**
+   * Conductor material, when the standard fixes it rather than leaving it to the order.
+   * IS 14255 is an aluminium-conductor specification throughout, so AB cable has no choice to
+   * offer; LT power and control leave this undefined and let the operator pick. The UI reads
+   * this to decide between a read-only fact and a live picker.
+   */
+  fixedConductorMaterial?: { material: "AL" | "CU"; ref: string };
   supportingStandards: Array<{ id: string; edition: string; purpose: string }>;
   configSchema: ConfigField[];
   derivationChain: DerivationStep[];
@@ -98,6 +105,7 @@ const AERIAL_BUNCHED: CableTypeDefinition = {
   description: "Insulated cores twisted around a messenger wire, strung between poles. LT, XLPE.",
   body: "BIS",
   primaryStandard: { id: "IS 14255", edition: "1995" },
+  fixedConductorMaterial: { material: "AL", ref: "IS 14255 : 1995" },
   supportingStandards: [
     { id: "IS 8130", edition: "2013", purpose: "Conductor strands, diameters, resistance" },
     { id: "IS 398-4", edition: "1979", purpose: "Messenger alloy: modulus, expansion, composition" },
@@ -209,6 +217,8 @@ const SOLAR_DC: CableTypeDefinition = {
   // The type that proves the engine can leave India: not BIS.
   body: "IEC",
   primaryStandard: { id: "IEC 62930", edition: "2017" },
+  // Both IEC 62930 and EN 50618 specify tinned annealed copper, class 5. Not a choice.
+  fixedConductorMaterial: { material: "CU", ref: "IEC 62930 : 2017" },
   supportingStandards: [
     { id: "EN 50618", edition: "2015", purpose: "European sibling standard; near-identical tables" },
     { id: "IEC 60228", edition: "2004", purpose: "Conductor classes 2 and 5" },
