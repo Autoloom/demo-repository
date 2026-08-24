@@ -65,6 +65,7 @@ test("the sign-off block survives however much is hidden", () => {
   const doc = buildGtpPdfDocument([], meta);
   const signOff = doc.sections.find((sec) => sec.title === "Sign-off");
   assert.ok(signOff, "an empty document must still be signable");
-  assert.ok(signOff.lines?.some((l) => l.includes("Divisional Engineer")));
-  assert.ok(signOff.lines?.some((l) => l.includes("Assistant Engineer")));
+  const lines = (signOff.lines ?? []).map((l) => String(l ?? ""));
+  assert.ok(lines.some((l) => l.includes("Divisional Engineer")));
+  assert.ok(lines.some((l) => l.includes("Assistant Engineer")));
 });
