@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  IEC62930_CONDUCTOR, IEC62930_SCOPE, SOLAR_MISSING_TABLES, SOLAR_MISSING_VALUES,
-  SOLAR_TABLES_HELD, permittedConductorClass, solarInsulationToleranceFloorMm,
-  solarSheathToleranceFloorMm,
+  EN50618_CONDUCTOR_RESISTANCE, IEC62930_CONDUCTOR, IEC62930_SCOPE, SOLAR_MISSING_TABLES,
+  SOLAR_MISSING_VALUES, SOLAR_TABLES_HELD, SOLAR_UNREAD_CLAUSES, permittedConductorClass,
+  solarInsulationToleranceFloorMm, solarSheathToleranceFloorMm,
 } from "./iec62930-2017";
 
 test("no dimensional value is encoded while the tables are missing", () => {
@@ -40,4 +40,21 @@ test("solar tolerance rules differ from the BIS ones and from each other", () =>
   assert.equal(Number(solarInsulationToleranceFloorMm(1.0).toFixed(3)), 0.8);
   assert.equal(Number(solarSheathToleranceFloorMm(1.0).toFixed(3)), 0.75);
   assert.ok(solarSheathToleranceFloorMm(2.0) < solarInsulationToleranceFloorMm(2.0));
+});
+
+test("clauses we have not read are listed, not guessed at", () => {
+  // §5.4 "Multi-core cables and additional elements" is on page 11 and absent from the extract.
+  // An earlier version of this module asserted it excluded multi-core cable — an inference from
+  // the TITLE alone. Unread clauses are now recorded as unread.
+  assert.ok(SOLAR_UNREAD_CLAUSES.length >= 4);
+  const multicore = SOLAR_UNREAD_CLAUSES.find((c) => c.clause === "§5.4");
+  assert.ok(multicore, "the multi-core clause must be listed as unread");
+  assert.equal(multicore.page, 11);
+});
+
+test("conductor resistance is deferred to IEC 60228, which we do not hold", () => {
+  // EN 50618 §5.1.5 specifies no values of its own — it points at the metal-coated class 5
+  // column of IEC 60228. IS 8130 derives from IEC 60228 but is not a substitute for it.
+  assert.equal(EN50618_CONDUCTOR_RESISTANCE.heldLocally, false);
+  assert.match(EN50618_CONDUCTOR_RESISTANCE.perStandard, /metal-coated Class 5/i);
 });

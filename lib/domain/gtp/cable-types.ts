@@ -248,7 +248,7 @@ const SOLAR_DC: CableTypeDefinition = {
     "columns are absent, and they cannot be inferred from the BIS tables already held: solar " +
     "walls are sized for 1.5 kV DC and a 25-year outdoor life. Supply pages 13-14 of either " +
     "standard and this becomes a flat per-size lookup with no engine work.",
-  remainingWork: "waiting on 2 pages of the standard",
+  remainingWork: "waiting on p.13-14 of the standard",
 };
 
 export const CABLE_TYPES: CableTypeDefinition[] = [

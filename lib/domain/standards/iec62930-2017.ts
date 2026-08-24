@@ -127,7 +127,9 @@ export const IEC62930_INSULATION = {
   application: "Extruded, fitting closely, removable without damage to insulation, conductor or tin coating",
   multiLayerAllowed: true,
   multiLayerNote: "Multiple non-separable layers are tested as though a single layer, and do NOT constitute double insulation",
-  separatorAllowed: "Non-metallic; must be halogen free in a halogen-free low-smoke cable (§5.1.3)",
+  // §5.1.3 differs between the two: IEC 62930 says "non-metallic separator ... halogen free in a
+  // halogen free low smoke cable"; EN 50618 says simply "a separating tape is permitted".
+  separatorAllowed: "IEC 62930 §5.1.3: non-metallic, halogen free in an HFLS cable. EN 50618 §5.1.3: separating tape permitted.",
   ref: "IEC 62930 : 2017, §5.2",
 } as const;
 
@@ -157,6 +159,8 @@ export const EN50618_SHEATH = {
   colourDepth: "Throughout the whole of the sheath",
   separatorAllowed: true,
   ref: "EN 50618 : 2014, §5.3",
+  // NOTE: the equivalent IEC 62930 §5.3 is on page 11 and is NOT in the supplied extract.
+  // These values are EN 50618's. Do not cite them as IEC 62930.
 } as const;
 
 /** EN 50618 §6.3 — the designation every conforming cable is marked with. */
@@ -174,10 +178,40 @@ export const EN50618_MARKING = {
 } as const;
 
 /**
- * IEC 62930 §5.4 — multi-core. The scope is single-core; this clause exists to say so.
- * A multi-core "solar cable" is outside both standards.
+ * §1 — the SCOPE is single-core ("single-core cross-linked insulated power cables").
+ *
+ * ⚠️ There is also a §5.4 "Multi-core cables and additional elements" on page 11, which is NOT
+ * in the supplied extract. An earlier version of this file asserted that clause says multi-core
+ * cable is out of scope. That was an inference from the title, not something read — the clause
+ * may well PERMIT multi-core constructions under stated conditions.
+ *
+ * So this constant records only what the scope actually says, and the §5.4 question stays open.
  */
-export const IEC62930_SINGLE_CORE_ONLY = true;
+export const IEC62930_SCOPE_IS_SINGLE_CORE = true;
+
+/** Clauses present in the standard but absent from the supplied extract. */
+export const SOLAR_UNREAD_CLAUSES = [
+  { standard: "IEC 62930 : 2017", clause: "§5.4", page: 11, title: "Multi-core cables and additional elements" },
+  { standard: "IEC 62930 : 2017", clause: "§5.3", page: 11, title: "Sheath (material, application, thickness, colour)" },
+  { standard: "IEC 62930 : 2017", clause: "§7.3", page: 13, title: "Overall diameters and ovality" },
+  { standard: "EN 50618 : 2014", clause: "§6.7 / §7", page: 11, title: "Additional marking requirements; completed-cable tests" },
+] as const;
+
+/**
+ * EN 50618 §5.1.5 — conductor resistance.
+ *
+ * Deferred wholesale to EN 60228 for a METAL COATED class 5 conductor. Tin coating raises
+ * resistance slightly, so the tinned column is the one that applies — not the plain-copper one.
+ * We hold IS 8130 (which derives from IEC 60228) but NOT IEC 60228 itself, and the class 5
+ * sizes here run finer than IS 8130 Table 3 covers in places, so this is a real dependency.
+ */
+export const EN50618_CONDUCTOR_RESISTANCE = {
+  perStandard: "EN 60228 (IEC 60228), metal-coated Class 5 column",
+  temperatureC: 20,
+  testMethod: "EN 50395:2005, Clause 5",
+  ref: "EN 50618 : 2014, §5.1.5",
+  heldLocally: false,
+} as const;
 
 /**
  * Are IEC 62930 and EN 50618 interchangeable for our purposes?
