@@ -41,6 +41,7 @@ import {
   type SizeSelection,
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
+import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
 import { buildGtpPdfDocument } from "@/lib/domain/gtp/pdf-document";
 import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
@@ -52,6 +53,8 @@ import {
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
 import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
+import { IS1554_1_SIZES } from "@/lib/domain/standards/is1554-1-1988";
+import { IS7098_1_SIZES } from "@/lib/domain/standards/is7098-1-2025";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
 import { downloadPdf } from "@/lib/domain/pdf";
@@ -86,6 +89,9 @@ interface OrderDetails {
   drumLengthM: number;
   poReference: string;
 }
+
+/** Core counts LT power and control are built in. 3.5 = three cores plus a reduced neutral. */
+const LT_CORE_OPTIONS = [1, 2, 3, 3.5, 4, 5] as const;
 
 const DEFAULT_ORDER_DETAILS: OrderDetails = { totalLengthM: 1000, drumLengthM: 1000, poReference: "" };
 
@@ -133,6 +139,7 @@ function SizePicker({
   value,
   options,
   allowNone,
+  format,
   onChange,
 }: {
   id: string;
@@ -141,6 +148,8 @@ function SizePicker({
   options: readonly number[];
   /** Adds a "None" option (value 0) — used by the optional street-light core. */
   allowNone?: boolean;
+  /** Display override, e.g. 3.5 → "3½". The VALUE stays numeric. */
+  format?: (value: number) => string;
   onChange: (value: number) => void;
 }) {
   return (
@@ -157,7 +166,7 @@ function SizePicker({
         {allowNone ? <option value={0}>None</option> : null}
         {options.map((o) => (
           <option key={o} value={o}>
-            {o}
+            {format ? format(o) : o}
           </option>
         ))}
       </select>
@@ -333,6 +342,16 @@ function GtpBuilderInner() {
   // AB cable is aluminium by standard (IS 14255); LT power and control offer both. Held here so
   // the choice survives template loading and flows into derivation as a quirk.
   const [conductorMaterial, setConductorMaterial] = useState<ConductorMaterialCode>("AL");
+  /**
+   * LT power / control configuration. Distinct from `selection` (the AB size pickers) because
+   * these are different cables: an LT cable has no messenger and no street-light core, so the
+   * two types genuinely need different inputs rather than a shared shape.
+   */
+  const [ltConfig, setLtConfig] = useState<{ csaSqMm: number; coreCount: number; armoured: boolean }>({
+    csaSqMm: 300,
+    coreCount: 3.5,
+    armoured: true,
+  });
   const sizeInput = buildSizeString(selection);
   const [confirmed, setConfirmed] = useState(false);
   const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
@@ -369,6 +388,20 @@ function GtpBuilderInner() {
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
   const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
+  const isLtType = productLine === "XLPE_POWER" || productLine === "PVC_CONTROL";
+  /** Sizes this standard actually has an insulation row for. */
+  const ltSizeOptions = useMemo(
+    () => (productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES),
+    [productLine],
+  );
+  /** Plain-language playback, per cable type — the operator confirms what they meant. */
+  const cableDescription = useMemo(() => {
+    if (!isLtType) return describeSelection(selection);
+    const cores = ltConfig.coreCount === 3.5 ? "3½" : String(ltConfig.coreCount);
+    const material = (activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial) === "AL" ? "aluminium" : "copper";
+    const kind = productLine === "XLPE_POWER" ? "XLPE insulated" : "PVC insulated";
+    return `**${cores} core** × **${ltConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
+  }, [isLtType, selection, ltConfig, productLine, conductorMaterial, activeCableType]);
 
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
@@ -378,13 +411,48 @@ function GtpBuilderInner() {
   const fields = useMemo<ResolvedField[]>(() => {
     if (!profile || !confirmed) return [];
     // The order's drum length overrides the customer's default — it's the more specific layer.
-    const derived = deriveFields(construction, {
-      ...profile.quirks,
-      drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
-      // A standard-pinned material always wins over the picker state — the operator cannot
-      // choose copper for an AB cable, so the engine must never be told they did.
-      conductorMaterial: activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial,
-    });
+    // A standard-pinned material always wins over the picker state — the operator cannot
+    // choose copper for an AB cable, so the engine must never be told they did.
+    const material = activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial;
+
+    // Route by cable type. These are DIFFERENT SCHEDULES, not the same fields with different
+    // numbers: an LT GTP has an armour and an inner sheath where an AB GTP has a messenger and
+    // a street-light core, so the field keys differ by design.
+    let derived: ResolvedField[];
+    if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
+      try {
+        derived = deriveLtFields(
+          {
+            standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
+            csaSqMm: ltConfig.csaSqMm,
+            coreCount: ltConfig.coreCount,
+            material,
+            armoured: ltConfig.armoured,
+          },
+          { customerName: profile.name },
+        );
+      } catch (err) {
+        // The standards do not cover this combination. Surface it rather than emitting a GTP.
+        return [
+          {
+            key: "cable.unsupported",
+            label: "Cannot derive this cable",
+            value: err instanceof Error ? err.message : String(err),
+            tag: "LOOKUP",
+            source: "is-table",
+            trace: "No standards row for this combination",
+            editable: false,
+            gap: true,
+          },
+        ];
+      }
+    } else {
+      derived = deriveFields(construction, {
+        ...profile.quirks,
+        drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
+        conductorMaterial: material,
+      });
+    }
     return derived.map((f) => {
       const value = overrides[f.key];
       if (value === undefined) return f;
@@ -402,7 +470,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType]);
+  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, profile]);
 
   // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo.
   const validation = useMemo(() => {
@@ -785,6 +853,67 @@ function GtpBuilderInner() {
       {/* Moment 2 — What's the cable? */}
       {profile ? (
         <Moment n={2} title="What's the cable?">
+          {isLtType ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Pick the conductor and construction. Sheath and armour thicknesses are not chosen —
+                they follow from the calculated diameter at each stage of the build-up.
+              </p>
+              <div className="flex flex-wrap items-end gap-x-2 gap-y-3 rounded-md border border-border bg-muted/50 p-4">
+                <SizePicker
+                  id="lt-cores"
+                  label="Cores"
+                  value={ltConfig.coreCount}
+                  options={LT_CORE_OPTIONS}
+                  format={(v) => (v === 3.5 ? "3½" : String(v))}
+                  onChange={(v) => setLtConfig((c) => ({ ...c, coreCount: v }))}
+                />
+                <Symbol>C &times;</Symbol>
+                <SizePicker
+                  id="lt-size"
+                  label="Conductor size"
+                  value={ltConfig.csaSqMm}
+                  options={ltSizeOptions}
+                  onChange={(v) => setLtConfig((c) => ({ ...c, csaSqMm: v }))}
+                />
+                <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
+
+                <div className="flex flex-col gap-1 pl-2">
+                  <Label htmlFor="lt-armoured" className="text-xs text-muted-foreground">
+                    Armour
+                  </Label>
+                  <select
+                    id="lt-armoured"
+                    value={ltConfig.armoured ? "yes" : "no"}
+                    onChange={(e) => setLtConfig((c) => ({ ...c, armoured: e.target.value === "yes" }))}
+                    className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="yes">Armoured</option>
+                    <option value="no">Unarmoured</option>
+                  </select>
+                </div>
+
+                <div className="ml-auto border-l border-border pl-4">
+                  <MaterialControl
+                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    fixedBy={activeCableType?.fixedConductorMaterial?.ref}
+                    onChange={setConductorMaterial}
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                {ltConfig.coreCount === 3.5 ? (
+                  <>
+                    3½ core: three full cores plus a reduced neutral, sized from{" "}
+                    {productLine === "XLPE_POWER" ? "IS 7098 (Part 1) Table 2" : "IS 1554 (Part 1) Table 1"}.
+                  </>
+                ) : (
+                  <>Insulation thickness follows the {ltConfig.coreCount === 1 && ltConfig.armoured ? "single-core armoured" : "multi-core"} column.</>
+                )}
+              </p>
+            </div>
+          ) : (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
               Pick each part of the cable. Only sizes we have IS tables for are offered, so the
@@ -868,10 +997,13 @@ function GtpBuilderInner() {
             <p className="font-mono text-xs text-muted-foreground">
               Designation: {sizeInput}
             </p>
+          </div>
+          )}
 
+          <div className="mt-3 space-y-3">
             {true ? (
               <div className="rounded-md border border-border bg-muted p-3">
-                <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(`${describeSelection(selection)} Correct?`) }} />
+                <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(`${cableDescription} Correct?`) }} />
                 {!confirmed ? (
                   <Button type="button" size="sm" className="mt-3" onClick={confirmSize}>
                     Yes, continue
