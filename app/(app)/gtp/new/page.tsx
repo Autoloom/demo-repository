@@ -684,7 +684,7 @@ function GtpBuilderInner() {
                 disabled={!isAvailable}
                 aria-pressed={isActive}
                 onClick={() => isAvailable && setProductLine(line.id)}
-                title={line.blockedReason}
+                title={line.blockedDetail ?? line.blockedReason}
                 className={cn(
                   "flex flex-col items-start gap-1 rounded-md border p-4 text-left transition-colors",
                   isActive && "border-primary bg-primary/5",
@@ -701,13 +701,25 @@ function GtpBuilderInner() {
                   ) : null}
                 </span>
                 <span className="text-sm text-muted-foreground">{line.description}</span>
-                <span className="mt-1 font-mono text-xs text-muted-foreground">
-                  {[line.primaryStandard, ...line.supportingStandards]
-                    .map((s) => `${s.id}:${s.edition}`)
-                    .join(" · ")}
-                </span>
-                {!isAvailable && line.blockedReason ? (
-                  <span className="mt-1 text-xs text-warning">{line.blockedReason}</span>
+
+                {/* Available types show what they derive from — it is the basis of the GTP the
+                    operator is about to sign. Blocked types show what is missing instead:
+                    a standards list they cannot use yet is noise on a card they cannot pick. */}
+                {isAvailable ? (
+                  <span className="mt-1 font-mono text-xs text-muted-foreground">
+                    {[line.primaryStandard, ...line.supportingStandards]
+                      .map((s) => `${s.id}:${s.edition}`)
+                      .join(" · ")}
+                  </span>
+                ) : line.blockedReason ? (
+                  <span className="mt-1 flex flex-col gap-0.5">
+                    <span className="text-xs text-muted-foreground">{line.blockedReason}</span>
+                    {line.remainingWork ? (
+                      <span className="text-[11px] text-muted-foreground/80">
+                        {line.remainingWork} remaining
+                      </span>
+                    ) : null}
+                  </span>
                 ) : null}
               </button>
             );

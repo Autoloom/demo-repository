@@ -131,3 +131,25 @@ test("AB cable fixes its conductor material; LT power and control leave it open"
   // Solar is copper by standard too: IEC 62930 and EN 50618 both specify tinned annealed copper.
   assert.equal(findCableType("SOLAR_DC")?.fixedConductorMaterial?.material, "CU");
 });
+
+test("blocked reasons are operator-facing: short, and free of internal vocabulary", () => {
+  // These render on cards in the builder, read by whoever is deciding what to quote. An earlier
+  // version leaked engineering notes ("data entry, not new engine work", clause numbers, our
+  // work-queue framing) into that surface. The detail belongs in blockedDetail instead.
+  for (const type of CABLE_TYPES.filter((t) => !t.available)) {
+    const reason = type.blockedReason ?? "";
+    assert.ok(reason.length <= 120, `${type.label}: blockedReason is ${reason.length} chars — too long for a card`);
+    assert.equal(reason.split(". ").filter(Boolean).length, 1, `${type.label}: keep it to one sentence`);
+    for (const jargon of [/data entry/i, /engine work/i, /encoded/i, /Table \d/, /§/, /PDF/i, /corpus/i]) {
+      assert.doesNotMatch(reason, jargon, `${type.label}: "${reason}" uses internal vocabulary`);
+    }
+    assert.ok(type.remainingWork, `${type.label}: "coming soon" should say roughly how much is left`);
+  }
+});
+
+test("the engineering detail is kept, just moved off the builder card", () => {
+  for (const type of CABLE_TYPES.filter((t) => !t.available)) {
+    assert.ok(type.blockedDetail && type.blockedDetail.length > type.blockedReason!.length,
+      `${type.label}: the full explanation must survive in blockedDetail`);
+  }
+});

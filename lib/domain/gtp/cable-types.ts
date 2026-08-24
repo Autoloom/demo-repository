@@ -90,7 +90,18 @@ export interface CableTypeDefinition {
   /** True only when every chain step can actually run. Drives the builder's availability. */
   available: boolean;
   /** When not available, the single sentence explaining why. */
+  /**
+   * Why this type can't be built yet, in ONE short operator-facing sentence.
+   *
+   * This renders on a card in the builder, read by someone deciding what to quote — not by an
+   * engineer. It must say what is missing in their terms, not ours: no clause numbers, no
+   * "data entry vs engine work", no internal work-queue vocabulary.
+   */
   blockedReason?: string;
+  /** The engineering detail, for the standards page and for us. Not shown in the builder. */
+  blockedDetail?: string;
+  /** Rough remaining work, so "coming soon" carries some information. */
+  remainingWork?: string;
 }
 
 /** Conductor shape is first-class: LT power uses sector cores, which change dia and mass (WP-B). */
@@ -175,11 +186,12 @@ const LT_POWER_XLPE: CableTypeDefinition = {
   ],
   validationRules: ["buildup.dia-mismatch", "band.coverage", "neutral.reduced", "field.missing-source"],
   available: false,
-  blockedReason:
-    "IS 10462 (Part 1) is now encoded, so the calculated-diameter chain that keys every sheath and " +
-    "armour lookup CAN be computed. What remains is data entry: IS 7098-1 Tables 4-7 (insulation, " +
-    "inner sheath, armour, outer sheath) and the IS 8130 conductor tables. The PDFs for both are " +
-    "held — no missing standard blocks this any more.",
+  blockedReason: "Insulation, sheath and armour thicknesses from IS 7098-1 are still being entered.",
+  blockedDetail:
+    "IS 10462 (Part 1) and IS 8130 are both encoded, so the calculated-diameter chain that keys " +
+    "every sheath and armour lookup can be computed. What remains is IS 7098-1 Tables 4-7: " +
+    "insulation thickness, inner sheath, armour wire/strip, outer sheath.",
+  remainingWork: "4 tables",
 };
 
 const PVC_CONTROL: CableTypeDefinition = {
@@ -202,12 +214,14 @@ const PVC_CONTROL: CableTypeDefinition = {
   derivationChain: LT_POWER_XLPE.derivationChain, // structurally identical (build-plan-v1 §0.3)
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],
   available: false,
-  blockedReason:
+  blockedReason: "Insulation and sheath thicknesses from IS 1554-1 are still being entered.",
+  blockedDetail:
     "IS 1554-1 Tables 4/5/7 (insulation, inner sheath, outer sheath) are not yet encoded. " +
-    "Conductor material is no longer an open question — both copper and aluminium are supported " +
-    "and chosen per order, since IS 8130 fully specifies both. Note that no COPPER works " +
-    "construction is verified yet: there is no approved copper GTP in the corpus, so copper " +
-    "conductor dimensions are estimates until production supplies real figures.",
+    "Conductor material is settled — both copper and aluminium are supported and chosen per " +
+    "order, since IS 8130 specifies both. Separately, no COPPER works construction is verified: " +
+    "there is no approved copper GTP in the corpus, so copper conductor dimensions are estimates " +
+    "until production supplies real figures.",
+  remainingWork: "3 tables",
 };
 
 const SOLAR_DC: CableTypeDefinition = {
@@ -238,7 +252,11 @@ const SOLAR_DC: CableTypeDefinition = {
   ],
   validationRules: ["tolerance.iec", "field.missing-source"],
   available: false,
-  blockedReason: "Tables not yet encoded — the standard is held, so this is data entry, not new engine work.",
+  blockedReason: "Conductor and insulation tables from IEC 62930 are still being entered.",
+  blockedDetail:
+    "IEC 62930 / EN 50618 tables are not yet encoded. No build-up chain is needed — solar is " +
+    "single-core with flat tables — so this is the shortest of the remaining types.",
+  remainingWork: "2 tables",
 };
 
 export const CABLE_TYPES: CableTypeDefinition[] = [
