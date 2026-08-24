@@ -44,6 +44,7 @@ import {
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
+import { deriveSolarFields } from "@/lib/domain/gtp/derive-solar-fields";
 import { buildGtpPdfDocument } from "@/lib/domain/gtp/pdf-document";
 import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
@@ -57,6 +58,7 @@ import {
 import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { IS1554_1_SIZES } from "@/lib/domain/standards/is1554-1-1988";
 import { IS7098_1_SIZES } from "@/lib/domain/standards/is7098-1-2025";
+import { IS17293_CLASS2_SIZES, IS17293_CLASS5_SIZES } from "@/lib/domain/standards/is17293-2020";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
 import { downloadPdf } from "@/lib/domain/pdf";
@@ -94,6 +96,9 @@ interface OrderDetails {
 
 /** Core counts LT power and control are built in. 3.5 = three cores plus a reduced neutral. */
 const LT_CORE_OPTIONS = [1, 2, 3, 3.5, 4, 5] as const;
+
+/** IS 17293 Table 8 ambients. Not a free number — the standard tabulates these eight. */
+const SOLAR_AMBIENT_OPTIONS = [0, 10, 20, 30, 40, 50, 60, 70] as const;
 
 const DEFAULT_ORDER_DETAILS: OrderDetails = { totalLengthM: 1000, drumLengthM: 1000, poReference: "" };
 
@@ -354,6 +359,16 @@ function GtpBuilderInner() {
     coreCount: 3.5,
     armoured: true,
   });
+  /**
+   * Solar DC configuration. Conductor class is absent on purpose — IS 17293 §4.1 derives it
+   * from whether the cable connects directly to the modules, so that is the question asked.
+   */
+  const [solarConfig, setSolarConfig] = useState<{
+    csaSqMm: number;
+    directlyConnectedToModules: boolean;
+    installationMethod: "free-in-air" | "on-surface" | "two-touching";
+    ambientC: number;
+  }>({ csaSqMm: 4, directlyConnectedToModules: true, installationMethod: "free-in-air", ambientC: 40 });
   const sizeInput = buildSizeString(selection);
   const [confirmed, setConfirmed] = useState(false);
   const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
@@ -401,6 +416,12 @@ function GtpBuilderInner() {
 
   const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
   const isLtType = productLine === "XLPE_POWER" || productLine === "PVC_CONTROL";
+  const isSolarType = productLine === "SOLAR_DC";
+  /** IS 17293 Table 1 (class 5) runs from 1.5; Table 2 (class 2) starts at 16. */
+  const solarSizeOptions = useMemo(
+    () => (solarConfig.directlyConnectedToModules ? IS17293_CLASS5_SIZES : IS17293_CLASS2_SIZES),
+    [solarConfig.directlyConnectedToModules],
+  );
   /** Sizes this standard actually has an insulation row for. */
   const ltSizeOptions = useMemo(
     () => (productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES),
@@ -408,12 +429,16 @@ function GtpBuilderInner() {
   );
   /** Plain-language playback, per cable type — the operator confirms what they meant. */
   const cableDescription = useMemo(() => {
+    if (isSolarType) {
+      const klass = solarConfig.directlyConnectedToModules ? "Class 5 (flexible)" : "Class 2 (fixed)";
+      return `**1 core** × **${solarConfig.csaSqMm} sq mm** tinned copper, **${klass}**, 1.5 kV DC solar.`;
+    }
     if (!isLtType) return describeSelection(selection);
     const cores = ltConfig.coreCount === 3.5 ? "3½" : String(ltConfig.coreCount);
     const material = (activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial) === "AL" ? "aluminium" : "copper";
     const kind = productLine === "XLPE_POWER" ? "XLPE insulated" : "PVC insulated";
     return `**${cores} core** × **${ltConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
-  }, [isLtType, selection, ltConfig, productLine, conductorMaterial, activeCableType]);
+  }, [isLtType, isSolarType, selection, ltConfig, solarConfig, productLine, conductorMaterial, activeCableType]);
 
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
@@ -431,7 +456,24 @@ function GtpBuilderInner() {
     // numbers: an LT GTP has an armour and an inner sheath where an AB GTP has a messenger and
     // a street-light core, so the field keys differ by design.
     let derived: ResolvedField[];
-    if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
+    if (productLine === "SOLAR_DC") {
+      try {
+        derived = deriveSolarFields(solarConfig, { customerName: profile.name, quirks: profile.quirks });
+      } catch (err) {
+        return [
+          {
+            key: "cable.unsupported",
+            label: "Cannot derive this cable",
+            value: err instanceof Error ? err.message : String(err),
+            tag: "LOOKUP",
+            source: "is-table",
+            trace: "No standards row for this combination",
+            editable: false,
+            gap: true,
+          },
+        ];
+      }
+    } else if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
       try {
         derived = deriveLtFields(
           {
@@ -482,7 +524,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, profile]);
+  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, profile]);
 
   /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
@@ -888,7 +930,90 @@ function GtpBuilderInner() {
       {/* Moment 2 — What's the cable? */}
       {profile ? (
         <Moment n={2} title="What's the cable?">
-          {isLtType ? (
+          {isSolarType ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Solar cable is single core — thicknesses come straight from IS 17293. The conductor
+                class is not chosen: it follows from whether the cable connects to the modules.
+              </p>
+              <div className="flex flex-wrap items-end gap-x-2 gap-y-3 rounded-md border border-border bg-muted/50 p-4">
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="solar-connection" className="text-xs text-muted-foreground">
+                    Connection
+                  </Label>
+                  <select
+                    id="solar-connection"
+                    value={solarConfig.directlyConnectedToModules ? "modules" : "fixed"}
+                    onChange={(e) =>
+                      setSolarConfig((c) => {
+                        const direct = e.target.value === "modules";
+                        const sizes = direct ? IS17293_CLASS5_SIZES : IS17293_CLASS2_SIZES;
+                        // Class 2 has no row below 16 sq mm — move the size up rather than
+                        // leaving a selection the standard cannot answer.
+                        return { ...c, directlyConnectedToModules: direct, csaSqMm: sizes.includes(c.csaSqMm) ? c.csaSqMm : sizes[0] };
+                      })
+                    }
+                    className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="modules">Direct to PV modules</option>
+                    <option value="fixed">Fixed installation</option>
+                  </select>
+                </div>
+                <SizePicker
+                  id="solar-size"
+                  label="Conductor size"
+                  value={solarConfig.csaSqMm}
+                  options={solarSizeOptions}
+                  onChange={(v) => setSolarConfig((c) => ({ ...c, csaSqMm: v }))}
+                />
+                <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
+
+                <div className="flex flex-col gap-1 pl-2">
+                  <Label htmlFor="solar-install" className="text-xs text-muted-foreground">
+                    Installation
+                  </Label>
+                  <select
+                    id="solar-install"
+                    value={solarConfig.installationMethod}
+                    onChange={(e) => setSolarConfig((c) => ({ ...c, installationMethod: e.target.value as typeof c.installationMethod }))}
+                    className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="free-in-air">Single, free in air</option>
+                    <option value="on-surface">Single, on a surface</option>
+                    <option value="two-touching">Two touching, on a surface</option>
+                  </select>
+                </div>
+
+                <SizePicker
+                  id="solar-ambient"
+                  label="Ambient"
+                  value={solarConfig.ambientC}
+                  options={SOLAR_AMBIENT_OPTIONS}
+                  format={(v) => `${v} °C`}
+                  onChange={(v) => setSolarConfig((c) => ({ ...c, ambientC: v }))}
+                />
+
+                <div className="ml-auto border-l border-border pl-4">
+                  <MaterialControl
+                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    fixedBy={activeCableType?.fixedConductorMaterial?.ref}
+                    onChange={setConductorMaterial}
+                  />
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                {solarConfig.directlyConnectedToModules
+                  ? "Class 5 flexible conductor (IS 17293 §4.1, Table 1)."
+                  : "Class 2 conductor — fixed installation only, no flexing (IS 17293 §4.1, Table 2)."}
+                {solarConfig.ambientC !== 40 ? (
+                  <span className="text-warning">
+                    {" "}Current rating de-rated from the 40 °C table figure.
+                  </span>
+                ) : null}
+              </p>
+            </div>
+          ) : isLtType ? (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
                 Pick the conductor and construction. Sheath and armour thicknesses are not chosen —

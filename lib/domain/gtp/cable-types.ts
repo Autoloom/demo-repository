@@ -215,40 +215,35 @@ const SOLAR_DC: CableTypeDefinition = {
   label: "Solar DC cable",
   description: "Single-core cross-linked cable for the DC side of PV systems, 1.5 kV DC.",
   // The type that proves the engine can leave India: not BIS.
-  body: "IEC",
-  primaryStandard: { id: "IEC 62930", edition: "2017" },
-  // Both IEC 62930 and EN 50618 specify tinned annealed copper, class 5. Not a choice.
-  fixedConductorMaterial: { material: "CU", ref: "IEC 62930 : 2017" },
+  // BIS, not IEC: IS 17293 is the Indian solar cable standard and the right citation for a GTP
+  // produced here. IEC 62930 / EN 50618 remain listed as the international siblings.
+  body: "BIS",
+  primaryStandard: { id: "IS 17293", edition: "2020" },
+  // IS 17293 §4.1 specifies annealed TINNED copper. Not a choice.
+  fixedConductorMaterial: { material: "CU", ref: "IS 17293 : 2020" },
   supportingStandards: [
-    { id: "EN 50618", edition: "2015", purpose: "European sibling standard; near-identical tables" },
-    { id: "IEC 60228", edition: "2004", purpose: "Conductor classes 2 and 5" },
+    { id: "IS 8130", edition: "2013", purpose: "Conductor classes 2 and 5" },
+    { id: "IEC 62930", edition: "2017", purpose: "International sibling (clauses only — tables not held)" },
+    { id: "EN 50618", edition: "2015", purpose: "European sibling (clauses only — tables not held)" },
   ],
   configSchema: [
-    { kind: "choice", key: "standard", label: "Standard", options: ["IEC 62930", "EN 50618"], defaultValue: "IEC 62930" },
-    { kind: "choice", key: "conductorClass", label: "Conductor class", options: [2, 5], defaultValue: 5, hint: "Class 5 (flexible) for cable connected directly to modules; class 2 for fixed installation" },
-    { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240], defaultValue: 4, hint: "sq mm" },
+    // The conductor class is NOT offered directly: §4.1 derives it from the application, and
+    // offering it as a free choice would let an operator pick a class the standard forbids.
+    { kind: "boolean", key: "directlyConnectedToModules", label: "Connected directly to PV modules", defaultValue: true, hint: "Yes → Class 5 (flexible). No → Class 2, fixed installation only." },
+    { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400], defaultValue: 4, hint: "sq mm" },
+    { kind: "choice", key: "installationMethod", label: "Installation", options: ["free-in-air", "on-surface", "two-touching"], defaultValue: "free-in-air", hint: "Changes the current rating (Table 7)" },
+    { kind: "choice", key: "ambientC", label: "Ambient temperature", options: [0, 10, 20, 30, 40, 50, 60, 70], defaultValue: 40, hint: "°C — Table 7 is rated at 40 °C; higher ambients de-rate the cable" },
   ],
   // Flat: no lay-up, no armour, no fictitious-diameter chain. This is why it is buildable now.
   derivationChain: [
-    { id: "conductor", describes: "Tin-coated copper conductor, class 2 or 5", standardId: "IEC 60228" },
-    { id: "dimensions", describes: "Insulation and sheath thickness, overall diameter, insulation resistance", standardId: "IEC 62930" },
-    { id: "material", describes: "Cross-linked insulation and sheath requirements", standardId: "IEC 62930" },
+    { id: "conductor", describes: "Annealed tinned copper, class derived from application", standardId: "IS 17293" },
+    { id: "dimensions", describes: "Insulation and sheath thickness, overall diameter, insulation resistance", standardId: "IS 17293" },
+    { id: "rating", describes: "Current capacity, de-rated for ambient temperature", standardId: "IS 17293" },
     { id: "fixed", describes: "1.5 kV DC rating, 90 °C continuous / 120 °C for 20 000 h" },
     { id: "tests", describes: "Test schedule including UV/weathering and dynamic penetration", standardId: "IEC 62930" },
   ],
   validationRules: ["tolerance.iec", "field.missing-source"],
-  available: false,
-  blockedReason: "The IEC 62930 dimensional tables are missing from the copy we hold.",
-  blockedDetail:
-    "Not our work queue — a source-document gap. Both solar PDFs supplied are iTeh 'STANDARD " +
-    "PREVIEW' extracts that end at page 12; IEC 62930 Tables 1-2 and EN 50618 Table 1 sit on " +
-    "pages 13-14 and carry insulation thickness, sheath thickness, overall diameter limits and " +
-    "insulation resistance per size. Every CLAUSE is encoded (iec62930-2017.ts) — conductor is " +
-    "tinned copper class 5, 1.5 kV DC, 90 °C/120 °C, H1Z2Z2-K. Only the four dimensional " +
-    "columns are absent, and they cannot be inferred from the BIS tables already held: solar " +
-    "walls are sized for 1.5 kV DC and a 25-year outdoor life. Supply pages 13-14 of either " +
-    "standard and this becomes a flat per-size lookup with no engine work.",
-  remainingWork: "waiting on p.13-14 of the standard",
+  available: true,
 };
 
 export const CABLE_TYPES: CableTypeDefinition[] = [

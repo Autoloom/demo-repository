@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { CABLE_TYPES, availableCableTypes, blockedSteps, findCableType } from "@/lib/domain/gtp/cable-types";
+import type { StandardsBody } from "@/lib/domain/standards/types";
 
 test("all four in-scope cable types are registered, in build order", () => {
   assert.deepEqual(
@@ -31,8 +32,30 @@ test("a type is only 'available' when no step in its chain is blocked", () => {
   }
 });
 
-test("three of four types are derivable; only solar remains", () => {
-  assert.deepEqual(availableCableTypes().map((t) => t.id), ["AB_CABLE", "XLPE_POWER", "PVC_CONTROL"]);
+test("all four cable types are now derivable", () => {
+  assert.deepEqual(
+    availableCableTypes().map((t) => t.id),
+    ["AB_CABLE", "XLPE_POWER", "PVC_CONTROL", "SOLAR_DC"],
+  );
+});
+
+test("solar cites IS 17293, not the IEC preview we could not read", () => {
+  // IS 17293 : 2020 is the Indian solar standard and the correct citation for a GTP produced
+  // here. IEC 62930 / EN 50618 stay listed as siblings, but their tables were never held.
+  const solar = findCableType("SOLAR_DC");
+  assert.equal(solar?.primaryStandard.id, "IS 17293");
+  assert.equal(solar?.body, "BIS", "IS 17293 is a BIS document");
+  assert.ok(solar?.supportingStandards.some((x) => x.id === "IEC 62930"));
+});
+
+test("solar does not offer conductor class as a free choice", () => {
+  // §4.1 derives the class from the application. Offering it directly would let an operator
+  // select a class the standard forbids for their installation.
+  const solar = findCableType("SOLAR_DC");
+  assert.ok(!solar?.configSchema.some((f) => f.key === "conductorClass"));
+  assert.ok(solar?.configSchema.some((f) => f.key === "directlyConnectedToModules"));
+  // Ambient is a required input, because Table 7 is rated at 40 °C.
+  assert.ok(solar?.configSchema.some((f) => f.key === "ambientC"));
 });
 
 test("the calculated-diameter chain is no longer blocked — IS 10462-1 is encoded", () => {
@@ -91,9 +114,20 @@ test("LT power and control share a derivation chain — one schema, two datasets
   );
 });
 
-test("solar is the non-BIS type — the registry must not assume one standards body", () => {
-  assert.equal(findCableType("SOLAR_DC")?.body, "IEC");
-  assert.equal(findCableType("AB_CABLE")?.body, "BIS");
+test("the registry must not assume one standards body", () => {
+  // Solar USED to be the non-BIS example. It now cites IS 17293 (a BIS document), so the
+  // invariant is checked where it still bites: non-BIS standards remain citable as supporting
+  // references, and StandardsBody still admits IEC and CENELEC.
+  const bodies: StandardsBody[] = ["BIS", "IEC", "CENELEC"];
+  assert.equal(bodies.length, 3);
+  for (const t of CABLE_TYPES) {
+    assert.ok(bodies.includes(t.body), `${t.label} has an unknown standards body`);
+  }
+  const solar = findCableType("SOLAR_DC");
+  assert.ok(
+    solar?.supportingStandards.some((x) => x.id.startsWith("IEC") || x.id.startsWith("EN")),
+    "a BIS-primary type must still be able to cite international standards",
+  );
 });
 
 test("every type declares a config schema and validation rules", () => {
