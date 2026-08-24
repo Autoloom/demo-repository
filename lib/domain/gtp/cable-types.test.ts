@@ -31,8 +31,8 @@ test("a type is only 'available' when no step in its chain is blocked", () => {
   }
 });
 
-test("only AB cable is derivable today", () => {
-  assert.deepEqual(availableCableTypes().map((t) => t.id), ["AB_CABLE"]);
+test("three of four types are derivable; only solar remains", () => {
+  assert.deepEqual(availableCableTypes().map((t) => t.id), ["AB_CABLE", "XLPE_POWER", "PVC_CONTROL"]);
 });
 
 test("the calculated-diameter chain is no longer blocked — IS 10462-1 is encoded", () => {
@@ -46,24 +46,24 @@ test("the calculated-diameter chain is no longer blocked — IS 10462-1 is encod
   }
 });
 
-test("LT power and control remain blocked, but only on data entry", () => {
-  // The distinction that matters: a MISSING STANDARD is an external blocker we cannot clear;
-  // an UNENCODED TABLE is our own work queue. Every remaining blocker must be the latter.
+test("LT power and control are now fully unblocked", () => {
+  // Was: blocked first on a missing standard, then on unencoded tables. Both are cleared —
+  // IS 10462-1, IS 8130, IS 7098-1 and IS 1554-1 are all encoded and the chain runs.
   for (const id of ["XLPE_POWER", "PVC_CONTROL"] as const) {
     const type = findCableType(id);
-    assert.ok(type && !type.available);
-    const blocked = blockedSteps(type);
-    assert.ok(blocked.length > 0, `${type.label} is unavailable so something must be blocked`);
-    for (const step of blocked) {
-      assert.match(
-        step.blockedBy ?? "", /not encoded/,
-        `${type.label} step ${step.id}: remaining blockers must be encoding work, not missing standards`,
-      );
-    }
-    assert.doesNotMatch(
-      type.blockedReason ?? "", /not held/,
-      `${type.label}: the reason must no longer claim a standard is missing`,
-    );
+    assert.ok(type?.available, `${id} should be derivable`);
+    assert.deepEqual(blockedSteps(type), [], `${type.label} must have no blocked steps`);
+    assert.equal(type.blockedReason, undefined);
+  }
+});
+
+test("an available type carries no leftover blocked-state copy", () => {
+  // Guards against a type being switched on while its "coming soon" text is left behind,
+  // which would render a contradiction on the builder card.
+  for (const type of CABLE_TYPES.filter((t) => t.available)) {
+    assert.equal(type.blockedReason, undefined, `${type.label} is available but still has blockedReason`);
+    assert.equal(type.blockedDetail, undefined, `${type.label} is available but still has blockedDetail`);
+    assert.equal(type.remainingWork, undefined, `${type.label} is available but still has remainingWork`);
   }
 });
 

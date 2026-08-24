@@ -171,27 +171,21 @@ const LT_POWER_XLPE: CableTypeDefinition = {
   // The build-up chain. Each `keyedBy` step needs the PREVIOUS step's output as its lookup key.
   derivationChain: [
     { id: "conductor.rule", describes: "Solid or stranded, flexibility class, from size and material", standardId: "IS 7098-1" },
-    { id: "conductor", describes: "Strands, diameter, resistance", standardId: "IS 8130", blockedBy: "IS 8130 tables not encoded" },
+    { id: "conductor", describes: "Max DC resistance and minimum wire count", standardId: "IS 8130" },
     { id: "neutral.reduced", describes: "Reduced-neutral CSA", standardId: "IS 7098-1" },
-    { id: "insulation", describes: "Insulation thickness", standardId: "IS 7098-1", blockedBy: "IS 7098-1 Table 4 not encoded" },
+    { id: "insulation", describes: "Insulation thickness", standardId: "IS 7098-1" },
     { id: "calc.diaOverCore", describes: "Fictitious diameter over insulation (D_c)", standardId: "IS 10462-1" },
     { id: "layup", describes: "Lay-up pattern by core count", standardId: "IS 7098-1" },
     { id: "calc.diaOverLaidUp", describes: "Fictitious diameter over laid-up cores (D_f)", standardId: "IS 10462-1", keyedBy: "calc.diaOverCore" },
-    { id: "innerSheath", describes: "Inner sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaOverLaidUp", blockedBy: "IS 7098-1 Table 5 not encoded" },
+    { id: "innerSheath", describes: "Inner sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaOverLaidUp" },
     { id: "calc.diaUnderArmour", describes: "Fictitious diameter over inner sheath = under armour (D_B)", standardId: "IS 10462-1", keyedBy: "innerSheath" },
-    { id: "armour", describes: "Armour wire diameter or strip thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderArmour", blockedBy: "IS 7098-1 Table 6 not encoded" },
+    { id: "armour", describes: "Armour wire diameter or strip thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderArmour" },
     { id: "calc.diaUnderSheath", describes: "Fictitious diameter over armour = under outer sheath (D_X)", standardId: "IS 10462-1", keyedBy: "armour" },
-    { id: "outerSheath", describes: "Outer sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderSheath", blockedBy: "IS 7098-1 Table 7 not encoded" },
+    { id: "outerSheath", describes: "Outer sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderSheath" },
     { id: "calc.overall", describes: "Overall diameter and mass by component" },
   ],
   validationRules: ["buildup.dia-mismatch", "band.coverage", "neutral.reduced", "field.missing-source"],
-  available: false,
-  blockedReason: "Insulation, sheath and armour thicknesses from IS 7098-1 are still being entered.",
-  blockedDetail:
-    "IS 10462 (Part 1) and IS 8130 are both encoded, so the calculated-diameter chain that keys " +
-    "every sheath and armour lookup can be computed. What remains is IS 7098-1 Tables 4-7: " +
-    "insulation thickness, inner sheath, armour wire/strip, outer sheath.",
-  remainingWork: "4 tables",
+  available: true,
 };
 
 const PVC_CONTROL: CableTypeDefinition = {
@@ -201,7 +195,7 @@ const PVC_CONTROL: CableTypeDefinition = {
   body: "BIS",
   primaryStandard: { id: "IS 1554-1", edition: "1988" },
   supportingStandards: [
-    { id: "IS 8130", edition: "1984", purpose: "Conductors" },
+    { id: "IS 8130", edition: "2013", purpose: "Conductors" },
     { id: "IS 10462-1", edition: "1983", purpose: "Fictitious calculation method" },
     { id: "IS 5831", edition: "1984", purpose: "PVC insulation (Type A/C) and sheath (ST-1/ST-2)" },
   ],
@@ -213,15 +207,7 @@ const PVC_CONTROL: CableTypeDefinition = {
   ],
   derivationChain: LT_POWER_XLPE.derivationChain, // structurally identical (build-plan-v1 §0.3)
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],
-  available: false,
-  blockedReason: "Insulation and sheath thicknesses from IS 1554-1 are still being entered.",
-  blockedDetail:
-    "IS 1554-1 Tables 4/5/7 (insulation, inner sheath, outer sheath) are not yet encoded. " +
-    "Conductor material is settled — both copper and aluminium are supported and chosen per " +
-    "order, since IS 8130 specifies both. Separately, no COPPER works construction is verified: " +
-    "there is no approved copper GTP in the corpus, so copper conductor dimensions are estimates " +
-    "until production supplies real figures.",
-  remainingWork: "3 tables",
+  available: true,
 };
 
 const SOLAR_DC: CableTypeDefinition = {
