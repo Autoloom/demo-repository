@@ -19,7 +19,7 @@ const allFields = () => deriveFields(constructionFromSelection(defaultSelection(
 /** Every particular label the rendered document actually contains. */
 function printedLabels(fields: ResolvedField[]): string[] {
   const doc = buildGtpPdfDocument(fields, meta);
-  return doc.sections.flatMap((sec) => sec.table?.rows.map((r) => r[0]) ?? []);
+  return doc.sections.flatMap((sec) => sec.table?.rows.map((r) => String(r[0] ?? "")) ?? []);
 }
 
 test("hiding a field removes it from the printed document", () => {
