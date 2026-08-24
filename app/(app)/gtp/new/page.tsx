@@ -19,6 +19,8 @@ import {
   Save,
   Users,
   X,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -384,6 +386,16 @@ function GtpBuilderInner() {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   /** Reasons for overriding a LOOKUP/CALC field — required, stored in the audit trail. */
   const [overrideReasons, setOverrideReasons] = useState<Record<string, string>>({});
+  /**
+   * Fields hidden from the printed GTP.
+   *
+   * Buyers ask for different schedules — some want the full build-up, others only the finished
+   * dimensions — so an operator can trim what prints. Hiding is NOT deleting: the value stays
+   * derived, stays visible in the builder (struck through), and stays in the stored record;
+   * only the PDF omits it. A field carrying an unresolved gap can never be hidden, because
+   * hiding a known-missing value would turn a visible problem into an invisible one.
+   */
+  const [hiddenFields, setHiddenFields] = useState<string[]>([]);
   /** Locked fields the user has deliberately unlocked (two actions before editing). */
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
@@ -429,7 +441,7 @@ function GtpBuilderInner() {
             material,
             armoured: ltConfig.armoured,
           },
-          { customerName: profile.name },
+          { customerName: profile.name, quirks: profile.quirks },
         );
       } catch (err) {
         // The standards do not cover this combination. Surface it rather than emitting a GTP.
@@ -471,6 +483,29 @@ function GtpBuilderInner() {
       };
     });
   }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, profile]);
+
+  /**
+   * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
+   * the builder keeps showing it and the audit trail keeps recording it.
+   */
+  const printedFields = useMemo(
+    () => fields.filter((f) => !hiddenFields.includes(f.key)),
+    [fields, hiddenFields],
+  );
+
+  /**
+   * A field can be hidden unless it is an unresolved gap.
+   *
+   * Hiding a gap would remove the one visible sign that a value is missing — the operator would
+   * see a tidy document and sign it. Gaps must be filled or overridden, never hidden.
+   */
+  function canHide(field: ResolvedField): boolean {
+    return !field.gap;
+  }
+
+  function toggleFieldHidden(key: string) {
+    setHiddenFields((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  }
 
   // Moment 5 — validation gate. Clean de-rating ladder assumed for the demo.
   const validation = useMemo(() => {
@@ -566,7 +601,7 @@ function GtpBuilderInner() {
           drumCount: drumCount(orderDetails),
         },
         // Mirror the fields into sections so the existing detail view can render this record.
-        sections: fields.map((f) => ({
+        sections: printedFields.map((f) => ({
           id: f.key,
           label: f.label,
           value: String(f.value),
@@ -583,7 +618,7 @@ function GtpBuilderInner() {
       // separate step the user has to discover.
       downloadPdf(
         `${gtp.id}-${profile.name.replace(/\s+/g, "-")}`,
-        buildGtpPdfDocument(fields, {
+        buildGtpPdfDocument(printedFields, {
           gtpId: gtp.id,
           version: gtp.version,
           status: gtp.status,
@@ -1136,11 +1171,33 @@ function GtpBuilderInner() {
           {fieldsOpen ? (
             <div className="overflow-x-auto border-t border-border">
               <table className="w-full text-left text-sm">
+              {hiddenFields.length > 0 ? (
+                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+                  <span className="text-sm text-foreground">
+                    {hiddenFields.length} field{hiddenFields.length === 1 ? "" : "s"} hidden from the printed GTP.
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    Still derived and recorded — only left off the document.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setHiddenFields([])}
+                    className="ml-auto min-h-11 rounded-md px-2 text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                  >
+                    Show all again
+                  </button>
+                </div>
+              ) : null}
                 <thead className="bg-muted text-xs text-muted-foreground">
                   <tr>
                     <th className="p-3 font-medium">Field</th>
                     <th className="p-3 font-medium">Value</th>
                     <th className="p-3 font-medium">Source</th>
+                    <th className="p-3 text-right font-medium">
+                      <span title="Hidden fields stay derived and audited — they are only left off the printed GTP.">
+                        On GTP
+                      </span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1152,11 +1209,14 @@ function GtpBuilderInner() {
                       className={cn(
                         "scroll-mt-24 border-t border-border transition-colors",
                         f.gap && "bg-danger/5",
+                        hiddenFields.includes(f.key) && "opacity-55",
                         // Flash the row the user was sent to, so the jump is unmistakable.
                         highlightedField === f.key && "bg-primary/10 ring-2 ring-inset ring-primary",
                       )}
                     >
-                      <td className="p-3 text-foreground">{f.label}</td>
+                      <td className={cn("p-3 text-foreground", hiddenFields.includes(f.key) && "line-through decoration-muted-foreground")}>
+                        {f.label}
+                      </td>
                       <td className="p-3">
                         <FieldValueCell
                           field={f}
@@ -1179,6 +1239,37 @@ function GtpBuilderInner() {
                           </span>
                         ) : null}
                         <span className="text-xs text-muted-foreground">{f.trace}</span>
+                      </td>
+                      <td className="p-3 text-right align-top">
+                        {canHide(f) ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleFieldHidden(f.key)}
+                            aria-pressed={!hiddenFields.includes(f.key)}
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            {hiddenFields.includes(f.key) ? (
+                              <>
+                                <EyeOff className="size-3.5" aria-hidden="true" />
+                                Hidden
+                              </>
+                            ) : (
+                              <>
+                                <Eye className="size-3.5" aria-hidden="true" />
+                                Shown
+                              </>
+                            )}
+                          </button>
+                        ) : (
+                          // A gap can't be hidden — that would conceal a missing value on a
+                          // document someone is about to sign.
+                          <span
+                            className="inline-flex min-h-11 items-center px-2 text-xs text-muted-foreground"
+                            title="Fields with a missing value must be filled or overridden, not hidden."
+                          >
+                            Required
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}

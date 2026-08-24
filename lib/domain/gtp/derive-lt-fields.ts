@@ -19,6 +19,7 @@ import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-co
 
 import { deriveLtCable } from "./derive-lt";
 import type { LtCableConfig } from "./derive-lt";
+import type { DerivationQuirks } from "./derive";
 import type { ResolvedField } from "./types";
 
 /** Org constants, shared with the AB engine. Kept in sync deliberately, not imported cyclically. */
@@ -38,7 +39,10 @@ function withUnit(value: number, unit: string): string {
  * Throws only where the standards genuinely do not cover the cable — the caller surfaces that
  * rather than emitting a GTP with a guessed value.
  */
-export function deriveLtFields(config: LtCableConfig, opts: { customerName?: string } = {}): ResolvedField[] {
+export function deriveLtFields(
+  config: LtCableConfig,
+  opts: { customerName?: string; quirks?: DerivationQuirks } = {},
+): ResolvedField[] {
   const chain = deriveLtCable(config);
   const isXlpe = config.standard === "IS7098-1";
   const standardRef = isXlpe ? "IS 7098 (Part 1) : 2025" : "IS 1554 (Part 1) : 1988";
@@ -184,6 +188,69 @@ export function deriveLtFields(config: LtCableConfig, opts: { customerName?: str
       source: "is-table",
       trace: "IS 1554 (Part 1) : 1988, §17.2",
       editable: false,
+    });
+  }
+
+  // ── Customer quirks ─────────────────────────────────────────────────────────────────────
+  // Only the quirks that MEAN something on this cable type are applied. Sag and messenger
+  // construction are AB concepts — an underground armoured cable has neither — so they are
+  // deliberately absent rather than rendered as empty rows.
+  const quirks = opts.quirks;
+  if (quirks?.markingLegend) {
+    fields.push({
+      key: "mark.customerLegend",
+      label: "Marking legend",
+      value: quirks.markingLegend,
+      tag: "QUIRK",
+      source: "profile",
+      trace: `${quirks.customerName ?? opts.customerName ?? "Customer"} profile — verbatim as demanded`,
+      editable: true,
+    });
+  }
+  if (quirks?.embossingIntervalM != null) {
+    fields.push({
+      key: "mark.interval",
+      label: "Embossing interval",
+      value: `${quirks.embossingIntervalM} m`,
+      tag: "QUIRK",
+      source: "profile",
+      trace: `${quirks.customerName ?? "Customer"} profile`,
+      editable: true,
+    });
+  }
+  if (quirks?.coreIdentification) {
+    fields.push({
+      key: "cable.identification",
+      label: "Core identification",
+      value: quirks.coreIdentification,
+      tag: "QUIRK",
+      source: "profile",
+      trace: `${quirks.customerName ?? "Customer"} profile`,
+      editable: true,
+    });
+  }
+  if (quirks?.drumLengthM != null) {
+    fields.push({
+      key: "drum.standardLength",
+      label: "Standard drum length",
+      value: `${quirks.drumLengthM} m${quirks.drumLengthTolerance ? ` ${quirks.drumLengthTolerance}` : ""}`,
+      tag: "QUIRK",
+      source: "profile",
+      trace: `${quirks.customerName ?? "Customer"} profile`,
+      editable: true,
+    });
+  }
+  if (quirks?.tolerancePhrasing === "min") {
+    // WBSEDCL prints thicknesses as "(Min)" rather than "±5%". Restate the derived
+    // thicknesses in their phrasing rather than silently using ours.
+    fields.push({
+      key: "lt.tolerancePhrasing",
+      label: "Thickness tolerance phrasing",
+      value: "(Min) — minimum values, not nominal ±",
+      tag: "QUIRK",
+      source: "profile",
+      trace: `${quirks.customerName ?? "Customer"} uses "(Min)" phrasing`,
+      editable: true,
     });
   }
 

@@ -238,11 +238,17 @@ const SOLAR_DC: CableTypeDefinition = {
   ],
   validationRules: ["tolerance.iec", "field.missing-source"],
   available: false,
-  blockedReason: "Conductor and insulation tables from IEC 62930 are still being entered.",
+  blockedReason: "The IEC 62930 dimensional tables are missing from the copy we hold.",
   blockedDetail:
-    "IEC 62930 / EN 50618 tables are not yet encoded. No build-up chain is needed — solar is " +
-    "single-core with flat tables — so this is the shortest of the remaining types.",
-  remainingWork: "2 tables",
+    "Not our work queue — a source-document gap. Both solar PDFs supplied are iTeh 'STANDARD " +
+    "PREVIEW' extracts that end at page 12; IEC 62930 Tables 1-2 and EN 50618 Table 1 sit on " +
+    "pages 13-14 and carry insulation thickness, sheath thickness, overall diameter limits and " +
+    "insulation resistance per size. Every CLAUSE is encoded (iec62930-2017.ts) — conductor is " +
+    "tinned copper class 5, 1.5 kV DC, 90 °C/120 °C, H1Z2Z2-K. Only the four dimensional " +
+    "columns are absent, and they cannot be inferred from the BIS tables already held: solar " +
+    "walls are sized for 1.5 kV DC and a 25-year outdoor life. Supply pages 13-14 of either " +
+    "standard and this becomes a flat per-size lookup with no engine work.",
+  remainingWork: "waiting on 2 pages of the standard",
 };
 
 export const CABLE_TYPES: CableTypeDefinition[] = [
