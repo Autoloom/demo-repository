@@ -370,7 +370,6 @@ function GtpBuilderInner() {
     ambientC: number;
   }>({ csaSqMm: 4, directlyConnectedToModules: true, installationMethod: "free-in-air", ambientC: 40 });
   const sizeInput = buildSizeString(selection);
-  const [confirmed, setConfirmed] = useState(false);
   const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
   const [choices, setChoices] = useState<Choices | null>(null);
   const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -443,10 +442,52 @@ function GtpBuilderInner() {
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
 
-  // Moment 4 — derive the full field map once a profile + confirmed construction exist, then
-  // lay any manual overrides on top (the "order" layer of the three-layer cascade).
+  /**
+   * How many customer-specific fields each profile contributes, for the selection cards.
+   *
+   * Derived by running the engine for the CURRENT cable type, so the number is true for the
+   * cable being built — an AB cable picks up sag and messenger construction that an underground
+   * LT cable has no equivalent for, and the card should not promise fields that will not appear.
+   */
+  const quirkFieldCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of CUSTOMER_PROFILES) {
+      try {
+        const derived =
+          productLine === "SOLAR_DC"
+            ? deriveSolarFields(solarConfig, { quirks: p.quirks })
+            : productLine === "XLPE_POWER" || productLine === "PVC_CONTROL"
+              ? deriveLtFields(
+                  {
+                    standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
+                    csaSqMm: ltConfig.csaSqMm,
+                    coreCount: ltConfig.coreCount,
+                    material: conductorMaterial,
+                    armoured: ltConfig.armoured,
+                  },
+                  { quirks: p.quirks },
+                )
+              : deriveFields(construction, p.quirks);
+        counts[p.id] = derived.filter((f) => f.tag === "QUIRK").length;
+      } catch {
+        // An unsupported combination is not this card's problem to report.
+        counts[p.id] = 0;
+      }
+    }
+    return counts;
+  }, [productLine, construction, ltConfig, solarConfig, conductorMaterial]);
+
+
+  // Moment 4 — derive the full field map as soon as a customer is chosen, then lay any manual
+  // overrides on top (the "order" layer of the three-layer cascade).
+  //
+  // There is deliberately NO confirmation gate. It existed when the size was free text and the
+  // parser had to guess roles from a designation string; the pickers are closed sets fed
+  // straight into constructionFromSelection, so there is nothing left to misread. Gating on a
+  // click just made the page look broken until it was pressed. The plain-language playback
+  // stays — as a readback of what was built, not a checkpoint before building it.
   const fields = useMemo<ResolvedField[]>(() => {
-    if (!profile || !confirmed) return [];
+    if (!profile) return [];
     // The order's drum length overrides the customer's default — it's the more specific layer.
     // A standard-pinned material always wins over the picker state — the operator cannot
     // choose copper for an AB cable, so the engine must never be told they did.
@@ -524,7 +565,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, confirmed, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, profile]);
+  }, [profile, construction, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig]);
 
   /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
@@ -563,8 +604,12 @@ function GtpBuilderInner() {
 
   function pickProfile(p: CustomerProfile) {
     setProfile(p);
-    setConfirmed(false);
-    setChoices(null);
+    // Seed the template defaults from the customer. These used to be set by confirmSize(); they
+    // are the customer's own defaults, so selecting the customer is where they belong.
+    setChoices({
+      curing: p.choices.curingMethods[0],
+      drumLength: p.choices.drumLengthOptions[0],
+    });
     setSelection(defaultSelection());
     setAckWarnings(false);
     setHighlightedField(null);
@@ -581,19 +626,9 @@ function GtpBuilderInner() {
     setUnlockedFields((keys) => keys.filter((k) => k !== key));
   }
 
-  /** Change one part of the size; any edit invalidates the earlier confirmation. */
+  /** Change one part of the size. Fields re-derive immediately — there is nothing to re-confirm. */
   function updateSelection(patch: Partial<SizeSelection>) {
     setSelection((current) => ({ ...current, ...patch }));
-    setConfirmed(false);
-  }
-
-  function confirmSize() {
-    if (!profile) return;
-    setConfirmed(true);
-    setChoices({
-      curing: profile.choices.curingMethods[0],
-      drumLength: profile.choices.drumLengthOptions[0],
-    });
   }
 
   /** Start from a saved template: restore its inputs, then re-derive from live IS tables. */
@@ -604,7 +639,6 @@ function GtpBuilderInner() {
     // Templates store the designation string; recover the picker state from it.
     setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
     setChoices(template.choices);
-    setConfirmed(true);
     setAckWarnings(false);
     setStartMode("scratch");
     recordTemplateUse(template.id);
@@ -723,7 +757,7 @@ function GtpBuilderInner() {
     validation?.passesHardGate &&
     (validation.warningCount === 0 || ackWarnings) &&
     missingReasons.length === 0;
-  const canSaveTemplate = Boolean(profile && choices && confirmed && templateName.trim());
+  const canSaveTemplate = Boolean(profile && choices && templateName.trim());
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6">
@@ -875,7 +909,12 @@ function GtpBuilderInner() {
 
       {/* Moment 1 — Who is this for? */}
       {startMode === "scratch" ? (
-      <Moment n={1} title="Who is this GTP for?">
+      <Moment n={1} title="Which customer?">
+        <p className="mb-3 text-sm text-muted-foreground">
+          The customer decides more than the name on the document — their profile supplies the
+          marking legend, drum length, core identification and tolerance phrasing their engineers
+          expect, and pins which edition of each standard is cited.
+        </p>
         <div className="grid gap-3 sm:grid-cols-2">
           {CUSTOMER_PROFILES.map((p) => {
             const active = profile?.id === p.id;
@@ -897,6 +936,18 @@ function GtpBuilderInner() {
                 <span className="text-sm text-muted-foreground">{p.state}</span>
                 <span className="text-xs text-muted-foreground">
                   {p.approvedGtpCount} approved GTP{p.approvedGtpCount === 1 ? "" : "s"}
+                </span>
+                {/* What this selection actually changes. Without it the grid reads as navigation
+                    chrome rather than the most load-bearing input on the page.
+
+                    Counted by running the real engine rather than by inspecting the quirks
+                    object: a hand-maintained list of "which quirks produce a field" drifts the
+                    moment a quirk is added, and a card that overstates its effect is worse than
+                    one that says nothing. */}
+                <span className="mt-1 text-xs text-muted-foreground">
+                  {quirkFieldCounts[p.id] > 0
+                    ? `${quirkFieldCounts[p.id]} customer-specific field${quirkFieldCounts[p.id] === 1 ? "" : "s"}`
+                    : "House defaults — no customer overrides"}
                 </span>
               </button>
             );
@@ -1161,24 +1212,15 @@ function GtpBuilderInner() {
           )}
 
           <div className="mt-3 space-y-3">
-            {true ? (
-              <div className="rounded-md border border-border bg-muted p-3">
-                <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(`${cableDescription} Correct?`) }} />
-                {!confirmed ? (
-                  <Button type="button" size="sm" className="mt-3" onClick={confirmSize}>
-                    Yes, continue
-                  </Button>
-                ) : (
-                  <p className="mt-2 flex items-center gap-1.5 text-xs text-success">
-                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" /> Confirmed
-                  </p>
-                )}
-              </div>
-            ) : null}
+            {/* Readback of what the pickers built, in plain language. Not a checkpoint — the
+                fields below already reflect it and update as the pickers change. */}
+            <div className="rounded-md border border-border bg-muted p-3">
+              <p className="text-sm text-foreground" dangerouslySetInnerHTML={{ __html: renderPlayback(cableDescription) }} />
+            </div>
 
             {/* Order-specific quantities. Separate from the construction above: the same cable
                 can be sold in any quantity, on any drum length, against any PO. */}
-            {confirmed ? (
+            {true ? (
               <div className="mt-4 space-y-3 border-t border-border pt-4">
                 <p className="text-sm font-medium text-foreground">How much of it?</p>
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -1232,32 +1274,21 @@ function GtpBuilderInner() {
       ) : null}
 
       {/* Moment 3 — A few questions */}
-      {confirmed && profile && choices ? (
-        <Moment n={3} title="A few questions">
-          {/* Supplier questions removed (build-plan-v2 D8): suppliers are chosen per purchase on
-              price, and disclosing sourcing on a GTP is commercially sensitive. The field remains
-              optional and blank in the editable field list — it is never asked for here, never
-              pre-filled, and never printed when blank. */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <ChoiceField
-              label="Curing method"
-              value={choices.curing}
-              options={profile.choices.curingMethods}
-              onChange={(v) => setChoices({ ...choices, curing: v })}
-            />
-            <ChoiceField
-              label="Drum length"
-              value={choices.drumLength}
-              options={profile.choices.drumLengthOptions}
-              onChange={(v) => setChoices({ ...choices, drumLength: v })}
-            />
-          </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Pre-filled from {profile.name}&rsquo;s last approved GTPs. Change only what&rsquo;s different.
-          </p>
+      {profile && choices ? (
+        <Moment n={3} title="Save for next time">
+          {/* Two questions were removed here (curing method, drum length). Both fed only
+              saveTemplate() — neither reached the derived fields, the stored GTP or the PDF, so
+              answering them changed nothing about the document. Drum length was also asked a
+              second time in Order details, as a NUMBER that does reach the PDF and overrides the
+              customer profile; asking for it twice in two units invited the wrong one being
+              trusted. Curing method is a process constant and belongs in profiles.ts if it is
+              ever needed on the document.
+
+              Supplier questions were removed earlier (build-plan-v2 D8): suppliers are chosen per
+              purchase on price, and disclosing sourcing on a GTP is commercially sensitive. */}
 
           {/* Save these inputs as a reusable starting point. Secondary to Generate. */}
-          <div className="mt-4 border-t border-border pt-4">
+          <div>
             <Label htmlFor="tpl-name">Save these answers as a template (optional)</Label>
             <p className="mt-0.5 text-xs text-muted-foreground">
               Saves the customer, size and answers above — not the calculated values, so it stays
@@ -1485,34 +1516,6 @@ function GtpBuilderInner() {
   );
 }
 
-function ChoiceField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
 
 /** The playback string uses **bold** markers; render them as <strong> safely (no user HTML). */
 function renderPlayback(playback: string): string {
