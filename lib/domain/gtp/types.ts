@@ -8,7 +8,15 @@
 import type { ConductorMaterial } from "@/lib/services/types";
 
 /** Which of the five kinds a GTP field is. Drives whether it's editable and how it's sourced. */
-export type FieldTag = "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED";
+/**
+ * Where a field's VALUE came from, as printed next to it in the builder.
+ *
+ * MANUAL is deliberately distinct from the rest: every other tag traces to a standard, a
+ * customer profile or a calculation the engine can re-check, whereas MANUAL means a person
+ * typed it and nothing verifies it. Keeping it a separate tag rather than reusing CHOICE stops
+ * hand-entered text being mistaken for something the engine stands behind.
+ */
+export type FieldTag = "LOOKUP" | "CALC" | "CHOICE" | "QUIRK" | "FIXED" | "MANUAL";
 
 /** Where a resolved value came from, most-specific-wins cascade (design-doc §0.3). */
 /**

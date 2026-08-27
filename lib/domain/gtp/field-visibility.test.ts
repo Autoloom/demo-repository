@@ -69,3 +69,34 @@ test("the sign-off block survives however much is hidden", () => {
   assert.ok(lines.some((l) => l.includes("Divisional Engineer")));
   assert.ok(lines.some((l) => l.includes("Assistant Engineer")));
 });
+
+test("MANUAL parameters print like any other field", () => {
+  // A hand-added parameter is a real row on the document — the buyer asked for it. It is the
+  // TAG that marks its origin internally, not its absence from the PDF.
+  const fields = allFields();
+  const custom: ResolvedField = {
+    key: "custom.abc123", label: "Tender clause 4.2 compliance", value: "Confirmed",
+    tag: "MANUAL", source: "override", trace: "Added manually — not derived from any standard",
+    editable: true,
+  };
+  assert.ok(printedLabels([...fields, custom]).includes("Tender clause 4.2 compliance"));
+});
+
+test("override REASONS never reach the printed document", () => {
+  // build-plan-v2 D10. Reasons are internal operational context ("customer asked verbally") and
+  // belong in the audit log, not on a page the buyer reads. This is the boundary between the
+  // two, and it has to hold now that reasons are persisted rather than discarded.
+  const reason = "Customer asked verbally — matching their last order";
+  const withOverride: ResolvedField[] = allFields().map((f) =>
+    f.key === "power.maxDcResistance"
+      ? { ...f, value: "0.440 ohm/km", source: "override" as const,
+          override: { previous: String(f.value), reason, by: "R. Kamble", at: new Date().toISOString() } }
+      : f,
+  );
+  const doc = buildGtpPdfDocument(withOverride, meta);
+  const everything = JSON.stringify(doc);
+  assert.ok(!everything.includes(reason), "the reason must not appear anywhere in the document");
+  assert.ok(!everything.includes("asked verbally"));
+  // The overridden VALUE does print — it is what the cable will be built to.
+  assert.ok(everything.includes("0.440 ohm/km"));
+});

@@ -24,12 +24,45 @@
 import type { CustomerProfile } from "./profiles";
 import type { ProductLine } from "./types";
 
-/** The CHOICE answers a template carries. Mirrors the builder's Moment-3 questions. */
+/**
+ * @deprecated Retained so templates saved before the sheet model still parse. The two questions
+ * these answered (curing method, drum length) fed nothing on the document and were removed.
+ */
 export interface TemplateChoices {
   curing: string;
   drumLength: string;
 }
 
+/**
+ * A parameter an operator added by hand.
+ *
+ * Not from any standard. It renders tagged MANUAL with no IS citation, so a reviewer can see at
+ * a glance that a person put it there — the same posture as an override. Buyers ask for tender
+ * clauses, project codes and confirmations that no cable standard has an opinion about, and the
+ * alternative to supporting them is an operator editing the PDF afterwards, unlogged.
+ */
+export interface CustomParameter {
+  /** Stable across reloads so hide/show and edits can address it. */
+  key: string;
+  label: string;
+  value: string;
+}
+
+/**
+ * A saved sheet: the arrangement of a GTP for one customer and cable type.
+ *
+ * This IS the template. There is no separate "customer template" concept — picking a customer
+ * seeds the sheet from their profile, and saving the arrangement is what makes it reusable.
+ * A template therefore has to carry everything that shapes the document, not just its size:
+ *
+ *   • which cable type and construction it is for
+ *   • which fields are HIDDEN from the printed document
+ *   • which parameters were ADDED by hand
+ *   • which derived values were manually overridden, and why
+ *
+ * Storing only the size — which is what it used to do — meant reloading a template gave you a
+ * differently-shaped document from the one you saved.
+ */
 export interface GtpTemplate {
   id: string;
   /** User-given name, e.g. "WBSEDCL 3-core AB standard". */
@@ -43,12 +76,33 @@ export interface GtpTemplate {
    * while LT power is selected restored AB sizes into the LT engine.
    */
   productLine?: ProductLine;
-  /** The size string exactly as typed, re-parsed on use. */
+  /** The designation for the type above. Only AB round-trips through the parser. */
   sizeInput: string;
-  choices: TemplateChoices;
+  /** Construction for LT power / control, where a designation string cannot express it. */
+  ltConfig?: { csaSqMm: number; coreCount: number; armoured: boolean };
+  /** Construction for solar DC. */
+  solarConfig?: {
+    csaSqMm: number;
+    directlyConnectedToModules: boolean;
+    installationMethod: "free-in-air" | "on-surface" | "two-touching";
+    ambientC: number;
+  };
+  /** Field keys left OFF the printed document. The shape of the sheet. */
+  hiddenFields?: string[];
+  /** Parameters the operator added by hand. */
+  customParameters?: CustomParameter[];
+  /** Manual edits to derived values, with the reason each was changed. */
+  overrides?: Record<string, { value: string; reason: string }>;
+  /** @deprecated see TemplateChoices. Kept optional so old records still load. */
+  choices?: TemplateChoices;
   createdAt: string;
   /** Bumped each time a GTP is started from this template — powers "most used" ordering. */
   useCount: number;
+}
+
+/** Stable key for a custom parameter. Prefixed so it can never collide with a derived field. */
+export function customParameterKey(): string {
+  return `custom.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
 const STORAGE_KEY = "cableos2:v1:gtp-templates";

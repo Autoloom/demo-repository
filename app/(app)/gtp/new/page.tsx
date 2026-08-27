@@ -21,10 +21,11 @@ import {
   X,
   Eye,
   EyeOff,
+  Plus,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState, useSyncExternalStore } from "react";
+import { Suspense, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,14 +46,17 @@ import {
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
 import { deriveSolarFields } from "@/lib/domain/gtp/derive-solar-fields";
+import { appendAuditEntry, reassignAuditEntries } from "@/lib/domain/gtp/audit-log";
 import { buildGtpPdfDocument } from "@/lib/domain/gtp/pdf-document";
 import { CABLE_TYPES } from "@/lib/domain/gtp/cable-types";
 import { CUSTOMER_PROFILES, findProfile, type CustomerProfile } from "@/lib/domain/gtp/profiles";
 import {
+  customParameterKey,
   loadTemplates,
   recordTemplateUse,
   saveTemplate,
   templatesForProfile,
+  type CustomParameter,
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
 import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
@@ -72,6 +76,9 @@ const TAG_TONE: Record<ResolvedField["tag"], string> = {
   CHOICE: "bg-primary/10 text-primary border-primary/30",
   QUIRK: "bg-warning/10 text-warning border-warning/30",
   FIXED: "bg-muted text-muted-foreground border-border",
+  // Warning-toned on purpose: a hand-entered value carries no standards backing, and should
+  // not sit visually alongside values the engine can defend.
+  MANUAL: "bg-warning/10 text-warning border-warning/30",
 };
 
 /**
@@ -262,6 +269,7 @@ function FieldValueCell({
   onEdit,
   onRequestUnlock,
   onReasonChange,
+  onReasonCommit,
   onRevert,
 }: {
   field: ResolvedField;
@@ -271,6 +279,8 @@ function FieldValueCell({
   onEdit: (value: string) => void;
   onRequestUnlock: () => void;
   onReasonChange: (reason: string) => void;
+  /** Fired on blur — the point at which the change is worth recording in the audit trail. */
+  onReasonCommit?: () => void;
   onRevert: () => void;
 }) {
   const isOverridden = override !== undefined;
@@ -317,6 +327,7 @@ function FieldValueCell({
           <Input
             value={reason}
             onChange={(e) => onReasonChange(e.target.value)}
+            onBlur={() => onReasonCommit?.()}
             placeholder="Why are you changing this? (required)"
             className={cn("h-8 max-w-72 text-xs", isOverridden && !reason.trim() && "border-danger")}
             aria-label={`Reason for changing ${field.label}`}
@@ -396,7 +407,6 @@ function GtpBuilderInner() {
     () => getTemplatesSnapshot(version),
     () => EMPTY_TEMPLATES,
   );
-  const [startMode, setStartMode] = useState<"choose" | "scratch">("choose");
   const [templateName, setTemplateName] = useState("");
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   /** Field key the user was last sent to from a validation issue — briefly highlighted. */
@@ -447,6 +457,22 @@ function GtpBuilderInner() {
    * hiding a known-missing value would turn a visible problem into an invisible one.
    */
   const [hiddenFields, setHiddenFields] = useState<string[]>([]);
+  /**
+   * Parameters the operator added by hand. Buyers ask for tender clauses and project codes that
+   * no cable standard covers; the alternative to supporting them is someone editing the PDF
+   * afterwards, unlogged.
+   */
+  const [customParameters, setCustomParameters] = useState<CustomParameter[]>([]);
+  const [addingParameter, setAddingParameter] = useState(false);
+  const [newParamLabel, setNewParamLabel] = useState("");
+  const [newParamValue, setNewParamValue] = useState("");
+  /**
+   * Identifies this draft in the audit log before a GTP id exists. Reassigned to the real id on
+   * generate, so the trail follows the document.
+   */
+  const [draftId] = useState(() => `DRAFT-${Date.now().toString(36).toUpperCase()}`);
+  /** Fields already recorded once, so a second edit logs as an amend rather than a duplicate. */
+  const auditedKeys = useRef<Set<string>>(new Set());
   /** Locked fields the user has deliberately unlocked (two actions before editing). */
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
@@ -585,7 +611,23 @@ function GtpBuilderInner() {
         conductorMaterial: material,
       });
     }
-    return derived.map((f) => {
+    // Hand-added parameters join the derived list rather than living beside it, so hide/show,
+    // validation, the PDF and the stored record treat them identically. They carry tag MANUAL
+    // and no standards ref — a reviewer can see instantly that a person put them there.
+    const withCustom: ResolvedField[] = [
+      ...derived,
+      ...customParameters.map((c) => ({
+        key: c.key,
+        label: c.label,
+        value: c.value,
+        tag: "MANUAL" as const,
+        source: "override" as const,
+        trace: "Added manually — not derived from any standard",
+        editable: true,
+      })),
+    ];
+
+    return withCustom.map((f) => {
       const value = overrides[f.key];
       if (value === undefined) return f;
       return {
@@ -602,7 +644,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig]);
+  }, [profile, construction, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters]);
 
   /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
@@ -656,11 +698,62 @@ function GtpBuilderInner() {
     setOverrides((current) => ({ ...current, [key]: value }));
   }
 
+  /**
+   * Record an override in the audit trail.
+   *
+   * Called on blur rather than on every keystroke: the trail should read as decisions, not as
+   * typing. An edit to an already-overridden field is an `amend`, so re-edits stay visible
+   * rather than overwriting the earlier entry.
+   */
+  function commitOverride(field: ResolvedField, value: string, reason: string) {
+    if (!value.trim() || !reason.trim()) return;
+    const already = auditedKeys.current.has(field.key);
+    auditedKeys.current.add(field.key);
+    appendAuditEntry({
+      gtpId: draftId,
+      fieldKey: field.key,
+      fieldLabel: field.label,
+      action: already ? "amend" : "override",
+      previousValue: String(field.override?.previous ?? field.value),
+      newValue: value,
+      reason,
+      actor: actorFromSession().name,
+      context: { customerName: profile?.name, designation },
+    });
+  }
+
   /** Undo a manual edit and go back to the standards-derived value. */
   function revertOverride(key: string) {
+    const field = fields.find((f) => f.key === key);
+    if (field && overrides[key] !== undefined) {
+      // A revert is itself a change worth recording — "this was edited then put back" is
+      // exactly the history a reviewer needs, and it is lost if only the end state is stored.
+      appendAuditEntry({
+        gtpId: draftId,
+        fieldKey: key,
+        fieldLabel: field.label,
+        action: "revert",
+        previousValue: overrides[key],
+        newValue: "",
+        reason: "",
+        actor: actorFromSession().name,
+        context: { customerName: profile?.name, designation },
+      });
+      auditedKeys.current.delete(key);
+    }
     setOverrides(({ [key]: _removed, ...rest }) => rest);
     setOverrideReasons(({ [key]: _r, ...rest }) => rest);
     setUnlockedFields((keys) => keys.filter((k) => k !== key));
+  }
+
+  /** Add a parameter no standard covers. Tagged MANUAL so its origin is unmistakable. */
+  function addCustomParameter(label: string, value: string) {
+    if (!label.trim() || !value.trim()) return;
+    setCustomParameters((current) => [...current, { key: customParameterKey(), label: label.trim(), value: value.trim() }]);
+  }
+
+  function removeCustomParameter(key: string) {
+    setCustomParameters((current) => current.filter((c) => c.key !== key));
   }
 
   /** Change one part of the size. Fields re-derive immediately — there is nothing to re-confirm. */
@@ -683,9 +776,22 @@ function GtpBuilderInner() {
     if (line === "AB_CABLE") {
       setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
     }
-    setChoices(template.choices);
+    // LT and solar keep their own config — a designation string cannot express armour, ambient
+    // or conductor class, so those round-trip as objects.
+    if (template.ltConfig) setLtConfig(template.ltConfig);
+    if (template.solarConfig) setSolarConfig(template.solarConfig);
+
+    // Restore the SHAPE of the sheet, which is the point of a template.
+    setHiddenFields(template.hiddenFields ?? []);
+    setCustomParameters(template.customParameters ?? []);
+    const savedOverrides = template.overrides ?? {};
+    setOverrides(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.value])));
+    setOverrideReasons(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.reason])));
+    // Overrides restored from a template are already justified; unlock them so they are visible
+    // as edits rather than appearing to be derived values.
+    setUnlockedFields(Object.keys(savedOverrides));
+    setChoices(template.choices ?? null);
     setAckWarnings(false);
-    setStartMode("scratch");
     recordTemplateUse(template.id);
     setVersion((v) => v + 1);
     setSavedNotice(`Started from "${template.name}". Every value below was re-derived from the current IS tables.`);
@@ -735,6 +841,9 @@ function GtpBuilderInner() {
         updatedAt: now,
       };
       await gtpService.save(gtp, actorFromSession());
+      // The trail was recorded against the draft id because the GTP did not exist yet. Point it
+      // at the real one, or the history detaches from the document it describes.
+      reassignAuditEntries(draftId, gtp.id);
       // The document is the deliverable — hand it over as part of generating, not as a
       // separate step the user has to discover.
       downloadPdf(
@@ -768,9 +877,22 @@ function GtpBuilderInner() {
   function handleSaveTemplate() {
     const name = templateName.trim();
     if (!name || !profile || !choices) return;
-    // Store the cable type AND the designation for the type actually selected. Storing only the
-    // AB size string meant an LT template reloaded as an AB cable.
-    saveTemplate({ name, profileId: profile.id, productLine, sizeInput: designation, choices });
+    // A template is the SHEET, not just the size: which fields print, what was added by hand,
+    // and what was overridden and why. Saving only the designation gave you a differently-shaped
+    // document when you reloaded it.
+    saveTemplate({
+      name,
+      profileId: profile.id,
+      productLine,
+      sizeInput: designation,
+      ltConfig,
+      solarConfig,
+      hiddenFields,
+      customParameters,
+      overrides: Object.fromEntries(
+        Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
+      ),
+    });
     setVersion((v) => v + 1);
     setTemplateName("");
     setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
@@ -838,65 +960,52 @@ function GtpBuilderInner() {
       ) : null}
 
       {/* Start step — templates lead when they exist (playbook rule #3: lead with the shortcut). */}
-      {startMode === "choose" ? (
-        <section className="rounded-lg border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-base font-semibold text-foreground">How do you want to start?</h2>
-          {templates.length > 0 ? (
-            <>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Start from one of your saved templates — it fills in the customer, size and answers.
-              </p>
-              <ul className="mt-4 space-y-2">
-                {templates.map((t) => {
-                  const p = findProfile(t.profileId);
-                  return (
-                    <li key={t.id}>
-                      <button
-                        type="button"
-                        onClick={() => startFromTemplate(t)}
-                        className="flex w-full items-center justify-between gap-3 rounded-md border border-border p-4 text-left hover:bg-muted"
-                      >
-                        <span className="min-w-0">
-                          <span className="flex items-center gap-2 font-medium text-foreground">
-                            <LayoutTemplate className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                            {t.name}
-                          </span>
-                          <span className="mt-0.5 block truncate text-sm text-muted-foreground">
-                            {p?.name ?? t.profileId} · <span className="font-mono">{t.sizeInput}</span>
-                            {t.useCount > 0 ? ` · used ${t.useCount}×` : ""}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-sm font-medium text-primary">Use →</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              <button
-                type="button"
-                onClick={() => setStartMode("scratch")}
-                className="mt-4 text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
-              >
-                Or start from scratch
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="mt-1 text-sm text-muted-foreground">
-                You haven&rsquo;t saved any templates yet. Build a GTP below, then save its answers as a
-                template so the next one takes a few taps.
-              </p>
-              <Button type="button" className="mt-4" onClick={() => setStartMode("scratch")}>
-                Start a new GTP
-              </Button>
-            </>
-          )}
+      {/* Templates, if there are any. Previously a full-screen "How do you want to start?" gate
+          that had to be dismissed before the builder appeared, with the template list repeated
+          again inside Moment 1. One list, offered as a shortcut rather than a mode choice —
+          picking one fills the sheet in; ignoring it costs nothing. */}
+      {templates.length > 0 ? (
+        <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Start from a saved sheet
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Restores the customer, the cable, which parameters print, and anything added or
+            overridden — then re-derives every standards value from the current IS tables.
+          </p>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {templates.map((t) => {
+              const p = findProfile(t.profileId);
+              const shaped = (t.hiddenFields?.length ?? 0) + (t.customParameters?.length ?? 0);
+              return (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    onClick={() => startFromTemplate(t)}
+                    className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md border border-border p-3 text-left hover:bg-muted"
+                  >
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2 font-medium text-foreground">
+                        <LayoutTemplate className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        {t.name}
+                      </span>
+                      <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+                        {p?.name ?? t.profileId} · <span className="font-mono">{t.sizeInput}</span>
+                        {shaped > 0 ? ` · ${shaped} adjustment${shaped === 1 ? "" : "s"}` : ""}
+                        {t.useCount > 0 ? ` · used ${t.useCount}×` : ""}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-sm font-medium text-primary">Use →</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </section>
       ) : null}
 
       {/* Cable type — the first real choice, since it decides which standards apply. Planned
           lines are shown rather than hidden so the roadmap is visible and expectations are set. */}
-      {startMode === "scratch" ? (
       <section className="rounded-lg border border-border bg-card p-5 shadow-sm">
         <h2 className="text-base font-semibold text-foreground">What kind of cable?</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -952,10 +1061,8 @@ function GtpBuilderInner() {
           })}
         </div>
       </section>
-      ) : null}
 
       {/* Moment 1 — Who is this for? */}
-      {startMode === "scratch" ? (
       <Moment n={1} title="Which customer?">
         <p className="mb-3 text-sm text-muted-foreground">
           The customer decides more than the name on the document — their profile supplies the
@@ -1023,7 +1130,6 @@ function GtpBuilderInner() {
           </div>
         ) : null}
       </Moment>
-      ) : null}
 
       {/* Moment 2 — What's the cable? */}
       {profile ? (
@@ -1429,6 +1535,7 @@ function GtpBuilderInner() {
                           onRequestUnlock={() => setUnlockedFields((keys) => [...keys, f.key])}
                           reason={overrideReasons[f.key] ?? ""}
                           onReasonChange={(reason) => setOverrideReasons((r) => ({ ...r, [f.key]: reason }))}
+                          onReasonCommit={() => commitOverride(f, overrides[f.key] ?? "", overrideReasons[f.key] ?? "")}
                           onRevert={() => revertOverride(f.key)}
                         />
                       </td>
@@ -1444,7 +1551,18 @@ function GtpBuilderInner() {
                         <span className="text-xs text-muted-foreground">{f.trace}</span>
                       </td>
                       <td className="p-3 text-right align-top">
-                        {canHide(f) ? (
+                        {f.key.startsWith("custom.") ? (
+                          // A hand-added parameter is removed outright rather than hidden —
+                          // hiding implies a derived value still exists underneath, and none does.
+                          <button
+                            type="button"
+                            onClick={() => removeCustomParameter(f.key)}
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-danger"
+                          >
+                            <X className="size-3.5" aria-hidden="true" />
+                            Remove
+                          </button>
+                        ) : canHide(f) ? (
                           <button
                             type="button"
                             onClick={() => toggleFieldHidden(f.key)}
@@ -1478,6 +1596,80 @@ function GtpBuilderInner() {
                   ))}
                 </tbody>
               </table>
+
+              {/* Add a parameter no standard covers — a tender clause, a project code, a
+                  confirmation the buyer asks for. Without this the operator edits the PDF
+                  afterwards, which leaves no record at all. */}
+              <div className="border-t border-border p-3">
+                {addingParameter ? (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="param-label" className="text-xs text-muted-foreground">
+                        Parameter
+                      </Label>
+                      <Input
+                        id="param-label"
+                        value={newParamLabel}
+                        onChange={(e) => setNewParamLabel(e.target.value)}
+                        placeholder="e.g. Tender clause 4.2 compliance"
+                        className="h-11 w-64"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <Label htmlFor="param-value" className="text-xs text-muted-foreground">
+                        Value
+                      </Label>
+                      <Input
+                        id="param-value"
+                        value={newParamValue}
+                        onChange={(e) => setNewParamValue(e.target.value)}
+                        placeholder="e.g. Confirmed"
+                        className="h-11 w-56"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="min-h-11"
+                      disabled={!newParamLabel.trim() || !newParamValue.trim()}
+                      onClick={() => {
+                        addCustomParameter(newParamLabel, newParamValue);
+                        setNewParamLabel("");
+                        setNewParamValue("");
+                        setAddingParameter(false);
+                      }}
+                    >
+                      Add
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="min-h-11"
+                      onClick={() => {
+                        setAddingParameter(false);
+                        setNewParamLabel("");
+                        setNewParamValue("");
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <p className="w-full text-xs text-muted-foreground">
+                      Added parameters print as written and carry no standards reference — they
+                      show as MANUAL so a reviewer can see they came from a person.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAddingParameter(true)}
+                    className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <Plus className="size-4" aria-hidden="true" />
+                    Add a parameter
+                  </button>
+                )}
+              </div>
             </div>
           ) : null}
         </section>
