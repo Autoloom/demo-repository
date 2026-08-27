@@ -22,6 +22,7 @@
  * contract; swapping to the service layer later touches only load/save here.
  */
 import type { CustomerProfile } from "./profiles";
+import type { ProductLine } from "./types";
 
 /** The CHOICE answers a template carries. Mirrors the builder's Moment-3 questions. */
 export interface TemplateChoices {
@@ -34,6 +35,14 @@ export interface GtpTemplate {
   /** User-given name, e.g. "WBSEDCL 3-core AB standard". */
   name: string;
   profileId: CustomerProfile["id"];
+  /**
+   * Which cable type this template is for.
+   *
+   * Optional for backward compatibility: templates saved before cable types existed have no
+   * value and are treated as AB, which is what they were. Without this, loading an AB template
+   * while LT power is selected restored AB sizes into the LT engine.
+   */
+  productLine?: ProductLine;
   /** The size string exactly as typed, re-parsed on use. */
   sizeInput: string;
   choices: TemplateChoices;

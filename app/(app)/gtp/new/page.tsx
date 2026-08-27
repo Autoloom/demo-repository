@@ -108,6 +108,16 @@ function drumCount(details: OrderDetails): number {
   return Math.ceil(details.totalLengthM / details.drumLengthM);
 }
 
+/**
+ * Human label for a cable type, from the registry rather than a hardcoded string.
+ *
+ * The record used to hardcode "LT Aerial Bunched, XLPE" for every type, so an LT power or solar
+ * GTP was filed on the board as AB cable.
+ */
+function activeCableTypeLabel(id: ProductLine): string {
+  return CABLE_TYPES.find((t) => t.id === id)?.label ?? id;
+}
+
 /** DOM id for a field's row, so validation issues can link straight to it. */
 function fieldRowId(key: string): string {
   return `field-${key.replace(/\./g, "-")}`;
@@ -369,7 +379,9 @@ function GtpBuilderInner() {
     installationMethod: "free-in-air" | "on-surface" | "two-touching";
     ambientC: number;
   }>({ csaSqMm: 4, directlyConnectedToModules: true, installationMethod: "free-in-air", ambientC: 40 });
+
   const sizeInput = buildSizeString(selection);
+
   const [orderDetails, setOrderDetails] = useState<OrderDetails>(DEFAULT_ORDER_DETAILS);
   const [choices, setChoices] = useState<Choices | null>(null);
   const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -392,6 +404,31 @@ function GtpBuilderInner() {
   const [generating, setGenerating] = useState(false);
   // Only AB cable is derivable today; the other lines render as disabled placeholders.
   const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
+
+  /**
+   * The designation for the cable ACTUALLY selected.
+   *
+   * `sizeInput` is the AB composed string and is only correct for AB cable. Everything that
+   * identifies the finished record — the stored GTP, the PDF subtitle, the kanban card — must
+   * use this instead, or an LT power cable is filed as "LT Aerial Bunched, XLPE — 3Cx70",
+   * describing a cable nobody selected.
+   */
+  const designation = useMemo(() => {
+    if (productLine === "SOLAR_DC") {
+      return `1Cx${solarConfig.csaSqMm} (${solarConfig.directlyConnectedToModules ? "Class 5" : "Class 2"})`;
+    }
+    if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
+      const cores = ltConfig.coreCount === 3.5 ? "3.5" : String(ltConfig.coreCount);
+      return `${cores}Cx${ltConfig.csaSqMm}`;
+    }
+    return sizeInput;
+  }, [productLine, sizeInput, ltConfig, solarConfig]);
+
+  /** Full cable description for the stored record — type AND size, both following the selection. */
+  const cableTypeLabel = useMemo(() => {
+    const label = activeCableTypeLabel(productLine);
+    return `${label} — ${designation}`;
+  }, [productLine, designation]);
   const router = useRouter();
   // Arriving from an order card: link the GTP to that order so it lands on the board and the
   // production gate can see it.
@@ -636,8 +673,16 @@ function GtpBuilderInner() {
     const p = findProfile(template.profileId);
     if (!p) return;
     setProfile(p);
-    // Templates store the designation string; recover the picker state from it.
-    setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
+    // Restore the cable type FIRST — it decides which engine runs and which inputs are shown.
+    // Templates saved before cable types existed have none, and were AB.
+    const line = template.productLine ?? "AB_CABLE";
+    setProductLine(line);
+    // Recover the picker state. Only AB round-trips through a designation string; LT and solar
+    // keep their own config, so a template for those restores the type and the customer and
+    // leaves the current construction rather than forcing a wrong one.
+    if (line === "AB_CABLE") {
+      setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
+    }
     setChoices(template.choices);
     setAckWarnings(false);
     setStartMode("scratch");
@@ -665,9 +710,9 @@ function GtpBuilderInner() {
         boardName: profile.name,
         customerId: profile.id,
         specId: "",
-        cableType: `LT Aerial Bunched, XLPE — ${sizeInput}`,
+        cableType: cableTypeLabel,
         format: "self-generated",
-        designation: sizeInput,
+        designation,
         tenderNo: orderDetails.poReference || undefined,
         standardsPin: profile.standardsPin,
         derivedFields: fields,
@@ -700,7 +745,7 @@ function GtpBuilderInner() {
           status: gtp.status,
           customerName: profile.name,
           state: profile.state,
-          designation: sizeInput,
+          designation,
           standardsPin: profile.standardsPin,
           // A freshly generated GTP has no stamps yet — the block prints blank lines to sign.
           signOffs: gtp.signOffs,
@@ -723,7 +768,9 @@ function GtpBuilderInner() {
   function handleSaveTemplate() {
     const name = templateName.trim();
     if (!name || !profile || !choices) return;
-    saveTemplate({ name, profileId: profile.id, sizeInput, choices });
+    // Store the cable type AND the designation for the type actually selected. Storing only the
+    // AB size string meant an LT template reloaded as an AB cable.
+    saveTemplate({ name, profileId: profile.id, productLine, sizeInput: designation, choices });
     setVersion((v) => v + 1);
     setTemplateName("");
     setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
@@ -1206,7 +1253,7 @@ function GtpBuilderInner() {
             ) : null}
 
             <p className="font-mono text-xs text-muted-foreground">
-              Designation: {sizeInput}
+              Designation: {designation}
             </p>
           </div>
           )}
