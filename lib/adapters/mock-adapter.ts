@@ -6,7 +6,10 @@ import { seedData } from "@/lib/seed/data";
 import type { CableStore, Collection } from "@/lib/services/types";
 import type { IDataAdapter, Query } from "@/lib/adapters/adapter";
 
-const STORAGE_KEY = "cableos2:v2:store";
+// v3: adds gtps, rawMaterialChecks, finishedCableQc, machineIncidents,
+// inspectionReports collections + per-drum dispatch certs. Bumping the key
+// discards v2 payloads that lack the new collections.
+const STORAGE_KEY = "cableos2:v3:store";
 const LATENCY_MS = 120;
 
 function clone<T>(value: T): T {

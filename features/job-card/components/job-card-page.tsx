@@ -10,35 +10,52 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  FileCheck,
   FileText,
   Inbox,
   LockKeyhole,
+  Megaphone,
   Package,
   Plus,
   Printer,
   RefreshCw,
   Save,
+  Sticker as DrumMarkingIcon,
   Trash2,
   Wrench,
 } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AlertBadge, Button, Input, Label } from "@/components/ui";
 import { formatDate, formatINR } from "@/lib/domain/format";
+import { gtpForOrder } from "@/lib/domain/gtp";
+import { inspectionCallByDate } from "@/lib/domain/inspection";
+import { buildDrumMarking, drumMarkingHtml } from "@/lib/domain/drum-marking";
 import {
   dataService,
+  finishedQcService,
+  incidentsService,
+  inspectionService,
   jobCardsService,
   ordersService,
+  rawMaterialQcService,
   type Actor,
   type CableSpec,
+  type CableStore,
   type Customer,
   type DrumPlanItem,
   type DrumType,
+  type FinishedCableQc,
+  type Gtp,
   type JobCard,
+  type MachineIncident,
+  type MachineType,
   type Order,
   type QualityCheck,
   type Quote,
+  type RawMaterialCheck,
   type Role,
 } from "@/lib/services";
 import { cn } from "@/lib/utils";
@@ -51,6 +68,11 @@ type PageData = {
   specs: CableSpec[];
   customers: Customer[];
   quotes: Quote[];
+  gtps: Gtp[];
+  rawMaterialChecks: RawMaterialCheck[];
+  finishedCableQc: FinishedCableQc[];
+  machineIncidents: MachineIncident[];
+  org: CableStore["org"] | null;
 };
 
 type Notice = {
@@ -72,6 +94,11 @@ const emptyPageData: PageData = {
   specs: [],
   customers: [],
   quotes: [],
+  gtps: [],
+  rawMaterialChecks: [],
+  finishedCableQc: [],
+  machineIncidents: [],
+  org: null,
 };
 
 async function fetchJobCardData(): Promise<PageData> {
@@ -87,8 +114,30 @@ async function fetchJobCardData(): Promise<PageData> {
     specs: store.specs,
     customers: store.customers,
     quotes: store.quotes,
+    gtps: store.gtps,
+    rawMaterialChecks: store.rawMaterialChecks,
+    finishedCableQc: store.finishedCableQc,
+    machineIncidents: store.machineIncidents,
+    org: store.org,
   };
 }
+
+const machineTypes = [
+  "Extruder",
+  "Stranding",
+  "Armouring",
+  "RBD (wire drawing)",
+  "Laying-up",
+  "Rewinding/Drum",
+] as const satisfies readonly MachineType[];
+
+const defaultRawMaterialChecks: RawMaterialCheck["checks"] = [
+  { id: "rm-visual", label: "Visual check", result: "Pending" },
+  { id: "rm-dimension", label: "Dimension check", result: "Pending" },
+  { id: "rm-smoothness", label: "Surface smoothness", result: "Pending" },
+  { id: "rm-electrical", label: "Electrical test (conductivity)", result: "Pending" },
+  { id: "rm-mechanical", label: "Mechanical test (tensile/elongation)", result: "Pending" },
+];
 
 const drumTypes = ["Wooden", "Steel", "Steel-Wood"] as const satisfies readonly DrumType[];
 const checkResults = ["Pending", "Pass", "Fail"] as const satisfies readonly NonNullable<
@@ -267,7 +316,7 @@ function estimatedGrossWeight(spec: CableSpec | undefined, lengthM: number) {
   return Math.round((spec.approxWeightKgPerKm * lengthM) / 1000);
 }
 
-function buildDrumMarking(
+function drumMarkingLine(
   order: Order,
   spec: CableSpec | undefined,
   drum: Pick<DrumPlanItem, "drumNo" | "lengthM">,
@@ -453,6 +502,116 @@ function JobCardClient() {
   );
   const plannedLengthM = selectedOrder ? orderLengthM(selectedOrder, data.quotes) : undefined;
   const totalLengthM = activeCard ? totalDrumLength(activeCard.drumPlan) : 0;
+
+  // ── production gates + QC records for the selected order ──────────────────
+  const selectedGtp = selectedOrder ? gtpForOrder(data.gtps, selectedOrder) : undefined;
+  const storedRmc = selectedOrder
+    ? data.rawMaterialChecks.find((entry) => entry.orderId === selectedOrder.id)
+    : undefined;
+  const [rmcDraft, setRmcDraft] = React.useState<RawMaterialCheck | null>(null);
+  const activeRmc: RawMaterialCheck | null =
+    rmcDraft && rmcDraft.orderId === selectedOrder?.id
+      ? rmcDraft
+      : (storedRmc ?? null);
+  const rmcPassed = Boolean(activeRmc && activeRmc.checks.every((check) => check.result === "Pass"));
+  const gtpApproved = selectedGtp?.status === "Approved";
+  const gateOpen = gtpApproved && rmcPassed;
+  const orderIncidents = selectedOrder
+    ? data.machineIncidents.filter((entry) => entry.orderId === selectedOrder.id)
+    : [];
+  const machineHold = orderIncidents.some(
+    (entry) => entry.status === "Open" || entry.status === "Awaiting approval",
+  );
+  const orderDrumQc = selectedOrder
+    ? data.finishedCableQc.filter((entry) => entry.orderId === selectedOrder.id)
+    : [];
+  const callBy = selectedOrder ? inspectionCallByDate(selectedOrder) : null;
+  const [ecdDraft, setEcdDraft] = React.useState("");
+  const [qcDrafts, setQcDrafts] = React.useState<Record<string, FinishedCableQc>>({});
+
+  function qcForDrum(drumNo: string): FinishedCableQc {
+    const stored = orderDrumQc.find((entry) => entry.drumNo === drumNo);
+    const draft = qcDrafts[drumNo];
+    if (draft && draft.orderId === selectedOrder?.id) return draft;
+    return (
+      stored ?? {
+        id: `FQC-${selectedOrder?.id.replace("ORD-", "")}-${drumNo.split("-").at(-1)}`,
+        orderId: selectedOrder?.id ?? "",
+        drumNo,
+        hvtResult: "Pending",
+        result: "Pending",
+      }
+    );
+  }
+
+  function patchDrumQc(drumNo: string, patch: Partial<FinishedCableQc>) {
+    setQcDrafts((current) => ({ ...current, [drumNo]: { ...qcForDrum(drumNo), ...patch } }));
+  }
+  const [incidentForm, setIncidentForm] = React.useState<{
+    machineType: MachineType;
+    failureMode: string;
+    description: string;
+    proposedFix: string;
+  } | null>(null);
+  const [gateBusy, setGateBusy] = React.useState(false);
+
+  async function refresh() {
+    await queryClientValue.invalidateQueries({ queryKey: ["job-card-page"] });
+  }
+
+  async function runGateAction(action: () => Promise<unknown>, successLabel: string) {
+    setGateBusy(true);
+    setNotice(null);
+    try {
+      await action();
+      await refresh();
+      setNotice({ tone: "success", label: successLabel });
+    } catch (err) {
+      setNotice({
+        tone: "error",
+        label: err instanceof Error ? err.message : "Action failed.",
+      });
+    } finally {
+      setGateBusy(false);
+    }
+  }
+
+  function patchRmcCheck(index: number, result: RawMaterialCheck["checks"][number]["result"]) {
+    if (!selectedOrder) return;
+    const base: RawMaterialCheck = activeRmc ?? {
+      id: `RMC-${selectedOrder.id.replace("ORD-", "")}`,
+      orderId: selectedOrder.id,
+      materialType: selectedSpec
+        ? `${selectedSpec.conductorMaterial} + ${selectedSpec.insulation} + ${selectedSpec.armour}`
+        : "Raw material lot",
+      checks: defaultRawMaterialChecks.map((check) => ({ ...check })),
+    };
+    setRmcDraft({
+      ...base,
+      checks: base.checks.map((check, checkIndex) =>
+        checkIndex === index ? { ...check, result } : check,
+      ),
+    });
+  }
+
+  function printMarking(drum: DrumPlanItem) {
+    if (!selectedOrder) return;
+    const marking = buildDrumMarking(
+      drum,
+      selectedSpec,
+      selectedOrder,
+      selectedCustomer,
+      data.org ?? undefined,
+    );
+    const markingWindow = window.open("", "_blank", "width=680,height=560");
+    if (!markingWindow) {
+      setNotice({ tone: "error", label: "Pop-up blocked — allow pop-ups to print markings." });
+      return;
+    }
+    markingWindow.document.write(drumMarkingHtml(marking));
+    markingWindow.document.close();
+  }
+
   const lengthMismatch =
     activeCard && plannedLengthM !== undefined && totalLengthM !== plannedLengthM;
   const checksDone =
@@ -464,6 +623,9 @@ function JobCardClient() {
     setSelectedOrderId(orderId);
     const nextOrder = data.orders.find((order) => order.id === orderId);
     setCard(nextOrder ? workingCard(nextOrder, data) : null);
+    setRmcDraft(null);
+    setEcdDraft("");
+    setIncidentForm(null);
     setNotice(null);
     if (typeof window !== "undefined") {
       const nextUrl = orderId ? `/job-card?orderId=${orderId}` : "/job-card";
@@ -492,7 +654,7 @@ function JobCardClient() {
           markings:
             patch.markings !== undefined
               ? patch.markings
-              : buildDrumMarking(selectedOrder, selectedSpec, nextRow),
+              : drumMarkingLine(selectedOrder, selectedSpec, nextRow),
         };
       });
 
@@ -515,7 +677,7 @@ function JobCardClient() {
         drumType: "Steel-Wood",
         lengthM,
         grossWeightKg: estimatedGrossWeight(selectedSpec, lengthM),
-        markings: buildDrumMarking(selectedOrder, selectedSpec, { drumNo, lengthM }),
+        markings: drumMarkingLine(selectedOrder, selectedSpec, { drumNo, lengthM }),
       };
 
       return { ...base, drumPlan: [...base.drumPlan, row] };
@@ -715,6 +877,93 @@ function JobCardClient() {
               </div>
             </section>
 
+            <section
+              className={cn(
+                "rounded-md border p-4 print:hidden",
+                gateOpen ? "border-success/30 bg-card" : "border-warning/40 bg-card",
+              )}
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold">
+                    {gateOpen ? (
+                      <CheckCircle2 className="size-4 text-success" aria-hidden={true} />
+                    ) : (
+                      <LockKeyhole className="size-4 text-warning" aria-hidden={true} />
+                    )}
+                    Production gates
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {gateOpen
+                      ? "GTP approved and raw material QC passed — production may begin."
+                      : "Production stays blocked until the GTP is approved and incoming raw material QC passes."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Link href={`/gtp/review?orderId=${selectedOrder.id}`}>
+                    <Badge tone={gtpApproved ? "success" : selectedGtp ? "warning" : "danger"}>
+                      <FileCheck className="mr-1 size-3" aria-hidden={true} />
+                      {selectedGtp ? `GTP ${selectedGtp.status}` : "GTP missing"}
+                    </Badge>
+                  </Link>
+                  <Badge tone={rmcPassed ? "success" : "warning"}>
+                    {rmcPassed ? "Raw material QC passed" : "Raw material QC pending"}
+                  </Badge>
+                  {machineHold ? <Badge tone="danger">Machine hold</Badge> : null}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 rounded-md border bg-muted p-3 md:grid-cols-[1fr_auto]">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ecd">Estimated completion date</Label>
+                    <Input
+                      className="w-44"
+                      disabled={!canEdit || gateBusy}
+                      id="ecd"
+                      onChange={(event) => setEcdDraft(event.target.value)}
+                      type="date"
+                      value={ecdDraft || selectedOrder.estimatedCompletionDate || ""}
+                    />
+                  </div>
+                  {canEdit ? (
+                    <Button
+                      disabled={gateBusy || !(ecdDraft || selectedOrder.estimatedCompletionDate)}
+                      onClick={() =>
+                        void runGateAction(
+                          () =>
+                            inspectionService.setEstimatedCompletion(
+                              selectedOrder.id,
+                              ecdDraft || selectedOrder.estimatedCompletionDate || "",
+                              actor,
+                            ),
+                          "Estimated completion saved — inspection call date computed.",
+                        )
+                      }
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Save date
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <Megaphone className="size-4 text-muted-foreground" aria-hidden={true} />
+                  {callBy ? (
+                    <span>
+                      Call inspection by <span className="font-mono font-semibold">{formatDate(callBy)}</span>
+                      <span className="text-muted-foreground"> (inspector takes ~11 days to arrive)</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      Set the completion date to compute the inspection call deadline.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </section>
+
             {lengthMismatch ? (
               <div className="rounded-md border border-warning/30 bg-card p-4 print:hidden">
                 <div className="flex items-start gap-3">
@@ -730,6 +979,65 @@ function JobCardClient() {
                 </div>
               </div>
             ) : null}
+
+            <section className="rounded-md border border-border bg-card p-4 print:hidden">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="font-semibold">Incoming Raw Material QC</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {activeRmc?.materialType ?? "Material lot for this order"} — all five checks must
+                    pass before production. A fail escalates to the Owner.
+                  </p>
+                </div>
+                {canEdit ? (
+                  <Button
+                    disabled={gateBusy || !activeRmc}
+                    onClick={() =>
+                      activeRmc
+                        ? void runGateAction(
+                            () => rawMaterialQcService.save(activeRmc, actor),
+                            activeRmc.checks.every((check) => check.result === "Pass")
+                              ? "Raw material QC passed — pre-production gate cleared."
+                              : "Raw material QC saved.",
+                          )
+                        : undefined
+                    }
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <Save className="size-4" aria-hidden={true} />
+                    Save QC
+                  </Button>
+                ) : null}
+              </div>
+              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {(activeRmc?.checks ?? defaultRawMaterialChecks).map((check, index) => (
+                  <div className="rounded-md border border-border bg-muted p-3" key={check.id}>
+                    <p className="text-sm font-medium">{check.label}</p>
+                    <FieldSelect
+                      aria-label={`${check.label} result`}
+                      disabled={!canEdit || gateBusy}
+                      onChange={(value) =>
+                        patchRmcCheck(index, value as RawMaterialCheck["checks"][number]["result"])
+                      }
+                      value={check.result}
+                    >
+                      {checkResults.map((result) => (
+                        <option key={result} value={result}>
+                          {result}
+                        </option>
+                      ))}
+                    </FieldSelect>
+                  </div>
+                ))}
+              </div>
+              {activeRmc?.passedAt ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Passed {formatDate(activeRmc.passedAt)} · approved by {activeRmc.approvedBy}
+                </p>
+              ) : null}
+            </section>
 
             <section className="rounded-md border border-border bg-card p-4">
               <div className="flex items-center justify-between gap-3">
@@ -886,17 +1194,29 @@ function JobCardClient() {
                             />
                           </td>
                           <td className="px-2 py-3 print:hidden lg:px-3">
-                            {canEdit ? (
+                            <div className="flex items-center gap-1">
                               <Button
-                                aria-label={`Remove drum ${row.drumNo}`}
-                                onClick={() => removeDrum(index)}
+                                aria-label={`Print marking for drum ${row.drumNo}`}
+                                onClick={() => printMarking(row)}
                                 size="icon"
+                                title="Print drum marking (BIS/ISI label)"
                                 type="button"
                                 variant="ghost"
                               >
-                                <Trash2 className="size-4" aria-hidden={true} />
+                                <DrumMarkingIcon className="size-4" aria-hidden={true} />
                               </Button>
-                            ) : null}
+                              {canEdit ? (
+                                <Button
+                                  aria-label={`Remove drum ${row.drumNo}`}
+                                  onClick={() => removeDrum(index)}
+                                  size="icon"
+                                  type="button"
+                                  variant="ghost"
+                                >
+                                  <Trash2 className="size-4" aria-hidden={true} />
+                                </Button>
+                              ) : null}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -914,6 +1234,157 @@ function JobCardClient() {
                   </>
                 ) : null}
               </div>
+            </section>
+
+            <section className="rounded-md border border-border bg-card p-4 print:hidden">
+              <div>
+                <h2 className="font-semibold">Finished Cable QC → Test Certificates</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  HVT, conductor resistance, and IR per drum. A passing drum generates its test
+                  certificate straight onto the dispatch checklist — no separate document.
+                </p>
+              </div>
+              {activeCard.drumPlan.length === 0 ? (
+                <p className="mt-4 rounded-md border border-border bg-muted p-4 text-sm text-muted-foreground">
+                  Add drums to the plan to record finished cable QC.
+                </p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {activeCard.drumPlan.map((row) => {
+                    const qc = qcForDrum(row.drumNo);
+                    return (
+                      <div className="rounded-md border border-border bg-muted p-3" key={row.drumNo}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-mono text-sm font-semibold">{row.drumNo}</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              tone={qc.result === "Pass" ? "success" : qc.result === "Fail" ? "danger" : "neutral"}
+                            >
+                              {qc.result}
+                            </Badge>
+                            {qc.certRef ? (
+                              <Badge tone="info">Cert {qc.certRef}</Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-3 md:grid-cols-4">
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`hvt-${row.drumNo}`}>HVT</Label>
+                            <FieldSelect
+                              disabled={!canEdit || gateBusy}
+                              id={`hvt-${row.drumNo}`}
+                              onChange={(value) =>
+                                patchDrumQc(row.drumNo, {
+                                  hvtResult: value as FinishedCableQc["hvtResult"],
+                                })
+                              }
+                              value={qc.hvtResult}
+                            >
+                              {checkResults.map((result) => (
+                                <option key={result} value={result}>
+                                  {result}
+                                </option>
+                              ))}
+                            </FieldSelect>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`res-${row.drumNo}`}>Resistance (Ω/km)</Label>
+                            <Input
+                              disabled={!canEdit || gateBusy}
+                              id={`res-${row.drumNo}`}
+                              onChange={(event) =>
+                                patchDrumQc(row.drumNo, {
+                                  resistanceMeasuredOhmPerKm: event.target.value
+                                    ? Number(event.target.value)
+                                    : undefined,
+                                })
+                              }
+                              step="0.001"
+                              type="number"
+                              value={qc.resistanceMeasuredOhmPerKm ?? ""}
+                            />
+                            {qc.resistanceSpecMaxOhmPerKm ? (
+                              <p className="text-xs text-muted-foreground">
+                                Spec max {qc.resistanceSpecMaxOhmPerKm}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`ir-${row.drumNo}`}>IR (MΩ·km)</Label>
+                            <Input
+                              disabled={!canEdit || gateBusy}
+                              id={`ir-${row.drumNo}`}
+                              onChange={(event) =>
+                                patchDrumQc(row.drumNo, {
+                                  irValueMohmKm: event.target.value
+                                    ? Number(event.target.value)
+                                    : undefined,
+                                })
+                              }
+                              type="number"
+                              value={qc.irValueMohmKm ?? ""}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`result-${row.drumNo}`}>Overall result</Label>
+                            <FieldSelect
+                              disabled={!canEdit || gateBusy}
+                              id={`result-${row.drumNo}`}
+                              onChange={(value) =>
+                                patchDrumQc(row.drumNo, {
+                                  result: value as FinishedCableQc["result"],
+                                })
+                              }
+                              value={qc.result}
+                            >
+                              {checkResults.map((result) => (
+                                <option key={result} value={result}>
+                                  {result}
+                                </option>
+                              ))}
+                            </FieldSelect>
+                          </div>
+                        </div>
+                        {canEdit ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button
+                              disabled={gateBusy}
+                              onClick={() =>
+                                void runGateAction(
+                                  () => finishedQcService.save(qc, actor),
+                                  `QC for ${row.drumNo} saved.`,
+                                )
+                              }
+                              size="sm"
+                              type="button"
+                              variant="outline"
+                            >
+                              Save QC
+                            </Button>
+                            <Button
+                              disabled={gateBusy || qc.result !== "Pass" || Boolean(qc.certRef)}
+                              onClick={() =>
+                                void runGateAction(
+                                  async () => {
+                                    const saved = await finishedQcService.save(qc, actor);
+                                    await finishedQcService.generateCertificate(saved.id, actor);
+                                  },
+                                  `Test certificate generated for ${row.drumNo} and attached to dispatch.`,
+                                )
+                              }
+                              size="sm"
+                              type="button"
+                            >
+                              <FileText className="size-4" aria-hidden={true} />
+                              Generate test certificate
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             <section className="rounded-md border border-border bg-card p-4">
@@ -999,6 +1470,175 @@ function JobCardClient() {
                   <Plus className="size-4" aria-hidden={true} />
                   Add check
                 </Button>
+              ) : null}
+            </section>
+
+            <section className="rounded-md border border-border bg-card p-4 print:hidden">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold">Machine Incidents</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Flag an issue → production holds → Owner approves the fix → restart. Tagged by
+                    machine + failure mode so patterns surface later.
+                  </p>
+                </div>
+                <Wrench className="size-4 shrink-0 text-muted-foreground" aria-hidden={true} />
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {orderIncidents.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No incidents logged for this order.</p>
+                ) : (
+                  orderIncidents.map((incident) => (
+                    <div className="rounded-md border border-border bg-muted p-3 text-sm" key={incident.id}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{incident.machineType}</span>
+                        <Badge
+                          tone={
+                            incident.status === "Resolved"
+                              ? "success"
+                              : incident.status === "Approved"
+                                ? "info"
+                                : "danger"
+                          }
+                        >
+                          {incident.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-muted-foreground">{incident.failureMode}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Fix: {incident.proposedFix}</p>
+                      {incident.status === "Approved" && canEdit ? (
+                        <Button
+                          className="mt-2"
+                          disabled={gateBusy}
+                          onClick={() =>
+                            void runGateAction(
+                              () => incidentsService.resolve(incident.id, actor),
+                              `${incident.id} resolved — machine hold lifted.`,
+                            )
+                          }
+                          size="sm"
+                          type="button"
+                          variant="outline"
+                        >
+                          Mark resolved
+                        </Button>
+                      ) : null}
+                      {incident.status === "Awaiting approval" ? (
+                        <p className="mt-2 text-xs text-warning">Pending in the Owner approvals inbox.</p>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {canEdit && !incidentForm ? (
+                <Button
+                  className="mt-4 w-full"
+                  onClick={() =>
+                    setIncidentForm({
+                      machineType: "Extruder",
+                      failureMode: "",
+                      description: "",
+                      proposedFix: "",
+                    })
+                  }
+                  type="button"
+                  variant="outline"
+                >
+                  <Plus className="size-4" aria-hidden={true} />
+                  Log incident
+                </Button>
+              ) : null}
+
+              {incidentForm ? (
+                <form
+                  className="mt-4 space-y-3 rounded-md border border-border bg-muted p-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!selectedOrder || !activeCard) return;
+                    const form = incidentForm;
+                    void runGateAction(
+                      () =>
+                        incidentsService.log(
+                          {
+                            orderId: selectedOrder.id,
+                            jobCardId: activeCard.id,
+                            machineType: form.machineType,
+                            failureMode: form.failureMode.trim() || "Unspecified failure",
+                            description: form.description.trim(),
+                            proposedFix: form.proposedFix.trim() || "Fix to be proposed",
+                          },
+                          actor,
+                        ),
+                      "Incident logged — production hold raised for Owner approval.",
+                    );
+                    setIncidentForm(null);
+                  }}
+                >
+                  <div className="space-y-1.5">
+                    <Label htmlFor="incident-machine">Machine</Label>
+                    <FieldSelect
+                      id="incident-machine"
+                      onChange={(value) =>
+                        setIncidentForm({ ...incidentForm, machineType: value as MachineType })
+                      }
+                      value={incidentForm.machineType}
+                    >
+                      {machineTypes.map((machine) => (
+                        <option key={machine} value={machine}>
+                          {machine}
+                        </option>
+                      ))}
+                    </FieldSelect>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="incident-failure">Failure mode</Label>
+                    <Input
+                      id="incident-failure"
+                      onChange={(event) =>
+                        setIncidentForm({ ...incidentForm, failureMode: event.target.value })
+                      }
+                      placeholder="e.g. Heater zone temperature drift"
+                      value={incidentForm.failureMode}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="incident-description">What happened</Label>
+                    <FieldTextarea
+                      className="min-h-16"
+                      id="incident-description"
+                      onChange={(event) =>
+                        setIncidentForm({ ...incidentForm, description: event.target.value })
+                      }
+                      value={incidentForm.description}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="incident-fix">Proposed fix</Label>
+                    <Input
+                      id="incident-fix"
+                      onChange={(event) =>
+                        setIncidentForm({ ...incidentForm, proposedFix: event.target.value })
+                      }
+                      placeholder="e.g. Swap thermocouple and recalibrate"
+                      value={incidentForm.proposedFix}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button disabled={gateBusy} size="sm" type="submit">
+                      Raise hold
+                    </Button>
+                    <Button
+                      onClick={() => setIncidentForm(null)}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
               ) : null}
             </section>
 

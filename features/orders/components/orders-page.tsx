@@ -17,6 +17,7 @@ import {
   PackageSearchIcon,
   RefreshCwIcon,
   TruckIcon,
+  WrenchIcon,
 } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
@@ -32,11 +33,14 @@ import {
 } from "@/components/ui";
 import { daysUntil } from "@/lib/domain/clock";
 import { formatDate, formatINR } from "@/lib/domain/format";
+import { gtpForOrder } from "@/lib/domain/gtp";
+import { inspectionCallUrgency, type InspectionCallUrgency } from "@/lib/domain/inspection";
 import { can } from "@/lib/rbac";
 import {
   dataService,
   ordersService,
   type CableStore,
+  type GtpStatus,
   type Order,
   type OrderStage,
   type Priority,
@@ -138,6 +142,31 @@ function dispatchProgress(store: CableStore | null, order: Order) {
   const required = dispatch.checklist.filter((item) => item.required);
   const done = required.filter((item) => item.done).length;
   return { done, total: required.length, ready: required.length > 0 && done === required.length };
+}
+
+type OrderFlags = {
+  /** undefined = no GTP on file yet. */
+  gtpStatus?: GtpStatus;
+  gtpGated: boolean;
+  machineHold: boolean;
+  inspection: InspectionCallUrgency;
+};
+
+/** Compliance-gate state per card: GTP, machine hold, inspection countdown. */
+function orderFlags(store: CableStore | null, order: Order): OrderFlags {
+  const gtp = store ? gtpForOrder(store.gtps, order) : undefined;
+  const gated = order.stage === "Won" || order.stage === "In Production";
+  return {
+    gtpStatus: gtp?.status,
+    gtpGated: gated && gtp?.status !== "Approved",
+    machineHold:
+      store?.machineIncidents.some(
+        (incident) =>
+          incident.orderId === order.id &&
+          (incident.status === "Open" || incident.status === "Awaiting approval"),
+      ) ?? false,
+    inspection: gated ? inspectionCallUrgency(order) : { state: "none" },
+  };
 }
 
 function completionForStage(stage: OrderStage) {
@@ -256,6 +285,19 @@ export default function OrdersPage() {
     } catch (err) {
       setData(previousData);
       setError(err instanceof Error ? err.message : "Stage transition failed.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function repeatOrder(orderId: string) {
+    setBusyId(orderId);
+    setError(null);
+    try {
+      await ordersService.repeatOrder(orderId, actorFromSession());
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Repeat order failed.");
     } finally {
       setBusyId(null);
     }
@@ -399,6 +441,7 @@ export default function OrdersPage() {
                 <OrderCardContent
                   customerName={customerName(data.store, order.customerId)}
                   dispatch={dispatchProgress(data.store, order)}
+                  flags={orderFlags(data.store, order)}
                   order={order}
                 />
               </Card>
@@ -416,6 +459,7 @@ export default function OrdersPage() {
               canEditTitle={canEditTitle}
               onTransition={transition}
               onUpdateTitle={updateTitle}
+              onRepeat={repeatOrder}
             />
           ))}
         </KanbanProvider>
@@ -456,6 +500,7 @@ function OrderColumn({
   canEditTitle,
   onTransition,
   onUpdateTitle,
+  onRepeat,
 }: {
   stage: OrderStage;
   orders: Order[];
@@ -465,6 +510,7 @@ function OrderColumn({
   canEditTitle: boolean;
   onTransition: (orderId: string, stage: OrderStage) => void;
   onUpdateTitle: (orderId: string, title: string) => void;
+  onRepeat: (orderId: string) => void;
 }) {
   return (
     <KanbanBoard id={stage}>
@@ -489,11 +535,13 @@ function OrderColumn({
               order={order}
               customerName={customerName(store, order.customerId)}
               dispatch={dispatchProgress(store, order)}
+              flags={orderFlags(store, order)}
               busy={busyId === order.id}
               canTransition={canTransition}
               canEditTitle={canEditTitle}
               onTransition={onTransition}
               onUpdateTitle={onUpdateTitle}
+              onRepeat={onRepeat}
             />
           ))
         )}
@@ -508,22 +556,26 @@ function OrderKanbanCard({
   order,
   customerName: name,
   dispatch,
+  flags,
   busy,
   canTransition,
   canEditTitle,
   onTransition,
   onUpdateTitle,
+  onRepeat,
 }: {
   index: number;
   stage: OrderStage;
   order: Order;
   customerName: string;
   dispatch: ReturnType<typeof dispatchProgress>;
+  flags: OrderFlags;
   busy: boolean;
   canTransition: boolean;
   canEditTitle: boolean;
   onTransition: (orderId: string, stage: OrderStage) => void;
   onUpdateTitle: (orderId: string, title: string) => void;
+  onRepeat: (orderId: string) => void;
 }) {
   return (
     <UiKanbanCard
@@ -537,12 +589,14 @@ function OrderKanbanCard({
       <OrderCardContent
         customerName={name}
         dispatch={dispatch}
+        flags={flags}
         order={order}
         editable={canEditTitle}
         canTransition={canTransition}
         busy={busy}
         onTransition={onTransition}
         onUpdateTitle={onUpdateTitle}
+        onRepeat={onRepeat}
       />
     </UiKanbanCard>
   );
@@ -552,20 +606,24 @@ function OrderCardContent({
   order,
   customerName: name,
   dispatch,
+  flags,
   editable = false,
   canTransition = false,
   busy = false,
   onTransition,
   onUpdateTitle,
+  onRepeat,
 }: {
   order: Order;
   customerName: string;
   dispatch: ReturnType<typeof dispatchProgress>;
+  flags: OrderFlags;
   editable?: boolean;
   canTransition?: boolean;
   busy?: boolean;
   onTransition?: (orderId: string, stage: OrderStage) => void;
   onUpdateTitle?: (orderId: string, title: string) => void;
+  onRepeat?: (orderId: string) => void;
 }) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [draftTitle, setDraftTitle] = React.useState(order.title);
@@ -677,6 +735,46 @@ function OrderCardContent({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* The GTP badge is the fix-it link: a gated card should let you act, not just worry.
+            No GTP yet → the builder; one exists → its record. */}
+        {flags.gtpGated ? (
+          <Link
+            href={flags.gtpStatus ? `/gtp/review?orderId=${order.id}` : `/gtp/new?orderId=${order.id}`}
+            onClick={(event) => event.stopPropagation()}
+            title={flags.gtpStatus ? "Open this GTP" : "Create a GTP for this order"}
+            className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Badge
+              className={cn(
+                "hover:brightness-95",
+                flags.gtpStatus
+                  ? "border-warning/30 bg-warning/10 text-warning"
+                  : "border-danger/30 bg-danger/10 text-danger",
+              )}
+            >
+              <FileCheckIcon className="mr-1 size-3" />
+              {flags.gtpStatus ? `GTP ${flags.gtpStatus}` : "GTP missing"}
+            </Badge>
+          </Link>
+        ) : flags.gtpStatus === "Approved" ? (
+          <Link
+            href={`/gtp/review?orderId=${order.id}`}
+            onClick={(event) => event.stopPropagation()}
+            title="Open the approved GTP"
+            className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Badge className="border-success/30 bg-success/10 text-success hover:brightness-95">
+              <FileCheckIcon className="mr-1 size-3" />
+              GTP ✓
+            </Badge>
+          </Link>
+        ) : null}
+        {flags.machineHold ? (
+          <Badge className="border-danger/30 bg-danger/10 text-danger">
+            <WrenchIcon className="mr-1 size-3" />
+            Machine hold
+          </Badge>
+        ) : null}
         <Badge className={dispatch.ready ? "border-success/30 bg-success/10 text-success" : "border-warning/30 bg-warning/10 text-warning"}>
           {dispatch.ready ? <CheckCircle2Icon className="mr-1 size-3" /> : <TruckIcon className="mr-1 size-3" />}
           Dispatch {dispatch.done}/{dispatch.total}

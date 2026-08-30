@@ -41,8 +41,19 @@ export const GST_RATE_PCT = 18;
  */
 const CONDUCTOR_KG_PER_M_PER_SQMM: Record<ConductorMaterial, number> = {
   Copper: 0.0092,
+  "Tinned Copper": 0.0094,
   Aluminium: 0.00325,
+  "Aluminium Alloy": 0.0031,
+  AAAC: 0.0031,
+  ACSR: 0.0046,
+  "Thermocouple Alloy": 0.008,
 };
+
+function conductorRateMaterial(material: ConductorMaterial): ConductorMaterial {
+  if (material === "Tinned Copper" || material === "Thermocouple Alloy") return "Copper";
+  if (material === "Aluminium Alloy" || material === "AAAC" || material === "ACSR") return "Aluminium";
+  return material;
+}
 
 /** How many "full" cores a core-config represents for conductor weight (3.5C = 3 full + 1 half). */
 function coreCount(spec: Pick<CableSpec, "cores">): number {
@@ -92,11 +103,14 @@ export function ratesForSpec(
 
   const conductor =
     byCategory("Conductor").find((m) => m.matchMaterial === spec.conductorMaterial) ??
+    byCategory("Conductor").find((m) => m.matchMaterial === conductorRateMaterial(spec.conductorMaterial)) ??
     byCategory("Conductor")[0];
 
   const insulation =
     byCategory("Insulation").find((m) =>
-      spec.insulation === "XLPE" ? m.name.includes("XLPE") : m.name.includes("PVC"),
+      spec.insulation.includes("XLPE") || spec.insulation.includes("solar")
+        ? m.name.includes("XLPE")
+        : m.name.includes("PVC"),
     ) ?? byCategory("Insulation")[0];
 
   const armour =
@@ -122,7 +136,16 @@ export function ratesForSpec(
 export interface CostingInput {
   spec: Pick<
     CableSpec,
-    "cores" | "conductorMaterial" | "conductorSizeSqMm" | "neutralSizeSqMm" | "armour"
+    | "family"
+    | "cores"
+    | "conductorMaterial"
+    | "conductorSizeSqMm"
+    | "neutralSizeSqMm"
+    | "armour"
+    | "aerialBunched"
+    | "instrumentation"
+    | "thermocouple"
+    | "coveredConductor"
   >;
   lengthM: number;
   marginPct: number;
@@ -147,32 +170,79 @@ export interface CostingResult {
   totalConductorKgPerM: number; // handy for drum/logistics later
 }
 
-/** Costing for a single quote line, broken down by physical component. Pure. */
-export function computeLine(input: CostingInput): CostingResult {
-  const { spec, lengthM, marginPct, rates } = input;
+function effectiveConductorWeight(spec: CostingInput["spec"]): {
+  totalConductorKgPerM: number;
+  equivalentSizeForCompounds: number;
+  label: string;
+} {
+  if (spec.family === "Aerial Bunched Cable" && spec.aerialBunched) {
+    const phaseFactor = CONDUCTOR_KG_PER_M_PER_SQMM.Aluminium;
+    const messengerFactor = CONDUCTOR_KG_PER_M_PER_SQMM["Aluminium Alloy"];
+    const phaseKgPerM = spec.aerialBunched.phaseCount * spec.aerialBunched.phaseSizeSqMm * phaseFactor;
+    const messengerKgPerM = spec.aerialBunched.messengerSizeSqMm * messengerFactor;
+    const streetLightKgPerM = (spec.aerialBunched.streetLightSizeSqMm ?? 0) * phaseFactor;
+    return {
+      totalConductorKgPerM: phaseKgPerM + messengerKgPerM + streetLightKgPerM,
+      equivalentSizeForCompounds:
+        spec.aerialBunched.phaseCount * spec.aerialBunched.phaseSizeSqMm +
+        spec.aerialBunched.messengerSizeSqMm +
+        (spec.aerialBunched.streetLightSizeSqMm ?? 0),
+      label: "Conductor (ABC phases + messenger)",
+    };
+  }
+
+  if (spec.family === "Screened Instrumentation" && spec.instrumentation) {
+    const conductorsPerGroup = spec.instrumentation.grouping === "Triad" ? 3 : 2;
+    const totalConductors = spec.instrumentation.groupCount * conductorsPerGroup;
+    const factor = CONDUCTOR_KG_PER_M_PER_SQMM[spec.conductorMaterial];
+    return {
+      totalConductorKgPerM: totalConductors * spec.conductorSizeSqMm * factor,
+      equivalentSizeForCompounds: totalConductors * spec.conductorSizeSqMm,
+      label: `Conductor (${spec.instrumentation.groupCount} ${spec.instrumentation.grouping.toLowerCase()}s)`,
+    };
+  }
+
+  if (spec.family === "Thermocouple Cable" && spec.thermocouple) {
+    const totalConductors = spec.thermocouple.pairCount * 2;
+    const factor = CONDUCTOR_KG_PER_M_PER_SQMM["Thermocouple Alloy"];
+    return {
+      totalConductorKgPerM: totalConductors * spec.conductorSizeSqMm * factor,
+      equivalentSizeForCompounds: totalConductors * spec.conductorSizeSqMm,
+      label: `Conductor (type ${spec.thermocouple.thermocoupleType} thermocouple)`,
+    };
+  }
+
   const size = spec.conductorSizeSqMm;
   const metalFactor = CONDUCTOR_KG_PER_M_PER_SQMM[spec.conductorMaterial];
-
-  // ── Conductor: full cores + reduced neutral (3.5C) ──
   const fullCores = coreCount(spec);
   const fullCoresKgPerM = size * metalFactor * fullCores;
   const neutralKgPerM =
     spec.cores === "3.5C" && spec.neutralSizeSqMm
       ? spec.neutralSizeSqMm * metalFactor
       : 0;
-  const totalConductorKgPerM = fullCoresKgPerM + neutralKgPerM;
+  return {
+    totalConductorKgPerM: fullCoresKgPerM + neutralKgPerM,
+    equivalentSizeForCompounds: size * fullCores + (spec.cores === "3.5C" ? spec.neutralSizeSqMm ?? 0 : 0),
+    label: `Conductor (${spec.cores} ${spec.conductorMaterial})`,
+  };
+}
+
+/** Costing for a single quote line, broken down by physical component. Pure. */
+export function computeLine(input: CostingInput): CostingResult {
+  const { spec, lengthM, marginPct, rates } = input;
+  const { totalConductorKgPerM, equivalentSizeForCompounds, label } = effectiveConductorWeight(spec);
   const conductorCostPerM = totalConductorKgPerM * rates.conductorPerKg;
 
   // ── Non-conductor components (scaled by size; armour only when armoured) ──
   const isArmoured = spec.armour !== "Unarmoured";
-  const insulationKgPerM = size * INSULATION_KG_PER_M_PER_SQMM * fullCores;
-  const armourKgPerM = isArmoured ? size * ARMOUR_KG_PER_M_PER_SQMM : 0;
-  const sheathKgPerM = size * SHEATH_KG_PER_M_PER_SQMM;
+  const insulationKgPerM = equivalentSizeForCompounds * INSULATION_KG_PER_M_PER_SQMM;
+  const armourKgPerM = isArmoured ? equivalentSizeForCompounds * ARMOUR_KG_PER_M_PER_SQMM : 0;
+  const sheathKgPerM = equivalentSizeForCompounds * SHEATH_KG_PER_M_PER_SQMM;
   const labourPerM = rates.labourPerM ?? DEFAULT_LABOUR_PER_M;
 
   const components: CostComponent[] = [
     {
-      label: `Conductor (${spec.cores} ${spec.conductorMaterial})`,
+      label,
       kgPerM: totalConductorKgPerM,
       ratePerKg: rates.conductorPerKg,
       costPerM: conductorCostPerM,

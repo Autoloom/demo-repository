@@ -10,6 +10,7 @@ import {
   CircleIcon,
   FileTextIcon,
   InboxIcon,
+  MegaphoneIcon,
   PackageCheckIcon,
   PencilIcon,
   RefreshCwIcon,
@@ -23,13 +24,16 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatDate, formatINR } from "@/lib/domain/format";
+import { inspectionCallUrgency } from "@/lib/domain/inspection";
 import { can } from "@/lib/rbac";
 import {
   dataService,
   dispatchService,
+  inspectionService,
   integrationsService,
   type CableStore,
   type Dispatch,
+  type InspectionReport,
   type Order,
 } from "@/lib/services";
 import { actorFromSession, useSessionStore } from "@/lib/store/session";
@@ -119,20 +123,30 @@ function DispatchCard({
   dispatch,
   order,
   customer,
+  plannedDrums,
+  reports,
   editable,
   busyKey,
   onToggle,
   onGenerateEway,
   onSaveLogistics,
+  onVerifyCert,
+  onPlaceCall,
+  onLogReport,
 }: {
   dispatch: Dispatch;
   order?: Order;
   customer: string;
+  plannedDrums: string[];
+  reports: InspectionReport[];
   editable: boolean;
   busyKey: string | null;
   onToggle: (itemId: string, done: boolean) => void;
   onGenerateEway: () => void;
   onSaveLogistics: (patch: { transporter: string; vehicleNo: string }) => Promise<void>;
+  onVerifyCert: (drumNo: string, verified: boolean) => void;
+  onPlaceCall: () => void;
+  onLogReport: (input: Omit<InspectionReport, "id">) => void;
 }) {
   const progress = requiredProgress(dispatch);
   // `null` = not editing. When editing, holds the draft transporter/vehicle.
@@ -316,23 +330,71 @@ function DispatchCard({
         </div>
       </div>
 
-      {/* Document refs */}
-      {(dispatch.testCertificateRef || dispatch.packingListRef) && (
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          {dispatch.testCertificateRef ? (
-            <span className="inline-flex items-center gap-1.5 rounded-sm border bg-background px-2 py-1">
-              <FileTextIcon className="size-3.5" />
-              Test cert <span className="font-mono text-foreground">{dispatch.testCertificateRef}</span>
-            </span>
-          ) : null}
-          {dispatch.packingListRef ? (
-            <span className="inline-flex items-center gap-1.5 rounded-sm border bg-background px-2 py-1">
-              <FileTextIcon className="size-3.5" />
-              Packing list <span className="font-mono text-foreground">{dispatch.packingListRef}</span>
-            </span>
-          ) : null}
+      {/* Per-drum test certificates — generated from Finished Cable QC on the job card */}
+      <div className="mt-4 rounded-md border bg-muted p-3 text-sm">
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-medium">Test certificates (per drum)</p>
+          <Badge tone={plannedDrums.length > 0 && plannedDrums.every((drumNo) => dispatch.drumTestCerts.some((cert) => cert.drumNo === drumNo && cert.verified)) ? "success" : "warning"}>
+            {dispatch.drumTestCerts.filter((cert) => cert.verified).length}/{Math.max(plannedDrums.length, dispatch.drumTestCerts.length)} verified
+          </Badge>
         </div>
-      )}
+        <div className="mt-2 space-y-1.5">
+          {plannedDrums.length === 0 && dispatch.drumTestCerts.length === 0 ? (
+            <p className="text-muted-foreground">No drums planned yet — certificates appear as finished cable QC passes.</p>
+          ) : (
+            (plannedDrums.length > 0 ? plannedDrums : dispatch.drumTestCerts.map((cert) => cert.drumNo)).map((drumNo) => {
+              const cert = dispatch.drumTestCerts.find((entry) => entry.drumNo === drumNo);
+              return (
+                <div key={drumNo} className="flex items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5">
+                  <span className="flex items-center gap-2">
+                    <FileTextIcon className="size-3.5 text-muted-foreground" />
+                    <span className="font-mono text-xs">{drumNo}</span>
+                    {cert ? (
+                      <span className="font-mono text-xs text-foreground">{cert.certRef}</span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">QC pending on job card</span>
+                    )}
+                  </span>
+                  {cert ? (
+                    <label className="flex items-center gap-1.5 text-xs">
+                      Verified
+                      <input
+                        type="checkbox"
+                        checked={cert.verified}
+                        disabled={!editable || busyKey === `${dispatch.id}-cert-${drumNo}`}
+                        onChange={(event) => onVerifyCert(drumNo, event.target.checked)}
+                        className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label={`Verify certificate for ${drumNo}`}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {order ? (
+        <InspectionPanel
+          order={order}
+          reports={reports}
+          editable={editable}
+          busy={busyKey === `${dispatch.id}-inspection`}
+          plannedDrums={plannedDrums}
+          onPlaceCall={onPlaceCall}
+          onLogReport={onLogReport}
+        />
+      ) : null}
+
+      {dispatch.packingListRef ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5 rounded-sm border bg-background px-2 py-1">
+            <FileTextIcon className="size-3.5" />
+            Packing list <span className="font-mono text-foreground">{dispatch.packingListRef}</span>
+          </span>
+        </div>
+      ) : null}
 
       <div className="mt-4 flex flex-wrap gap-2">
         <Button asChild variant="outline" size="sm">

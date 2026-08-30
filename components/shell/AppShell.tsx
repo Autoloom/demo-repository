@@ -48,7 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-dvh overflow-x-clip bg-background text-foreground">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 hidden border-r bg-card transition-[width] duration-200 ease-out lg:flex lg:flex-col",
+          "fixed inset-y-0 left-0 hidden border-r bg-card transition-[width] duration-200 ease-out print:hidden lg:flex lg:flex-col",
           collapsed ? "w-16" : "w-64",
         )}
       >

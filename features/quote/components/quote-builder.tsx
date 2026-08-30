@@ -6,7 +6,6 @@
 "use client";
 
 import {
-  ArrowLeft,
   ArrowRight,
   Cable,
   CheckCircle2,
@@ -14,8 +13,6 @@ import {
   CircleAlert,
   Eye,
   FileText,
-  Info,
-  LayoutGrid,
   Link2Off,
   Loader2,
   Pencil,
@@ -42,6 +39,7 @@ import {
   type CostingResult,
 } from "@/lib/domain/costing";
 import { formatDate, formatINR } from "@/lib/domain/format";
+import { downloadPdf, type PdfDocument } from "@/lib/domain/pdf";
 import { can, requiresApproval } from "@/lib/rbac";
 import {
   contactsService,
@@ -53,7 +51,9 @@ import {
 } from "@/lib/services";
 import type {
   ArmourType,
+  CableFamily,
   CableSpec,
+  CableStandard,
   ConductorClass,
   ConductorMaterial,
   CoreConfig,
@@ -70,32 +70,73 @@ import type {
   SheathType,
   VoltageGrade,
 } from "@/lib/services/types";
-import type { CablePreset } from "@/lib/seed/cable-presets";
+import { cableFamilies, type CablePreset } from "@/lib/seed/cable-presets";
 import { useSessionStore } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 // ── Vocabulary (option lists for the spec form) ───────────────────────────────
 const CONDUCTOR_SIZES = [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400, 500, 630];
-const STANDARDS = ["IS 7098-1", "IS 7098-2", "IS 1554-1", "IS 694", "IEC 60502-1", "IEC 60502-2"] as const;
+const STANDARDS: CableStandard[] = [
+  "IS 7098-1",
+  "IS 7098-2",
+  "IS 9968-1",
+  "IS 1554-1",
+  "IS 694",
+  "IS 8130",
+  "IS 14255",
+  "IS 398-4",
+  "EN 50618",
+  "BS EN 60228",
+  "IEC 60584",
+  "SS EN 50397-1",
+  "IEC 60502-1",
+  "IEC 60502-2",
+];
 const VOLTAGES: VoltageGrade[] = [
   "650/1100 V (1.1 kV)",
+  "600/1000 V DC",
   "1.9/3.3 kV",
   "3.8/6.6 kV",
   "6.35/11 kV",
   "12.7/22 kV",
   "19/33 kV",
+  "13.8 kV",
+  "22 kV",
+  "33 kV",
 ];
-const CORES: CoreConfig[] = ["1C", "2C", "3C", "3.5C", "4C", "5C"];
-const CLASSES: ConductorClass[] = ["Class 1 (solid)", "Class 2 (stranded)", "Class 2 compacted", "Class 5 (flexible)"];
-const INSULATIONS: Insulation[] = ["XLPE", "PVC (Type A)", "PVC (Type C)", "EPR", "XLPO (solar/UV)"];
+const CORES: CoreConfig[] = ["1C", "2C", "3C", "3.5C", "4C", "5C", "7C", "12C", "19C", "27C", "37C"];
+const CLASSES: ConductorClass[] = ["Class 1 (solid)", "Class 2 (stranded)", "Class 2 compacted", "Class 5 (flexible)", "Messenger conductor", "Thermocouple extension"];
+const MATERIALS: ConductorMaterial[] = ["Aluminium", "Copper", "Tinned Copper", "Aluminium Alloy", "AAAC", "ACSR", "Thermocouple Alloy"];
+const INSULATIONS: Insulation[] = ["XLPE", "PVC (Type A)", "PVC (Type C)", "EPR", "XLPO (solar/UV)", "Polyethylene", "XLPE anti-tracking", "HDPE anti-tracking"];
 const ARMOURS: ArmourType[] = ["Unarmoured", "GI round wire (GSW)", "GI strip (GSS)", "Aluminium wire (AWA)", "Aluminium strip"];
-const SHEATHS: SheathType[] = ["PVC (ST1)", "PVC (ST2)", "FR PVC", "FRLS PVC", "Zero-halogen (ZHFR/LSZH)", "HDPE"];
+const SHEATHS: SheathType[] = ["PVC (ST1)", "PVC (ST2)", "FR PVC", "FRLS PVC", "Zero-halogen (ZHFR/LSZH)", "HDPE", "Weatherproof PVC", "XLPO (solar/UV)"];
 const FLAME_CLASSES: FlameClass[] = ["FR", "FRLS", "LSZH", "Standard"];
-const MODE_KEY = "cableos2:quote-mode";
+const BROCHURE_TABLE_IDS = ["TABLE-7-CONTROL", "TABLE-8-PALLISON-35C"] as const;
+const BROCHURE_ARMOUR_OPTIONS = ["Unarmoured", "Strip armoured", "Round wire armoured"] as const;
+const BROCHURE_TABLE_7_CORE_OPTIONS: CoreConfig[] = ["2C", "3C", "4C", "5C", "7C", "12C", "19C", "27C", "37C"];
+const BROCHURE_TABLE_8_SIZE_OPTIONS = ["25/16", "35/16", "50/16", "70/25", "95/50", "120/70", "150/70", "185/95", "240/120", "300/150", "400/185"] as const;
+
+type BrochureTableId = (typeof BROCHURE_TABLE_IDS)[number];
+type BrochureArmourOption = (typeof BROCHURE_ARMOUR_OPTIONS)[number];
+type BrochureTable8Size = (typeof BROCHURE_TABLE_8_SIZE_OPTIONS)[number];
+
+interface BrochureTitleDraft {
+  tableId: BrochureTableId;
+  voltageV: "1100";
+  cableName: string;
+  conductorMaterial: "Copper";
+  conductorSizeSqMm: number;
+  cores: CoreConfig;
+  insulation: Extract<Insulation, "PVC (Type A)" | "PVC (Type C)" | "XLPE">;
+  armourOption: BrochureArmourOption;
+  standard: Extract<CableStandard, "IS 1554-1" | "IS 7098-1">;
+  neutralSizeSqMm?: number;
+}
 
 // ── Draft line shape (UI-local; converted to a persisted CableSpec + QuoteLine on add) ──
 interface LineDraft {
-  standard: (typeof STANDARDS)[number];
+  family: CableFamily;
+  standard: CableStandard;
   voltageGrade: VoltageGrade;
   cores: CoreConfig;
   conductorMaterial: ConductorMaterial;
@@ -111,6 +152,14 @@ interface LineDraft {
   metalRatePerKg: number;
   overheadPerM: number;
   marginPct: number;
+  technical?: CableSpec["technical"];
+  aerialBunched?: CableSpec["aerialBunched"];
+  coveredConductor?: CableSpec["coveredConductor"];
+  instrumentation?: CableSpec["instrumentation"];
+  thermocouple?: CableSpec["thermocouple"];
+  solar?: CableSpec["solar"];
+  submersible?: CableSpec["submersible"];
+  brochureTitle?: BrochureTitleDraft;
 }
 
 interface McxRates {
@@ -120,6 +169,7 @@ interface McxRates {
 }
 
 const fallbackDraft: LineDraft = {
+  family: "LT XLPE Power",
   standard: "IS 7098-1",
   voltageGrade: "650/1100 V (1.1 kV)",
   cores: "3.5C",
@@ -138,10 +188,106 @@ const fallbackDraft: LineDraft = {
   marginPct: 14,
 };
 
+const BROCHURE_TABLE_LABELS: Record<BrochureTableId, string> = {
+  "TABLE-7-CONTROL": "Table 7 - 1100 V / 2.5 sq.mm multi core control cable",
+  "TABLE-8-PALLISON-35C": "Table 8 - PALLISON 1100 V three and half core copper conductor",
+};
+
+function defaultBrochureTitle(tableId: BrochureTableId): BrochureTitleDraft {
+  if (tableId === "TABLE-7-CONTROL") {
+    return {
+      tableId,
+      voltageV: "1100",
+      cableName: "Multi core control cable",
+      conductorMaterial: "Copper",
+      conductorSizeSqMm: 2.5,
+      cores: "12C",
+      insulation: "PVC (Type A)",
+      armourOption: "Unarmoured",
+      standard: "IS 1554-1",
+    };
+  }
+
+  return {
+    tableId,
+    voltageV: "1100",
+    cableName: "PALLISON three and half core cable",
+    conductorMaterial: "Copper",
+    conductorSizeSqMm: 50,
+    neutralSizeSqMm: 16,
+    cores: "3.5C",
+    insulation: "XLPE",
+    armourOption: "Strip armoured",
+    standard: "IS 7098-1",
+  };
+}
+
+function armourFromBrochureOption(option: BrochureArmourOption): ArmourType {
+  if (option === "Round wire armoured") return "GI round wire (GSW)";
+  if (option === "Strip armoured") return "GI strip (GSS)";
+  return "Unarmoured";
+}
+
+function table8SizeFromPair(value: BrochureTable8Size): { conductorSizeSqMm: number; neutralSizeSqMm: number } {
+  const [main, neutral] = value.split("/").map(Number);
+  return { conductorSizeSqMm: main, neutralSizeSqMm: neutral };
+}
+
+function table8PairFromTitle(title: BrochureTitleDraft): BrochureTable8Size {
+  const pair = `${title.conductorSizeSqMm}/${title.neutralSizeSqMm ?? 16}`;
+  return BROCHURE_TABLE_8_SIZE_OPTIONS.includes(pair as BrochureTable8Size) ? (pair as BrochureTable8Size) : "50/16";
+}
+
+function formatBrochureTitle(title: BrochureTitleDraft): string {
+  const size =
+    title.tableId === "TABLE-8-PALLISON-35C"
+      ? `${title.conductorSizeSqMm}/${title.neutralSizeSqMm ?? 16} sq.mm`
+      : `${title.conductorSizeSqMm} sq.mm`;
+  const armourText = title.armourOption === "Unarmoured" ? "unarmoured" : title.armourOption.toLowerCase();
+  return `${title.voltageV} V ${size} ${title.cableName} with ${title.conductorMaterial.toLowerCase()} conductor, ${title.insulation} insulated, ${armourText}, conforming to ${title.standard}`;
+}
+
+function draftFromBrochureTitle(current: LineDraft, title: BrochureTitleDraft, mcx: McxRates | null): LineDraft {
+  const family: CableFamily = title.tableId === "TABLE-7-CONTROL" ? "Control Cable" : "LT XLPE Power";
+  const sheath: SheathType = title.insulation === "PVC (Type C)" ? "PVC (ST2)" : "PVC (ST1)";
+  return {
+    ...current,
+    family,
+    standard: title.standard,
+    voltageGrade: "650/1100 V (1.1 kV)",
+    cores: title.cores,
+    conductorMaterial: title.conductorMaterial,
+    conductorClass: title.tableId === "TABLE-7-CONTROL" ? "Class 2 (stranded)" : "Class 2 compacted",
+    conductorSizeSqMm: title.conductorSizeSqMm,
+    neutralSizeSqMm: title.neutralSizeSqMm ?? current.neutralSizeSqMm,
+    insulation: title.insulation,
+    armour: armourFromBrochureOption(title.armourOption),
+    sheath,
+    flameClass: "Standard",
+    screened: false,
+    metalRatePerKg: metalRateFromMcx(title.conductorMaterial, mcx, current.metalRatePerKg),
+    brochureTitle: title,
+  };
+}
+
+function metalRateFromMcx(material: ConductorMaterial, mcx: McxRates | null, fallback: number): number {
+  if (!mcx) return fallback;
+  return material === "Aluminium" || material === "Aluminium Alloy" || material === "AAAC" || material === "ACSR"
+    ? mcx.aluminium
+    : mcx.copper;
+}
+
+function baseRateMaterial(material: ConductorMaterial): ConductorMaterial {
+  if (material === "Tinned Copper" || material === "Thermocouple Alloy") return "Copper";
+  if (material === "Aluminium Alloy" || material === "AAAC" || material === "ACSR") return "Aluminium";
+  return material;
+}
+
 function draftFromPreset(preset: CablePreset, mcx: McxRates | null): LineDraft {
   const material = preset.spec.conductorMaterial;
   return {
-    standard: preset.spec.standard as LineDraft["standard"],
+    family: preset.family,
+    standard: preset.spec.standard,
     voltageGrade: preset.spec.voltageGrade,
     cores: preset.spec.cores,
     conductorMaterial: material,
@@ -154,15 +300,24 @@ function draftFromPreset(preset: CablePreset, mcx: McxRates | null): LineDraft {
     flameClass: preset.spec.flameClass,
     screened: preset.spec.screened ?? false,
     lengthM: preset.defaultLengthM ?? 1000,
-    metalRatePerKg: mcx ? (material === "Aluminium" ? mcx.aluminium : mcx.copper) : fallbackDraft.metalRatePerKg,
+    metalRatePerKg: metalRateFromMcx(material, mcx, fallbackDraft.metalRatePerKg),
     overheadPerM: preset.defaultOverheadPerM ?? fallbackDraft.overheadPerM,
     marginPct: preset.defaultMarginPct ?? fallbackDraft.marginPct,
+    technical: preset.spec.technical,
+    aerialBunched: preset.spec.aerialBunched,
+    coveredConductor: preset.spec.coveredConductor,
+    instrumentation: preset.spec.instrumentation,
+    thermocouple: preset.spec.thermocouple,
+    solar: preset.spec.solar,
+    submersible: preset.spec.submersible,
+    brochureTitle: undefined,
   };
 }
 
 function specFromDraft(draft: LineDraft, id: string): CableSpec {
   return {
     id,
+    family: draft.family,
     standard: draft.standard,
     voltageGrade: draft.voltageGrade,
     cores: draft.cores,
@@ -177,6 +332,13 @@ function specFromDraft(draft: LineDraft, id: string): CableSpec {
     screened: draft.screened,
     designation: buildDesignation(draft),
     cableCode: buildCableCode(draft),
+    technical: draft.technical,
+    aerialBunched: draft.aerialBunched,
+    coveredConductor: draft.coveredConductor,
+    instrumentation: draft.instrumentation,
+    thermocouple: draft.thermocouple,
+    solar: draft.solar,
+    submersible: draft.submersible,
   };
 }
 
@@ -208,11 +370,16 @@ function costDraft(draft: LineDraft, materials: Material[]): CostingResult {
   });
 }
 
-function lineFromDraft(draft: LineDraft, seq: number, materials: Material[]): LineWithSpec {
-  const specId = `SPEC-Q-${String(seq).padStart(3, "0")}`;
+function lineFromDraft(
+  draft: LineDraft,
+  seq: number,
+  materials: Material[],
+  existing?: { lineId: string; specId: string },
+): LineWithSpec {
+  const specId = existing?.specId ?? `SPEC-Q-${String(seq).padStart(3, "0")}`;
   const costing = costDraft(draft, materials);
   const line: QuoteLine = {
-    id: `QL-Q-${String(seq).padStart(3, "0")}`,
+    id: existing?.lineId ?? `QL-Q-${String(seq).padStart(3, "0")}`,
     specId,
     lengthM: draft.lengthM,
     metalRatePerKg: draft.metalRatePerKg,
@@ -239,6 +406,66 @@ function nextQuoteId(): string {
   return `Q-${now().toISOString().slice(2, 4)}${now().toISOString().slice(5, 7)}-${Math.floor(
     100 + Math.random() * 900,
   )}`;
+}
+
+function quotePdfDocument({
+  quoteId,
+  customerName,
+  selectedCustomer,
+  lines,
+  subtotalInr,
+  gstSplit,
+  totalInr,
+}: {
+  quoteId?: string;
+  customerName: string;
+  selectedCustomer?: Customer;
+  lines: LineWithSpec[];
+  subtotalInr: number;
+  gstSplit: ReturnType<typeof computeGst>;
+  totalInr: number;
+}): PdfDocument {
+  const customer = selectedCustomer?.name ?? (customerName.trim() || "Customer pending");
+  return {
+    title: `Quotation ${quoteId ?? "Draft"}`,
+    subtitle: "Daksha Cables - commercial quotation",
+    meta: [
+      `Customer: ${customer}`,
+      selectedCustomer?.gstin ? `GSTIN: ${selectedCustomer.gstin}` : undefined,
+      selectedCustomer ? `Location: ${[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}` : undefined,
+      `Valid until: ${formatDate(validUntilIso())}`,
+      `Tax: ${gstSplit.interstate ? "IGST 18%" : "CGST 9% + SGST 9%"}`,
+    ],
+    sections: [
+      {
+        title: "Cable lines",
+        table: {
+          headers: ["Line", "Cable", "Code", "Length", "Margin", "Total"],
+          widths: [42, 188, 80, 60, 52, 92],
+          rows: lines.map(({ line, spec }) => [
+            line.id,
+            spec.designation,
+            spec.cableCode,
+            `${line.lengthM} m`,
+            `${line.marginPct}%`,
+            formatINR(line.lineTotalInr),
+          ]),
+        },
+      },
+      {
+        title: "Totals",
+        table: {
+          headers: ["Item", "Amount"],
+          widths: [360, 154],
+          rows: [
+            ["Subtotal", formatINR(subtotalInr)],
+            [gstSplit.interstate ? "IGST 18%" : "GST 18%", formatINR(gstSplit.gstInr)],
+            ["Grand total", formatINR(totalInr)],
+          ],
+        },
+      },
+    ],
+  };
 }
 
 // ── Shared presentational atoms ──────────────────────────────────────────────
@@ -405,6 +632,7 @@ function SelectField<T extends string>({
   hint,
   disabled,
   big,
+  getOptionLabel,
   onChange,
 }: {
   id: string;
@@ -414,6 +642,7 @@ function SelectField<T extends string>({
   hint?: string;
   disabled?: boolean;
   big?: boolean;
+  getOptionLabel?: (option: T) => React.ReactNode;
   onChange: (value: T) => void;
 }) {
   return (
@@ -430,7 +659,7 @@ function SelectField<T extends string>({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {getOptionLabel ? getOptionLabel(option) : option}
           </option>
         ))}
       </select>
@@ -738,6 +967,10 @@ function Row({ label, value }: { label: string; value: number }) {
   );
 }
 
+function patchFamilyDetails(draft: LineDraft, next: Partial<LineDraft>): LineDraft {
+  return { ...draft, ...next };
+}
+
 // ── The rich spec form (shared by guided "More options" + advanced) ──────────
 function SpecForm({
   draft,
@@ -753,28 +986,121 @@ function SpecForm({
   onChange: (next: LineDraft) => void;
 }) {
   function patch(next: Partial<LineDraft>) {
-    onChange({ ...draft, ...next });
+    onChange(patchFamilyDetails(draft, next));
   }
   function setMaterial(material: ConductorMaterial) {
     patch({
       conductorMaterial: material,
-      metalRatePerKg: mcx ? (material === "Aluminium" ? mcx.aluminium : mcx.copper) : draft.metalRatePerKg,
+      metalRatePerKg: metalRateFromMcx(material, mcx, draft.metalRatePerKg),
     });
   }
+  const showCores = draft.family !== "Screened Instrumentation" && draft.family !== "Thermocouple Cable" && draft.family !== "Covered Conductor";
+  const showArmour = draft.family !== "Aerial Bunched Cable" && draft.family !== "House Wiring" && draft.family !== "Solar DC Cable" && draft.family !== "Covered Conductor";
+  const showSheath = draft.family !== "Aerial Bunched Cable" && draft.family !== "Covered Conductor";
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <SelectField id="material" label="Metal" value={draft.conductorMaterial} options={["Aluminium", "Copper"] as const} hint="Aluminium (cheaper) or Copper (carries more)" disabled={readOnly} big={big} onChange={setMaterial} />
-      <SelectField id="size" label="Thickness (size)" value={String(draft.conductorSizeSqMm)} options={CONDUCTOR_SIZES.map(String)} hint="Bigger number = thicker cable (sq mm)" disabled={readOnly} big={big} onChange={(size) => patch({ conductorSizeSqMm: Number(size) })} />
-      <SelectField id="cores" label="How many cores" value={draft.cores} options={CORES} hint="Most jobs use 3.5 or 4" disabled={readOnly} big={big} onChange={(cores) => patch({ cores })} />
+      <SelectField id="material" label="Metal" value={draft.conductorMaterial} options={MATERIALS} hint="Aluminium is lighter; copper carries more; special families fill this for you." disabled={readOnly} big={big} onChange={setMaterial} />
+      <SelectField
+        id="size"
+        label="Thickness (size)"
+        value={String(draft.conductorSizeSqMm)}
+        options={CONDUCTOR_SIZES.map(String)}
+        hint="Bigger number = thicker cable (sq mm)"
+        disabled={readOnly}
+        big={big}
+        onChange={(size) => {
+          const nextSize = Number(size);
+          patch({
+            conductorSizeSqMm: nextSize,
+            aerialBunched: draft.aerialBunched ? { ...draft.aerialBunched, phaseSizeSqMm: nextSize } : draft.aerialBunched,
+          });
+        }}
+      />
+      {showCores ? <SelectField id="cores" label="How many cores" value={draft.cores} options={CORES} hint="Most power jobs use 3.5 or 4; control jobs may use many cores." disabled={readOnly} big={big} onChange={(cores) => patch({ cores })} /> : null}
       {draft.cores === "3.5C" ? (
         <SelectField id="neutral" label="Reduced neutral size" value={String(draft.neutralSizeSqMm)} options={CONDUCTOR_SIZES.map(String)} hint="The thinner 4th core in a 3.5-core cable" disabled={readOnly} big={big} onChange={(n) => patch({ neutralSizeSqMm: Number(n) })} />
       ) : null}
       <SelectField id="insulation" label="Insulation" value={draft.insulation} options={INSULATIONS} hint="XLPE handles more heat; PVC is cheaper" disabled={readOnly} big={big} onChange={(insulation) => patch({ insulation })} />
-      <SelectField id="armour" label="Armour" value={draft.armour} options={ARMOURS} hint="Mechanical protection for buried/outdoor runs" disabled={readOnly} big={big} onChange={(armour) => patch({ armour })} />
-      <SelectField id="sheath" label="Outer covering (sheath)" value={draft.sheath} options={SHEATHS} hint="FRLS / LSZH = safer in a fire" disabled={readOnly} big={big} onChange={(sheath) => patch({ sheath })} />
-      <SelectField id="flame" label="Fire rating" value={draft.flameClass} options={FLAME_CLASSES} disabled={readOnly} big={big} onChange={(flameClass) => patch({ flameClass })} />
+      {showArmour ? <SelectField id="armour" label="Armour" value={draft.armour} options={ARMOURS} hint="Mechanical protection for buried/outdoor runs" disabled={readOnly} big={big} onChange={(armour) => patch({ armour })} /> : null}
+      {showSheath ? <SelectField id="sheath" label="Outer covering" value={draft.sheath} options={SHEATHS} hint="FRLS / LSZH = safer in a fire" disabled={readOnly} big={big} onChange={(sheath) => patch({ sheath })} /> : null}
+      <SelectField id="flame" label="Fire safety type" value={draft.flameClass} options={FLAME_CLASSES} hint="Use FRLS or LSZH when low smoke or safer evacuation is needed." disabled={readOnly} big={big} onChange={(flameClass) => patch({ flameClass })} />
+      <FamilyFields draft={draft} readOnly={readOnly} big={big} onChange={onChange} />
     </div>
   );
+}
+
+function FamilyFields({
+  draft,
+  readOnly,
+  big,
+  onChange,
+}: {
+  draft: LineDraft;
+  readOnly: boolean;
+  big?: boolean;
+  onChange: (next: LineDraft) => void;
+}) {
+  function patch(next: Partial<LineDraft>) {
+    onChange({ ...draft, ...next });
+  }
+
+  if (draft.family === "Aerial Bunched Cable") {
+    const abc = draft.aerialBunched ?? { phaseCount: 3, phaseSizeSqMm: draft.conductorSizeSqMm, messengerSizeSqMm: 50 };
+    return (
+      <>
+        <SelectField id="abc-phase-count" label="Supply type" value={String(abc.phaseCount)} options={["1", "3"]} hint="Single phase or three phase overhead supply." disabled={readOnly} big={big} onChange={(value) => patch({ aerialBunched: { ...abc, phaseCount: Number(value) as 1 | 3 } })} />
+        <SelectField id="abc-messenger" label="Messenger size" value={String(abc.messengerSizeSqMm)} options={CONDUCTOR_SIZES.map(String)} hint="The support wire that holds the cable in tension." disabled={readOnly} big={big} onChange={(value) => patch({ aerialBunched: { ...abc, messengerSizeSqMm: Number(value) } })} />
+        <SelectField id="abc-street-light" label="Street light wire" value={String(abc.streetLightSizeSqMm ?? 0)} options={["0", ...CONDUCTOR_SIZES.map(String)]} hint="Choose 0 if no street-light conductor is needed." disabled={readOnly} big={big} onChange={(value) => patch({ aerialBunched: { ...abc, streetLightSizeSqMm: Number(value) || undefined } })} />
+      </>
+    );
+  }
+
+  if (draft.family === "Screened Instrumentation") {
+    const inst = draft.instrumentation ?? { grouping: "Pair", groupCount: 1, overallScreen: true };
+    return (
+      <>
+        <SelectField id="inst-grouping" label="Signal grouping" value={inst.grouping} options={["Pair", "Triad"] as const} hint="Most signal cables are pairs; some instruments use triads." disabled={readOnly} big={big} onChange={(grouping) => patch({ instrumentation: { ...inst, grouping } })} />
+        <NumberField id="inst-count" label="Number of pairs or triads" value={inst.groupCount} min={1} hint="How many signal groups are inside the cable." disabled={readOnly} big={big} onChange={(groupCount) => patch({ instrumentation: { ...inst, groupCount } })} />
+        <SelectField id="inst-screen" label="Screening" value={inst.individualScreen ? "Individual + overall" : inst.overallScreen ? "Overall only" : "No screen"} options={["Individual + overall", "Overall only", "No screen"]} hint="Screening protects weak instrument signals from noise." disabled={readOnly} big={big} onChange={(value) => patch({ instrumentation: { ...inst, individualScreen: value === "Individual + overall", overallScreen: value !== "No screen", drainWire: value !== "No screen" } })} />
+      </>
+    );
+  }
+
+  if (draft.family === "Thermocouple Cable") {
+    const thermo = draft.thermocouple ?? { thermocoupleType: "K", pairCount: 1 };
+    return (
+      <>
+        <SelectField id="tc-type" label="Thermocouple type" value={thermo.thermocoupleType} options={["J", "K", "T", "R", "S"] as const} hint="Type K is common; match the sensor requirement." disabled={readOnly} big={big} onChange={(thermocoupleType) => patch({ thermocouple: { ...thermo, thermocoupleType } })} />
+        <NumberField id="tc-pair-count" label="Number of pairs" value={thermo.pairCount} min={1} hint="How many temperature circuits are needed." disabled={readOnly} big={big} onChange={(pairCount) => patch({ thermocouple: { ...thermo, pairCount } })} />
+      </>
+    );
+  }
+
+  if (draft.family === "Submersible Cable") {
+    const submersible = draft.submersible ?? { shape: "Flat", waterResistant: true };
+    return (
+      <SelectField id="submersible-shape" label="Cable shape" value={submersible.shape} options={["Flat", "Round"] as const} hint="Flat is common for borewell pump drops." disabled={readOnly} big={big} onChange={(shape) => patch({ submersible: { ...submersible, shape } })} />
+    );
+  }
+
+  if (draft.family === "Solar DC Cable") {
+    const solar = draft.solar ?? { dcPolarityColour: "Black", halogenFree: true, uvResistant: true };
+    return (
+      <SelectField id="solar-colour" label="Cable colour" value={solar.dcPolarityColour} options={["Red", "Black", "Natural", "Black with red stripe"] as const} hint="Use red or black to match DC polarity." disabled={readOnly} big={big} onChange={(dcPolarityColour) => patch({ solar: { ...solar, dcPolarityColour } })} />
+    );
+  }
+
+  if (draft.family === "Covered Conductor") {
+    const covered = draft.coveredConductor ?? { networkVoltageKv: "13.8", conductorConstruction: "AAAC", antiTrackingOuter: true };
+    return (
+      <>
+        <SelectField id="covered-construction" label="Conductor type" value={covered.conductorConstruction} options={["AAAC", "ACSR"] as const} hint="AAAC is all aluminium alloy; ACSR has steel reinforcement." disabled={readOnly} big={big} onChange={(conductorConstruction) => patch({ coveredConductor: { ...covered, conductorConstruction }, conductorMaterial: conductorConstruction })} />
+        <SelectField id="covered-network" label="Network voltage" value={covered.networkVoltageKv} options={["13.8", "22", "33"] as const} hint="Choose the overhead distribution network voltage." disabled={readOnly} big={big} onChange={(networkVoltageKv) => patch({ coveredConductor: { ...covered, networkVoltageKv } })} />
+      </>
+    );
+  }
+
+  return null;
 }
 
 function CostingFields({
@@ -801,7 +1127,7 @@ function CostingFields({
   );
 }
 
-// ── More options expander (advanced-spec fields hidden in guided mode) ────────
+// ── Construction options expander (secondary spec fields) ────────────────────
 function MoreOptions({
   draft,
   readOnly,
@@ -823,7 +1149,7 @@ function MoreOptions({
         aria-expanded={open}
         className="flex w-full items-center justify-between gap-3 p-3 text-sm font-medium text-foreground"
       >
-        <span>More options (standard, voltage, conductor class, HT screening)</span>
+        <span>Construction options (standard, voltage, conductor class, HT screening)</span>
         <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} aria-hidden="true" />
       </button>
       {open ? (
@@ -844,274 +1170,83 @@ function MoreOptions({
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GUIDED WIZARD (default experience)
-// ══════════════════════════════════════════════════════════════════════════════
-const STEP_TITLES = ["Who is this quote for?", "What cable do they need?", "Here's the price.", "Send it."];
+function TechnicalDetails({ draft }: { draft: LineDraft }) {
+  const [open, setOpen] = useState(false);
+  const details = [
+    draft.technical?.approxCurrentRatingA ? `Current rating: ${draft.technical.approxCurrentRatingA} A` : null,
+    draft.technical?.approxCurrentRatingInAirA ? `In air: ${draft.technical.approxCurrentRatingInAirA} A` : null,
+    draft.technical?.approxCurrentRatingInGroundA ? `In ground: ${draft.technical.approxCurrentRatingInGroundA} A` : null,
+    draft.technical?.coreIdentification ? `Core ID: ${draft.technical.coreIdentification}` : null,
+    draft.technical?.colour ? `Colour: ${draft.technical.colour}` : null,
+    draft.aerialBunched ? `Messenger: ${draft.aerialBunched.messengerSizeSqMm} sq mm` : null,
+    draft.instrumentation ? `${draft.instrumentation.groupCount} ${draft.instrumentation.grouping.toLowerCase()} groups` : null,
+    draft.thermocouple ? `Thermocouple type ${draft.thermocouple.thermocoupleType}` : null,
+    draft.solar?.uvResistant ? "UV resistant" : null,
+    draft.submersible?.waterResistant ? "Water resistant" : null,
+    draft.coveredConductor?.antiTrackingOuter ? "Anti-tracking outer covering" : null,
+  ].filter((detail): detail is string => Boolean(detail));
 
-function WizardProgress({ step }: { step: number }) {
   return (
-    <div className="space-y-2">
-      <p className="font-mono text-xs text-muted-foreground">Step {step + 1} of 4</p>
-      <h2 className="text-2xl font-semibold tracking-tight text-foreground">{STEP_TITLES[step]}</h2>
-      <div className="flex gap-1.5" aria-hidden="true">
-        {STEP_TITLES.map((_, index) => (
-          <span key={index} className={cn("h-1.5 flex-1 rounded-full", index <= step ? "bg-primary" : "bg-muted")} />
-        ))}
-      </div>
+    <div className="rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 p-3 text-sm font-medium text-foreground"
+      >
+        <span>Technical details</span>
+        <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="border-t border-border p-4 text-sm text-muted-foreground">
+          {details.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {details.map((detail) => (
+                <Badge key={detail} tone="neutral">{detail}</Badge>
+              ))}
+            </div>
+          ) : (
+            <p>No extra catalogue technical data is needed for this quote.</p>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function GuidedWizard(props: BuilderShared) {
-  const {
-    customers,
-    selectedCustomerId,
-    customerName,
-    selectedCustomer,
-    onSelectExistingCustomer,
-    onTypeCustomerName,
-    openInquiryPicks,
-    onPickFromSalesBoard,
-    hasCustomer,
-    draft,
-    setDraft,
-    presets,
-    mcx,
-    materials,
-    lines,
-    addLine,
-    removeLine,
-    editLine,
-    readOnly,
-    gstSplit,
-    totalInr,
-    sendLabel,
-    sendIcon,
-    sendDisabled,
-    onSend,
-    onSaveDraft,
-    saving,
-    sending,
-    gateReason,
-  } = props;
-
-  const [step, setStep] = useState(0);
-  const [showBreakdown, setShowBreakdown] = useState(false);
-  const [editingPreset, setEditingPreset] = useState(false);
-
-  const canGoNext = step === 0 ? hasCustomer : step === 1 ? lines.length > 0 : true;
-
+function FamilyPicker({
+  selected,
+  disabled,
+  onSelect,
+}: {
+  selected: CableFamily;
+  disabled: boolean;
+  onSelect: (family: CableFamily) => void;
+}) {
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-8">
-      <WizardProgress step={step} />
-
-      {step === 0 ? (
-        <div className="space-y-6">
-          <CustomerInput
-            id="wizard-customer"
-            customers={customers}
-            value={customerName}
-            selectedCustomerId={selectedCustomerId}
-            disabled={readOnly}
-            big
-            onSelectExisting={onSelectExistingCustomer}
-            onTypeNew={onTypeCustomerName}
-          />
-          {selectedCustomer ? (
-            <div className="rounded-md border border-border bg-muted p-4 text-sm">
-              <p className="font-medium text-foreground">{selectedCustomer.name}</p>
-              <p className="text-muted-foreground">
-                {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}
-                {selectedCustomer.paymentTerms ? ` · ${selectedCustomer.paymentTerms}` : ""}
-              </p>
-            </div>
-          ) : customerName.trim() ? (
-            <p className="text-sm text-muted-foreground">
-              New customer <span className="font-medium text-foreground">“{customerName.trim()}”</span> will be created when you save or send.
-            </p>
-          ) : null}
-          <SalesBoardPicks picks={openInquiryPicks} selectedCustomerId={selectedCustomerId} disabled={readOnly} onPick={onPickFromSalesBoard} />
-        </div>
-      ) : null}
-
-      {step === 1 ? (
-        <div className="space-y-6">
-          <div>
-            <p className="text-sm font-medium text-foreground">Pick a cable you usually sell</p>
-            <p className="text-sm text-muted-foreground">Choosing one fills in everything for you — you can change it after.</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {presets.map((preset) => {
-                const active = isSamePreset(draft, preset);
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => {
-                      setDraft(draftFromPreset(preset, mcx));
-                      setEditingPreset(false);
-                    }}
-                    className={cn(
-                      "rounded-md border p-4 text-left transition-colors disabled:opacity-50",
-                      active ? "border-primary bg-primary/10" : "border-border bg-card hover:bg-muted",
-                    )}
-                  >
-                    <p className="text-sm font-medium text-foreground">{preset.displayName}</p>
-                    {preset.description ? <p className="mt-1 text-xs text-muted-foreground">{preset.description}</p> : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setEditingPreset((value) => !value)}
-            aria-expanded={editingPreset}
-            className="flex items-center gap-2 text-sm font-medium text-primary"
-          >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-            Need to change something?
-          </button>
-
-          {editingPreset ? (
-            <div className="space-y-6 rounded-md border border-border p-4">
-              <SpecForm draft={draft} mcx={mcx} readOnly={readOnly} big onChange={setDraft} />
-              <CostingFields draft={draft} readOnly={readOnly} big onChange={setDraft} />
-              {draft.marginPct < MARGIN_GATE_PCT ? (
-                <p className="flex items-center gap-2 text-xs font-medium text-warning">
-                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                  A profit below {MARGIN_GATE_PCT}% needs the owner to approve before it can go to the factory.
-                </p>
-              ) : null}
-              <MoreOptions draft={draft} readOnly={readOnly} onChange={setDraft} />
-            </div>
-          ) : null}
-
-          <div className="rounded-md border border-border bg-muted p-4">
-            <CableSpecSummary spec={specFromDraft(draft, "preview")} />
-            <p className="mt-2 text-sm text-muted-foreground">
-              {draft.lengthM} m · profit {draft.marginPct}% · this cable ≈ <MoneyCell amount={costDraft(draft, materials).lineTotalInr} />
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <Button type="button" disabled={readOnly || draft.lengthM <= 0} onClick={() => addLine(draft)}>
-              <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
-              Add this cable
-            </Button>
-            {lines.length > 0 ? <Badge tone="success">{lines.length} cable{lines.length > 1 ? "s" : ""} added</Badge> : null}
-          </div>
-
-          {lines.length > 0 ? (
-            <div className="space-y-3">
-              {lines.map(({ line, spec }) => (
-                <div key={line.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-                  <CableSpecSummary spec={spec} />
-                  <div className="flex shrink-0 items-center gap-2">
-                    <MoneyCell amount={line.lineTotalInr} />
-                    <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => editLine(line.id)} aria-label={`Edit ${line.id}`}>
-                      <Pencil className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {step === 2 ? (
-        <div className="space-y-6">
-          <div className="rounded-lg border border-border bg-card p-6 text-center">
-            <p className="text-sm text-muted-foreground">Total price (including GST)</p>
-            <p className="mt-2 text-4xl font-semibold tracking-tight text-foreground">{formatINR(totalInr)}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {gstSplit.interstate ? "IGST" : "CGST + SGST"} · valid until <DateCell iso={validUntilIso()} />
-            </p>
-          </div>
-
-          <button type="button" onClick={() => setShowBreakdown((value) => !value)} aria-expanded={showBreakdown} className="flex items-center gap-2 text-sm font-medium text-primary">
-            <ChevronDown className={cn("h-4 w-4 transition-transform", showBreakdown && "rotate-180")} aria-hidden="true" />
-            Show me how this was worked out
-          </button>
-          {showBreakdown ? <CostingBreakdown lines={lines} gstSplit={gstSplit} /> : null}
-
-          <div className="space-y-3">
-            {lines.map(({ line, spec }) => (
-              <div key={line.id} className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
-                <CableSpecSummary spec={spec} />
-                <div className="flex shrink-0 items-center gap-2">
-                  <MoneyCell amount={line.lineTotalInr} />
-                  <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => { editLine(line.id); setStep(1); }} aria-label={`Edit ${line.id}`}>
-                    <Pencil className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                  <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {step === 3 ? (
-        <div className="space-y-4">
-          {gateReason ? (
-            <div className="flex items-start gap-3 rounded-md border border-warning bg-warning/10 p-4 text-sm">
-              <ShieldCheck className="mt-0.5 h-4 w-4 text-warning" aria-hidden="true" />
-              <p className="text-foreground">{gateReason}</p>
-            </div>
-          ) : null}
-          <div className="grid gap-3 sm:grid-cols-2">
+    <div>
+      <p className="text-sm font-medium text-foreground">First, choose the cable family</p>
+      <p className="text-sm text-muted-foreground">This keeps the next step short and shows only fields that matter.</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {cableFamilies.map((item) => {
+          const active = item.family === selected;
+          return (
             <button
+              key={item.family}
               type="button"
-              disabled={readOnly || saving || lines.length === 0}
-              onClick={onSaveDraft}
-              className="rounded-lg border border-border bg-card p-5 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              disabled={disabled}
+              onClick={() => onSelect(item.family)}
+              className={cn(
+                "min-h-24 rounded-md border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                active ? "border-primary bg-primary/10" : "border-border bg-card hover:bg-muted",
+              )}
+              aria-pressed={active}
             >
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
-                Save for later
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">Keeps it; doesn&apos;t start the factory.</p>
+              <p className="text-sm font-semibold text-foreground">{item.displayName}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{item.plainHint}</p>
             </button>
-            <button
-              type="button"
-              disabled={sendDisabled || lines.length === 0}
-              onClick={onSend}
-              className="rounded-lg border border-primary bg-primary/10 p-5 text-left transition-colors hover:bg-primary/20 disabled:opacity-50"
-            >
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : sendIcon}
-                {sendLabel}
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                {gateReason ? "The owner will review it before anything starts." : "Locks the price and starts production, dispatch, and the invoice."}
-              </p>
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="flex items-center justify-between border-t border-border pt-4">
-        <Button type="button" variant="ghost" disabled={step === 0} onClick={() => setStep((s) => Math.max(0, s - 1))}>
-          <ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" />
-          Back
-        </Button>
-        {step < 3 ? (
-          <Button type="button" disabled={!canGoNext} onClick={() => setStep((s) => Math.min(3, s + 1))}>
-            Next
-            <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-          </Button>
-        ) : (
-          <span className="text-xs text-muted-foreground">Choose an option above.</span>
-        )}
+          );
+        })}
       </div>
     </div>
   );
@@ -1133,11 +1268,13 @@ function MaterialsPanel({
   readOnly,
   onSave,
   onRefreshMcx,
+  embedded = false,
 }: {
   materials: Material[];
   readOnly: boolean;
   onSave: (material: Material) => void;
   onRefreshMcx: () => void;
+  embedded?: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -1160,6 +1297,75 @@ function MaterialsPanel({
     setAdding(false);
   }
 
+  const body = (
+    <div className="space-y-4">
+      {embedded ? (
+        <div className="flex justify-end">
+          <Button type="button" variant="secondary" size="sm" disabled={readOnly} onClick={onRefreshMcx}>
+            <RefreshCcw className="mr-2 h-4 w-4" aria-hidden="true" />
+            Refresh MCX
+          </Button>
+        </div>
+      ) : null}
+      {categories.map((category) => {
+        const rows = materials.filter((m) => m.category === category);
+        if (rows.length === 0) return null;
+        return (
+          <div key={category} className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{category}</p>
+            {rows.map((material) => (
+              <div key={material.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{material.name}</p>
+                  <p className="text-xs text-muted-foreground">{material.source === "MCX" ? "Auto (MCX)" : "Manual"}</p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-muted-foreground">₹</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    aria-label={`${material.name} rate per kg`}
+                    value={material.ratePerKg}
+                    disabled={readOnly}
+                    className="h-8 w-24 text-right font-mono"
+                    onChange={(event) => onSave({ ...material, ratePerKg: Number(event.target.value), source: "Manual" })}
+                  />
+                  <span className="text-xs text-muted-foreground">/kg</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {adding ? (
+        <div className="space-y-3 rounded-md border border-border p-3">
+          <Field id="new-mat-name" label="Material name">
+            <Input id="new-mat-name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. EPR compound" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <SelectField id="new-mat-cat" label="Category" value={newCategory} options={categories} onChange={setNewCategory} />
+            <NumberField id="new-mat-rate" label="Rate (₹/kg)" value={newRate} min={0} onChange={setNewRate} />
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" onClick={saveNew} disabled={!newName.trim()}>
+              <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add material
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button type="button" variant="secondary" size="sm" disabled={readOnly} onClick={() => setAdding(true)}>
+          <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add a material
+        </Button>
+      )}
+    </div>
+  );
+
+  if (embedded) return body;
+
   return (
     <Panel
       title="Materials & rates"
@@ -1174,71 +1380,315 @@ function MaterialsPanel({
         </Button>
       }
     >
-      <div className="space-y-4">
-        {categories.map((category) => {
-          const rows = materials.filter((m) => m.category === category);
-          if (rows.length === 0) return null;
-          return (
-            <div key={category} className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{category}</p>
-              {rows.map((material) => (
-                <div key={material.id} className="flex items-center justify-between gap-3 rounded-md border border-border p-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{material.name}</p>
-                    <p className="text-xs text-muted-foreground">{material.source === "MCX" ? "Auto (MCX)" : "Manual"}</p>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-xs text-muted-foreground">₹</span>
-                    <Input
-                      type="number"
-                      min={0}
-                      aria-label={`${material.name} rate per kg`}
-                      value={material.ratePerKg}
-                      disabled={readOnly}
-                      className="h-8 w-24 text-right font-mono"
-                      onChange={(event) => onSave({ ...material, ratePerKg: Number(event.target.value), source: "Manual" })}
-                    />
-                    <span className="text-xs text-muted-foreground">/kg</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          );
-        })}
-
-        {adding ? (
-          <div className="space-y-3 rounded-md border border-border p-3">
-            <Field id="new-mat-name" label="Material name">
-              <Input id="new-mat-name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. EPR compound" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <SelectField id="new-mat-cat" label="Category" value={newCategory} options={categories} onChange={setNewCategory} />
-              <NumberField id="new-mat-rate" label="Rate (₹/kg)" value={newRate} min={0} onChange={setNewRate} />
-            </div>
-            <div className="flex gap-2">
-              <Button type="button" size="sm" onClick={saveNew} disabled={!newName.trim()}>
-                <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add material
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setAdding(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <Button type="button" variant="secondary" size="sm" disabled={readOnly} onClick={() => setAdding(true)}>
-            <Plus className="mr-2 h-4 w-4" aria-hidden="true" /> Add a material
-          </Button>
-        )}
-      </div>
+      {body}
     </Panel>
   );
 }
 
+function StagePanel({
+  number,
+  title,
+  description,
+  icon: Icon,
+  children,
+}: {
+  number: number;
+  title: string;
+  description: string;
+  icon: typeof Cable;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-card shadow-sm">
+      <div className="border-b border-border p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted font-mono text-sm font-semibold text-foreground">
+            {number}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          </div>
+        </div>
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+function InlineNotice({ tone = "info", children }: { tone?: Tone; children: React.ReactNode }) {
+  const className: Record<Tone, string> = {
+    success: "border-success bg-success/10",
+    warning: "border-warning bg-warning/10",
+    danger: "border-danger bg-danger/10",
+    info: "border-info bg-info/10",
+    neutral: "border-border bg-muted",
+    highlight: "border-highlight bg-highlight/10",
+  };
+  return (
+    <div className={cn("rounded-md border p-3 text-sm text-foreground", className[tone])}>
+      {children}
+    </div>
+  );
+}
+
+function PresetPicker({
+  draft,
+  presets,
+  mcx,
+  readOnly,
+  onChange,
+}: {
+  draft: LineDraft;
+  presets: CablePreset[];
+  mcx: McxRates | null;
+  readOnly: boolean;
+  onChange: (next: LineDraft) => void;
+}) {
+  const familyPresets = presets.filter((preset) => preset.family === draft.family);
+  const selectedFamily = cableFamilies.find((item) => item.family === draft.family);
+
+  if (familyPresets.length === 0) {
+    return <EmptyState title="No preset for this family yet" description="Use the construction fields below to build this cable manually." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-sm font-medium text-foreground">Then pick a common {selectedFamily?.displayName.toLowerCase() ?? "cable"}</p>
+        <p className="text-sm text-muted-foreground">The preset fills the full construction and commercial defaults. Every field below remains editable.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {familyPresets.map((preset) => {
+          const active = isSamePreset(draft, preset);
+          return (
+            <button
+              key={preset.id}
+              type="button"
+              disabled={readOnly}
+              onClick={() => onChange(draftFromPreset(preset, mcx))}
+              className={cn(
+                "min-h-24 rounded-md border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                active ? "border-primary bg-primary/10" : "border-border bg-card hover:bg-muted",
+              )}
+              aria-pressed={active}
+            >
+              <p className="text-sm font-medium text-foreground">{preset.displayName}</p>
+              {preset.description ? <p className="mt-1 text-xs text-muted-foreground">{preset.description}</p> : null}
+              {preset.tags?.length ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {preset.tags.map((tag) => <Badge key={tag} tone="neutral">{tag}</Badge>)}
+                </div>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BrochureTableTitlePicker({
+  draft,
+  mcx,
+  readOnly,
+  onChange,
+}: {
+  draft: LineDraft;
+  mcx: McxRates | null;
+  readOnly: boolean;
+  onChange: (next: LineDraft) => void;
+}) {
+  const title = draft.brochureTitle ?? defaultBrochureTitle("TABLE-7-CONTROL");
+
+  function applyTitle(nextTitle: BrochureTitleDraft) {
+    onChange(draftFromBrochureTitle(draft, nextTitle, mcx));
+  }
+
+  function selectTable(tableId: BrochureTableId) {
+    applyTitle(defaultBrochureTitle(tableId));
+  }
+
+  return (
+    <div className="space-y-4 rounded-md border border-border bg-muted p-4">
+      <div>
+        <p className="text-sm font-medium text-foreground">Or choose a brochure table title</p>
+        <p className="text-sm text-muted-foreground">Use the brochure heading as a template. Change the words in the title with dropdowns before quoting.</p>
+      </div>
+
+      <SelectField
+        id="brochure-table-title"
+        label="Brochure table title"
+        value={title.tableId}
+        options={BROCHURE_TABLE_IDS}
+        disabled={readOnly}
+        getOptionLabel={(tableId) => BROCHURE_TABLE_LABELS[tableId]}
+        onChange={selectTable}
+      />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Field id="brochure-cable-name" label="Title wording" hint="Editable text from the brochure heading.">
+          <Input
+            id="brochure-cable-name"
+            value={title.cableName}
+            disabled={readOnly}
+            onChange={(event) => applyTitle({ ...title, cableName: event.target.value })}
+          />
+        </Field>
+        <SelectField
+          id="brochure-voltage"
+          label="Voltage in title"
+          value={title.voltageV}
+          options={["1100"] as const}
+          hint="Shown as 1100 V in the brochure tables."
+          disabled={readOnly}
+          onChange={(voltageV) => applyTitle({ ...title, voltageV })}
+        />
+        {title.tableId === "TABLE-8-PALLISON-35C" ? (
+          <SelectField
+            id="brochure-main-neutral"
+            label="Main / neutral size"
+            value={table8PairFromTitle(title)}
+            options={BROCHURE_TABLE_8_SIZE_OPTIONS}
+            hint="Matches the Table 8 nominal cross-sectional area rows."
+            disabled={readOnly}
+            onChange={(value) => applyTitle({ ...title, ...table8SizeFromPair(value), cores: "3.5C" })}
+          />
+        ) : (
+          <SelectField
+            id="brochure-size"
+            label="Nominal area"
+            value={String(title.conductorSizeSqMm)}
+            options={CONDUCTOR_SIZES.map(String)}
+            hint="Matches the sq.mm wording in the title."
+            disabled={readOnly}
+            onChange={(value) => applyTitle({ ...title, conductorSizeSqMm: Number(value) })}
+          />
+        )}
+        {title.tableId === "TABLE-7-CONTROL" ? (
+          <SelectField
+            id="brochure-cores"
+            label="No. of cores"
+            value={title.cores}
+            options={BROCHURE_TABLE_7_CORE_OPTIONS}
+            hint="Quote-safe core options from the control-cable table."
+            disabled={readOnly}
+            onChange={(cores) => applyTitle({ ...title, cores })}
+          />
+        ) : (
+          <SelectField
+            id="brochure-cores"
+            label="No. of cores"
+            value={title.cores}
+            options={["3.5C"] as const}
+            disabled={readOnly}
+            onChange={(cores) => applyTitle({ ...title, cores })}
+          />
+        )}
+        <SelectField
+          id="brochure-insulation"
+          label="Insulation in title"
+          value={title.insulation}
+          options={title.tableId === "TABLE-7-CONTROL" ? (["PVC (Type A)", "PVC (Type C)"] as const) : (["XLPE"] as const)}
+          disabled={readOnly}
+          onChange={(insulation) => applyTitle({ ...title, insulation })}
+        />
+        <SelectField
+          id="brochure-armour"
+          label="Armour wording"
+          value={title.armourOption}
+          options={BROCHURE_ARMOUR_OPTIONS}
+          disabled={readOnly}
+          onChange={(armourOption) => applyTitle({ ...title, armourOption })}
+        />
+        <SelectField
+          id="brochure-standard"
+          label="Conforming standard"
+          value={title.standard}
+          options={title.tableId === "TABLE-7-CONTROL" ? (["IS 1554-1"] as const) : (["IS 7098-1"] as const)}
+          disabled={readOnly}
+          onChange={(standard) => applyTitle({ ...title, standard })}
+        />
+      </div>
+
+      <div className="rounded-md border border-border bg-card p-3">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Title preview</p>
+        <p className="mt-2 text-sm font-medium text-foreground">{formatBrochureTitle(title)}</p>
+      </div>
+    </div>
+  );
+}
+
+function QuoteSummaryPanel({
+  selectedCustomer,
+  customerName,
+  lines,
+  gstSplit,
+  subtotalInr,
+  totalInr,
+  marginGate,
+  gateReason,
+}: {
+  selectedCustomer?: Customer;
+  customerName: string;
+  lines: LineWithSpec[];
+  gstSplit: ReturnType<typeof computeGst>;
+  subtotalInr: number;
+  totalInr: number;
+  marginGate: boolean;
+  gateReason: string | null;
+}) {
+  return (
+    <aside className="space-y-4 rounded-lg border border-border bg-card p-4 shadow-sm xl:sticky xl:top-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Live quote summary</p>
+          <p className="mt-1 text-sm font-semibold text-foreground">{selectedCustomer?.name ?? (customerName.trim() || "Customer not selected")}</p>
+          <p className="text-xs text-muted-foreground">
+            {selectedCustomer ? [selectedCustomer.gstin, selectedCustomer.state].filter(Boolean).join(" · ") || "Details pending" : "Tax split updates after customer selection."}
+          </p>
+        </div>
+        <Badge tone={gstSplit.interstate ? "info" : "highlight"}>{gstSplit.interstate ? "IGST" : "CGST + SGST"}</Badge>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <SummaryMetric label="Cables" value={String(lines.length)} />
+        <SummaryMetric label="Subtotal" value={<MoneyCell amount={subtotalInr} />} />
+        <SummaryMetric label="GST" value={<MoneyCell amount={gstSplit.gstInr} />} />
+        <SummaryMetric label="Total" value={<MoneyCell amount={totalInr} />} />
+      </div>
+
+      <div className="rounded-md border border-border bg-muted p-3 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Approval gate</span>
+          {marginGate ? <Badge tone="warning">Owner review</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Approval gate clear" />}
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {gateReason ?? `Margins at or above ${MARGIN_GATE_PCT}% can be sent directly if your role allows it.`}
+        </p>
+      </div>
+    </aside>
+  );
+}
+
+function SummaryMetric({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-sm font-semibold text-foreground">{value}</p>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
-// ADVANCED MODE (classic two-column power layout)
+// CHRONOLOGICAL QUOTE WORKSPACE
 // ══════════════════════════════════════════════════════════════════════════════
-function AdvancedLayout(props: BuilderShared) {
+function QuoteWorkspace(props: BuilderShared) {
   const {
+    quoteId,
     customers,
     selectedCustomerId,
     customerName,
@@ -1249,6 +1699,7 @@ function AdvancedLayout(props: BuilderShared) {
     onPickFromSalesBoard,
     draft,
     setDraft,
+    presets,
     mcx,
     materials,
     onSaveMaterial,
@@ -1256,51 +1707,130 @@ function AdvancedLayout(props: BuilderShared) {
     lines,
     addLine,
     removeLine,
+    editLine,
+    editingLineId,
     readOnly,
     gstSplit,
     subtotalInr,
     totalInr,
     marginGate,
+    hasCustomer,
+    sendLabel,
+    sendIcon,
+    sendDisabled,
+    gateReason,
+    onSend,
+    onSaveDraft,
+    saving,
+    sending,
   } = props;
 
   const liveCosting = costDraft(draft, materials);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+
+  function selectFamily(family: CableFamily) {
+    const firstPreset = presets.find((preset) => preset.family === family);
+    setDraft(firstPreset ? draftFromPreset(firstPreset, mcx) : { ...draft, family });
+  }
+
+  const addDisabledReason = readOnly
+    ? "Your current role can view this quote but cannot edit it."
+    : draft.lengthM <= 0
+      ? "Enter how many metres the customer needs before adding the cable."
+      : null;
+  const saveDisabledReason = readOnly
+    ? "Your current role cannot save quote drafts."
+    : !hasCustomer
+      ? "Choose or type a customer before saving."
+      : lines.length === 0
+        ? "Add at least one cable before saving."
+        : null;
+  const sendDisabledReason = readOnly
+    ? "Your current role cannot send quotes to the order board."
+    : !hasCustomer
+      ? "Choose or type a customer before sending."
+      : lines.length === 0
+        ? "Add at least one cable before sending."
+        : sendDisabled && !gateReason
+          ? "Your role cannot send this quote directly."
+          : null;
+
+  function downloadQuotePdf() {
+    if (lines.length === 0 || !hasCustomer) return;
+    downloadPdf(
+      `${quoteId ?? "quote-draft"}.pdf`,
+      quotePdfDocument({
+        quoteId,
+        customerName,
+        selectedCustomer,
+        lines,
+        subtotalInr,
+        gstSplit,
+        totalInr,
+      }),
+    );
+  }
 
   return (
     <div className="grid gap-6 xl:grid-cols-3">
       <div className="space-y-6 xl:col-span-2">
-        <Panel title="Step 1 — Customer" description="Type a name or pick from the Sales board. Drives tax and preview." icon={Users} storageKey="adv-customer">
+        <StagePanel number={1} title="Customer and sales context" description="Start with who the quote is for. This drives GST and later order records." icon={Users}>
           <div className="space-y-4">
             <CustomerInput
-              id="adv-customer"
+              id="quote-customer"
               customers={customers}
               value={customerName}
               selectedCustomerId={selectedCustomerId}
               disabled={readOnly}
+              big
               onSelectExisting={onSelectExistingCustomer}
               onTypeNew={onTypeCustomerName}
             />
             {selectedCustomer ? (
-              <p className="text-xs text-muted-foreground">
-                {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ")}
-                {selectedCustomer.gstin ? ` · ${selectedCustomer.gstin}` : ""}
-              </p>
+              <InlineNotice tone="neutral">
+                <span className="font-medium">{selectedCustomer.name}</span>
+                <span className="text-muted-foreground">
+                  {" "}· {[selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(", ") || "Location pending"}
+                  {selectedCustomer.paymentTerms ? ` · ${selectedCustomer.paymentTerms}` : ""}
+                </span>
+              </InlineNotice>
             ) : customerName.trim() ? (
-              <p className="text-xs text-muted-foreground">
-                New customer — saved to Contacts when you save or send.
-              </p>
+              <InlineNotice tone="info">
+                New customer <span className="font-medium">“{customerName.trim()}”</span> will be saved to Contacts when you save or send.
+              </InlineNotice>
             ) : null}
             <SalesBoardPicks picks={openInquiryPicks} selectedCustomerId={selectedCustomerId} disabled={readOnly} onPick={onPickFromSalesBoard} />
           </div>
-        </Panel>
+        </StagePanel>
 
-        <Panel title="Step 2 — Configure a cable" description="Rich CableSpec form with live designation, code, and costing." icon={Wand2} storageKey="adv-configure">
+        <StagePanel number={2} title="Cable family and common preset" description="Pick the catalogue family first, then start from the closest common cable." icon={Wand2}>
+          <div className="space-y-6">
+            <FamilyPicker selected={draft.family} disabled={readOnly} onSelect={selectFamily} />
+            <PresetPicker draft={draft} presets={presets} mcx={mcx} readOnly={readOnly} onChange={setDraft} />
+            <BrochureTableTitlePicker draft={draft} mcx={mcx} readOnly={readOnly} onChange={setDraft} />
+          </div>
+        </StagePanel>
+
+        <StagePanel number={3} title="Cable construction details" description="Keep the fields operators change most often visible. Technical fields stay one click away." icon={Cable}>
           <div className="space-y-6">
             <SpecForm draft={draft} mcx={mcx} readOnly={readOnly} onChange={setDraft} />
-            <MoreOptions draft={draft} readOnly={readOnly} onChange={setDraft} />
             <div className="rounded-md border border-border bg-muted p-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Friendly cable summary</p>
               <CableSpecSummary spec={specFromDraft(draft, "live")} />
             </div>
+            <MoreOptions draft={draft} readOnly={readOnly} onChange={setDraft} />
+            <TechnicalDetails draft={draft} />
+          </div>
+        </StagePanel>
+
+        <StagePanel number={4} title="Length, rates, margin, and line price" description="Set the commercial inputs and see the price before adding it to the quote." icon={Zap}>
+          <div className="space-y-6">
             <CostingFields draft={draft} readOnly={readOnly} onChange={setDraft} />
+            {draft.marginPct < MARGIN_GATE_PCT ? (
+              <InlineNotice tone="warning">
+                A profit below {MARGIN_GATE_PCT}% needs owner approval before it can go to the factory.
+              </InlineNotice>
+            ) : null}
             <div className="space-y-2 rounded-md border border-border bg-muted p-3 text-sm">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Cost per metre, by component</p>
               {liveCosting.components.map((component) => (
@@ -1316,14 +1846,18 @@ function AdvancedLayout(props: BuilderShared) {
               <Stat label={`Margin @ ${draft.marginPct}%`} value={liveCosting.lineMarginInr} />
               <Stat label="Line total" value={liveCosting.lineTotalInr} />
             </div>
-            <Button type="button" disabled={readOnly || draft.lengthM <= 0} onClick={() => addLine(draft)}>
-              <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
-              Add this cable to the quote
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="button" disabled={Boolean(addDisabledReason)} onClick={() => addLine(draft, editingLineId ?? undefined)}>
+                {editingLineId ? <Pencil className="mr-2 h-4 w-4" aria-hidden="true" /> : <Plus className="mr-2 h-4 w-4" aria-hidden="true" />}
+                {editingLineId ? "Update this cable" : "Add this cable to the quote"}
+              </Button>
+              {editingLineId ? <Badge tone="info">Editing {editingLineId}</Badge> : null}
+            </div>
+            {addDisabledReason ? <p className="text-sm text-muted-foreground">{addDisabledReason}</p> : null}
           </div>
-        </Panel>
+        </StagePanel>
 
-        <Panel title="Cables in this quote" description="Line totals include metal, overhead, margin; GST applied at quote level." icon={Cable} storageKey="adv-lines">
+        <StagePanel number={5} title="Cables added to this quote" description="Review each line before the quote total is finalized." icon={FileText}>
           {lines.length === 0 ? (
             <EmptyState title="No quote lines yet" description="Configure a cable above, then add it to this quote." />
           ) : (
@@ -1360,9 +1894,14 @@ function AdvancedLayout(props: BuilderShared) {
                         <MoneyCell amount={line.lineTotalInr} />
                       </td>
                       <td className="p-2 lg:p-3">
-                        <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => editLine(line.id)} aria-label={`Edit ${line.id}`}>
+                            <Pencil className="h-4 w-4" aria-hidden="true" />
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" disabled={readOnly} onClick={() => removeLine(line.id)} aria-label={`Remove ${line.id}`}>
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1370,40 +1909,93 @@ function AdvancedLayout(props: BuilderShared) {
               </table>
             </div>
           )}
-        </Panel>
+        </StagePanel>
+
+        <StagePanel number={6} title="Final total, approval, and send" description="Confirm the full quote, save it, or send it into the order chain." icon={ShieldCheck}>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-muted p-5">
+              <p className="text-sm text-muted-foreground">Total price including GST</p>
+              <p className="mt-2 text-3xl font-semibold tracking-tight text-foreground">{formatINR(totalInr)}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Subtotal <MoneyCell amount={subtotalInr} /> · {gstSplit.interstate ? "IGST 18%" : "CGST 9% + SGST 9%"} · valid until <DateCell iso={validUntilIso()} />
+              </p>
+            </div>
+
+            <button type="button" onClick={() => setShowBreakdown((value) => !value)} aria-expanded={showBreakdown} className="flex items-center gap-2 text-sm font-medium text-primary">
+              <ChevronDown className={cn("h-4 w-4 transition-transform", showBreakdown && "rotate-180")} aria-hidden="true" />
+              Show me how this was worked out
+            </button>
+            {showBreakdown ? <CostingBreakdown lines={lines} gstSplit={gstSplit} /> : null}
+
+            {gateReason ? (
+              <InlineNotice tone="warning">
+                <div className="flex items-start gap-2">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+                  <span>{gateReason} Sending will request approval; no order will be created until it is approved.</span>
+                </div>
+              </InlineNotice>
+            ) : null}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={Boolean(saveDisabledReason) || saving}
+                onClick={onSaveDraft}
+                className="rounded-lg border border-border bg-card p-5 text-left transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
+                  Save for later
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{saveDisabledReason ?? "Keeps it as a draft; doesn't start the factory."}</p>
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(sendDisabledReason) || sending || (sendDisabled && !gateReason)}
+                onClick={onSend}
+                className="rounded-lg border border-primary bg-primary/10 p-5 text-left transition-colors hover:bg-primary/20 disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  {sending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : sendIcon}
+                  {sendLabel}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {sendDisabledReason ?? (gateReason ? "The owner will review it before anything starts." : "Locks the price and starts production, dispatch, and the invoice.")}
+                </p>
+              </button>
+            </div>
+            <Button type="button" variant="secondary" disabled={!hasCustomer || lines.length === 0} onClick={downloadQuotePdf}>
+              <FileText className="mr-2 h-4 w-4" aria-hidden="true" />
+              Download quote PDF
+            </Button>
+            {!hasCustomer || lines.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Add a customer and at least one cable before downloading the quote PDF.</p>
+            ) : null}
+          </div>
+        </StagePanel>
       </div>
 
       <div className="space-y-6">
-        <Panel title="Quote preview" description="Live commercial document preview." icon={FileText} storageKey="adv-preview">
-          <div className="space-y-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">{selectedCustomer?.name ?? (customerName.trim() || "Enter a customer name")}</p>
-                <p className="text-xs text-muted-foreground">{selectedCustomer ? [selectedCustomer.gstin, selectedCustomer.state].filter(Boolean).join(" · ") || "Details pending" : "GST split appears after selection."}</p>
-              </div>
-              <Badge tone={gstSplit.interstate ? "info" : "highlight"}>{gstSplit.interstate ? "IGST" : "CGST + SGST"}</Badge>
-            </div>
-            {lines.length === 0 ? (
-              <EmptyState title="No cables in this draft" description="Add at least one cable to enable save and send." />
-            ) : (
-              <CostingBreakdown lines={lines} gstSplit={gstSplit} />
-            )}
-            <div className="flex justify-between border-t border-border pt-3 text-base font-semibold">
-              <span>Total</span>
-              <MoneyCell amount={totalInr} />
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Subtotal <MoneyCell amount={subtotalInr} /> · valid until <DateCell iso={validUntilIso()} />
-            </p>
-          </div>
+        <div className="xl:hidden">
+          <QuoteSummaryPanel selectedCustomer={selectedCustomer} customerName={customerName} lines={lines} gstSplit={gstSplit} subtotalInr={subtotalInr} totalInr={totalInr} marginGate={marginGate} gateReason={gateReason} />
+        </div>
+        <div className="hidden xl:block">
+          <QuoteSummaryPanel selectedCustomer={selectedCustomer} customerName={customerName} lines={lines} gstSplit={gstSplit} subtotalInr={subtotalInr} totalInr={totalInr} marginGate={marginGate} gateReason={gateReason} />
+        </div>
+
+        <Panel title="Materials & rates" description="Secondary costing controls. Open when market rates or process costs need attention." icon={Zap} storageKey="chronological-materials" defaultOpen={false}>
+          <MaterialsPanel materials={materials} readOnly={readOnly} onSave={onSaveMaterial} onRefreshMcx={onRefreshMcx} embedded />
         </Panel>
 
-        <MaterialsPanel materials={materials} readOnly={readOnly} onSave={onSaveMaterial} onRefreshMcx={onRefreshMcx} />
-
-        <Panel title="Approval gate" description="Low-margin quotes need owner approval before they go to the factory." icon={ShieldCheck} storageKey="adv-gates" defaultOpen={false}>
-          <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="text-muted-foreground">Margin gate (≥ {MARGIN_GATE_PCT}%)</span>
-            {marginGate ? <Badge tone="warning">Low margin</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Margin gate clear" />}
+        <Panel title="Approval gate" description="Low-margin quotes need owner approval before they go to the factory." icon={ShieldCheck} storageKey="chronological-gates" defaultOpen={false}>
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground">Margin gate (≥ {MARGIN_GATE_PCT}%)</span>
+              {marginGate ? <Badge tone="warning">Low margin</Badge> : <CheckCircle2 className="h-4 w-4 text-success" aria-label="Margin gate clear" />}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {gateReason ?? "Current quote lines do not require owner review for margin."}
+            </p>
           </div>
         </Panel>
       </div>
@@ -1411,8 +2003,9 @@ function AdvancedLayout(props: BuilderShared) {
   );
 }
 
-// Props shared by both presentation modes (same data/services underneath).
+// Props shared by the chronological workspace.
 interface BuilderShared {
+  quoteId?: string;
   customers: Customer[];
   selectedCustomerId: string;
   customerName: string;
@@ -1430,9 +2023,10 @@ interface BuilderShared {
   onSaveMaterial: (material: Material) => void;
   onRefreshMcx: () => void;
   lines: LineWithSpec[];
-  addLine: (draft: LineDraft) => void;
+  addLine: (draft: LineDraft, replacingLineId?: string) => void;
   removeLine: (lineId: string) => void;
   editLine: (lineId: string) => void;
+  editingLineId: string | null;
   readOnly: boolean;
   gstSplit: ReturnType<typeof computeGst>;
   subtotalInr: number;
@@ -1458,11 +2052,6 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const user = useSessionStore((state) => state.user);
   const actor = { id: user.id, name: user.name, role: user.role };
 
-  const [mode, setMode] = useState<"guided" | "advanced">(() => {
-    if (typeof window === "undefined") return "guided";
-    const stored = window.localStorage.getItem(MODE_KEY);
-    return stored === "advanced" ? "advanced" : "guided";
-  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -1475,6 +2064,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [customerName, setCustomerName] = useState("");
   const [draft, setDraft] = useState<LineDraft>(fallbackDraft);
   const [lines, setLines] = useState<LineWithSpec[]>([]);
+  const [editingLineId, setEditingLineId] = useState<string | null>(null);
   const [seq, setSeq] = useState(1);
   const [linkedInquiryId, setLinkedInquiryId] = useState<string | null>(searchParams.get("inquiryId"));
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
@@ -1520,7 +2110,8 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setMcx(rates);
 
       const conductorRate = (material: ConductorMaterial) =>
-        loadedMaterials.find((m) => m.category === "Conductor" && m.matchMaterial === material)?.ratePerKg;
+        loadedMaterials.find((m) => m.category === "Conductor" && m.matchMaterial === material)?.ratePerKg ??
+        loadedMaterials.find((m) => m.category === "Conductor" && m.matchMaterial === baseRateMaterial(material))?.ratePerKg;
 
       const nameForId = (customerId: string) =>
         loadedCustomers.find((c) => c.id === customerId)?.name ?? "";
@@ -1571,11 +2162,6 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quoteId]);
 
-  function switchMode(next: "guided" | "advanced") {
-    setMode(next);
-    if (typeof window !== "undefined") window.localStorage.setItem(MODE_KEY, next);
-  }
-
   // ── customer selection ─────────────────────────────────────────────────────
   function selectExistingCustomer(customer: Customer) {
     setSelectedCustomerId(customer.id);
@@ -1606,8 +2192,20 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   }
 
   // ── line ops ───────────────────────────────────────────────────────────────
-  function addLine(source: LineDraft) {
-    const built = lineFromDraft(source, seq, materials);
+  function addLine(source: LineDraft, replacingLineId?: string) {
+    const existing = replacingLineId ? lines.find((item) => item.line.id === replacingLineId) : undefined;
+    const built = lineFromDraft(
+      source,
+      seq,
+      materials,
+      existing ? { lineId: existing.line.id, specId: existing.spec.id } : undefined,
+    );
+    if (existing) {
+      setLines((current) => current.map((item) => (item.line.id === existing.line.id ? built : item)));
+      setEditingLineId(null);
+      setFeedback({ tone: "success", message: `${built.spec.designation} updated in the quote.` });
+      return;
+    }
     setLines((current) => [...current, built]);
     setSeq((value) => value + 1);
     setFeedback({ tone: "success", message: `${built.spec.designation} added to the quote.` });
@@ -1645,6 +2243,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   function removeLine(lineId: string) {
     setLines((current) => current.filter((item) => item.line.id !== lineId));
+    if (editingLineId === lineId) setEditingLineId(null);
     setFeedback({ tone: "info", message: "Cable removed from this draft." });
   }
 
@@ -1652,7 +2251,8 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     const target = lines.find((item) => item.line.id === lineId);
     if (!target) return;
     setDraft({
-      standard: target.spec.standard as LineDraft["standard"],
+      family: target.spec.family ?? "LT XLPE Power",
+      standard: target.spec.standard,
       voltageGrade: target.spec.voltageGrade,
       cores: target.spec.cores,
       conductorMaterial: target.spec.conductorMaterial,
@@ -1668,8 +2268,17 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       metalRatePerKg: target.line.metalRatePerKg,
       overheadPerM: target.line.overheadPerM,
       marginPct: target.line.marginPct,
+      technical: target.spec.technical,
+      aerialBunched: target.spec.aerialBunched,
+      coveredConductor: target.spec.coveredConductor,
+      instrumentation: target.spec.instrumentation,
+      thermocouple: target.spec.thermocouple,
+      solar: target.spec.solar,
+      submersible: target.spec.submersible,
+      brochureTitle: undefined,
     });
-    removeLine(lineId);
+    setEditingLineId(lineId);
+    setFeedback({ tone: "info", message: `${target.line.id} loaded for editing. Update the cable when the changes are ready.` });
   }
 
   /**
@@ -1782,7 +2391,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setFeedback({
         tone: "success",
         message: order
-          ? `${quote.id} sent to the factory as ${order.id}. Dispatch, draft invoice, and job card were created.`
+          ? `${quote.id} sent to the factory as ${order.id}. GTP, job card, dispatch, draft invoice, and marking-ready drums were created.`
           : `${quote.id} sent for approval.`,
       });
       router.push(can(role, "view", "order") ? "/orders" : "/dashboard");
@@ -1802,7 +2411,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       const order = "order" in result ? result.order : undefined;
       setFeedback({
         tone: order ? "success" : "warning",
-        message: order ? `${quote.id} sent to the factory as ${order.id}.` : `${quote.id} needs owner approval first.`,
+        message: order ? `${quote.id} sent as ${order.id}. GTP, job card, dispatch, invoice, and marking-ready drums were created.` : `${quote.id} needs owner approval first.`,
       });
     } catch {
       setFeedback({ tone: "danger", message: `Could not send ${quote.id}.` });
@@ -1819,6 +2428,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const sendDisabled = readOnly || sending || !hasCustomer || (!canTransition && !needsApproval);
 
   const shared: BuilderShared = {
+    quoteId,
     customers,
     selectedCustomerId,
     customerName,
@@ -1839,6 +2449,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     addLine,
     removeLine,
     editLine,
+    editingLineId,
     readOnly,
     gstSplit,
     subtotalInr,
@@ -1866,7 +2477,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   return (
     <main className="min-h-screen bg-background p-4 text-foreground sm:p-6">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <header className="flex flex-col gap-4 border-b border-border pb-6 lg:flex-row lg:items-end lg:justify-between">
+        <header className="border-b border-border pb-6">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs text-muted-foreground">{quoteId ?? "New quote"}</span>
@@ -1880,25 +2491,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             <div>
               <h1 className="text-3xl font-semibold tracking-tight text-foreground">Quote Builder</h1>
               <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                Build a cable quote from common presets, see the price update live, and send approved work into the order chain.
+                Build the quote in order: customer, catalogue cable, construction, commercial price, lines, then send.
               </p>
             </div>
-          </div>
-          <div className="inline-flex rounded-md border border-border p-1">
-            <button
-              type="button"
-              onClick={() => switchMode("guided")}
-              className={cn("inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium", mode === "guided" ? "bg-primary text-primary-foreground" : "text-muted-foreground")}
-            >
-              <Wand2 className="h-4 w-4" aria-hidden="true" /> Guided
-            </button>
-            <button
-              type="button"
-              onClick={() => switchMode("advanced")}
-              className={cn("inline-flex items-center gap-1.5 rounded-sm px-3 py-1.5 text-sm font-medium", mode === "advanced" ? "bg-primary text-primary-foreground" : "text-muted-foreground")}
-            >
-              <LayoutGrid className="h-4 w-4" aria-hidden="true" /> Advanced
-            </button>
           </div>
         </header>
 
@@ -1923,7 +2518,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
           </div>
         ) : null}
 
-        {mode === "guided" ? <GuidedWizard {...shared} /> : <AdvancedLayout {...shared} />}
+        <QuoteWorkspace {...shared} />
 
         <Panel title="Saved quotes" description="Saved and locked quotes can be sent to the order board from here." icon={FileText} storageKey="saved-quotes" defaultOpen={false}>
           {savedQuotes.length === 0 ? (
