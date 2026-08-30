@@ -8,6 +8,8 @@ import { dashboardService, parseRole } from "@/features/dashboard/data/dashboard
 import { auth0 } from "@/lib/auth/auth0";
 import type { User } from "@/lib/services/types";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Dashboard | Cable OS",
 };

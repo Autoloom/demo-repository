@@ -56,15 +56,14 @@ export function useAppShell() {
     // Mark that we've done the auth check
     setHasCheckedAuth(true);
 
-    // Check session store first (server-side auth), then fall back to Auth0
-    // Auth0 user has `sub` (not `id`), so check both
-    const user = sessionUser.id 
-      ? sessionUser 
-      : auth0User && (auth0User.sub || auth0User.email)
-      ? auth0User
-      : null;
+    // Check session store first (server-side auth), then fall back to Auth0.
+    // Auth0 profiles expose `sub` instead of the app's `id`, so guard that field
+    // before inspecting it to keep the type contract strict.
+    const hasSessionUser = Boolean(sessionUser.id);
+    const auth0Profile = auth0User && typeof auth0User === "object" && "sub" in auth0User ? auth0User : null;
+    const hasAuth0Identity = Boolean(auth0Profile?.sub || auth0User?.email);
 
-    if (!user || (!user.id && !user.sub)) {
+    if (!hasSessionUser && !hasAuth0Identity) {
       router.replace("/login");
       return;
     }

@@ -377,7 +377,7 @@ export interface User {
   name: string;
   email: string;
   role: Role;
-  active?: boolean;
+  active: boolean;
   extraPermissions?: PermissionKey[];
   deniedPermissions?: PermissionKey[];
 }
