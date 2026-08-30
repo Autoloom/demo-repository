@@ -23,8 +23,9 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { now } from "@/lib/domain/clock";
 import { formatDate, formatINR } from "@/lib/domain/format";
-import { inspectionCallUrgency } from "@/lib/domain/inspection";
+import { INSPECTOR_ARRIVAL_DAYS, inspectionCallUrgency } from "@/lib/domain/inspection";
 import { can } from "@/lib/rbac";
 import {
   dataService,
@@ -97,6 +98,16 @@ function customerName(store: CableStore | null, customerId?: string) {
   return store?.customers.find((customer) => customer.id === customerId)?.name ?? customerId ?? "Unlinked customer";
 }
 
+/** Drums planned on the job card — the set the inspector checks and certs are issued against. */
+function plannedDrumsFor(store: CableStore | null, dispatch: Dispatch): string[] {
+  const jobCard = store?.jobCards.find((card) => card.orderId === dispatch.orderId);
+  return jobCard?.drumPlan.map((item) => item.drumNo) ?? [];
+}
+
+function reportsFor(store: CableStore | null, dispatch: Dispatch): InspectionReport[] {
+  return store?.inspectionReports.filter((report) => report.orderId === dispatch.orderId) ?? [];
+}
+
 async function fetchDispatchPageData(): Promise<LoadState> {
   const [dispatches, store] = await Promise.all([dispatchService.list(), dataService.read()]);
   return { dispatches, store };
@@ -115,6 +126,328 @@ function LogisticsField({
     <div className="rounded-md border bg-background p-3">
       <p className="text-xs font-medium uppercase text-muted-foreground">{label}</p>
       <p className={cn("mt-2 text-sm", mono && "font-mono")}>{value || "Pending"}</p>
+    </div>
+  );
+}
+
+/**
+ * Third-party inspection: the call countdown, and the digital log that replaces
+ * the QC manager's diary (kamble-meeting-improvements.md §4).
+ *
+ * The call must go out ~10 days before completion and the inspector takes ~11 days
+ * to arrive, so the countdown is the point of the panel — a late call leaves finished
+ * cable idling on the floor. Logging a Pass with clearance auto-ticks the dispatch
+ * "Inspection clearance" item, which is why this lives on the dispatch card.
+ */
+function InspectionPanel({
+  order,
+  reports,
+  editable,
+  busy,
+  plannedDrums,
+  onPlaceCall,
+  onLogReport,
+}: {
+  order: Order;
+  reports: InspectionReport[];
+  editable: boolean;
+  busy: boolean;
+  plannedDrums: string[];
+  onPlaceCall: () => void;
+  onLogReport: (input: Omit<InspectionReport, "id">) => void;
+}) {
+  const urgency = inspectionCallUrgency(order);
+  const status = order.inspectionStatus ?? "Not called";
+  const called = status !== "Not called";
+  // `null` = form closed. Opening it seeds today's date and every planned drum,
+  // since the inspector normally checks the whole consignment.
+  const [draft, setDraft] = React.useState<{
+    inspectorName: string;
+    inspectorOrg: string;
+    inspectedAt: string;
+    drumsChecked: string[];
+    result: InspectionReport["result"];
+    nonConformances: string;
+    clearanceIssued: boolean;
+    diRef: string;
+  } | null>(null);
+
+  const urgencyTone: Tone =
+    urgency.state === "overdue" ? "danger" : urgency.state === "due" ? "warning" : "neutral";
+
+  const statusTone: Tone =
+    status === "Passed" ? "success" : status === "Failed" ? "danger" : called ? "neutral" : "warning";
+
+  function openForm() {
+    setDraft({
+      inspectorName: "",
+      inspectorOrg: "",
+      inspectedAt: now().toISOString().slice(0, 10),
+      drumsChecked: plannedDrums,
+      result: "Passed",
+      nonConformances: "",
+      clearanceIssued: true,
+      diRef: "",
+    });
+  }
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!draft) return;
+    const passed = draft.result === "Passed";
+    // A failed inspection issues no clearance, and the non-conformances are the
+    // record of why — the service keeps the order in production on a Fail.
+    const nonConformances = draft.nonConformances
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    onLogReport({
+      orderId: order.id,
+      inspectorName: draft.inspectorName.trim(),
+      inspectorOrg: draft.inspectorOrg.trim(),
+      inspectedAt: draft.inspectedAt,
+      drumsChecked: draft.drumsChecked,
+      result: draft.result,
+      nonConformances: passed ? undefined : nonConformances,
+      clearanceIssued: passed && draft.clearanceIssued,
+      diRef: passed && draft.clearanceIssued && draft.diRef.trim() ? draft.diRef.trim() : undefined,
+    });
+    setDraft(null);
+  }
+
+  return (
+    <div className="mt-4 rounded-md border bg-muted p-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">Third-party inspection</p>
+        <Badge tone={statusTone}>{status}</Badge>
+      </div>
+
+      {/* Call countdown — the expensive mistake this panel exists to prevent */}
+      {urgency.state === "none" ? (
+        <p className="mt-2 text-muted-foreground">
+          {called
+            ? `Call placed ${formatDate(order.inspectionCallDate ?? "")} · inspector expected ${formatDate(order.inspectorEtaDate ?? "")}`
+            : "No estimated completion date set on the job card — the call countdown starts once it is."}
+        </p>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge tone={urgencyTone}>
+            <AlertTriangleIcon className="size-3" />
+            {urgency.state === "overdue"
+              ? `Call overdue by ${urgency.overdueBy} day(s)`
+              : `Call due in ${urgency.daysLeft} day(s)`}
+          </Badge>
+          <span className="text-xs text-muted-foreground">
+            Call by {formatDate(urgency.callBy)} · inspector needs ~{INSPECTOR_ARRIVAL_DAYS} days to arrive
+          </span>
+        </div>
+      )}
+
+      {!called ? (
+        <Button
+          type="button"
+          size="sm"
+          variant={urgency.state === "overdue" ? "default" : "outline"}
+          className="mt-3"
+          disabled={!editable || busy}
+          onClick={onPlaceCall}
+        >
+          <MegaphoneIcon className="mr-2 size-4" />
+          {busy ? "Placing…" : "Place inspection call"}
+        </Button>
+      ) : null}
+
+      {/* Digital inspection log */}
+      <div className="mt-3 space-y-1.5">
+        {reports.length === 0 ? (
+          <p className="text-muted-foreground">No inspection logged yet.</p>
+        ) : (
+          reports.map((report) => (
+            <div key={report.id} className="rounded-md border bg-background px-2.5 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="flex items-center gap-2">
+                  {report.result === "Passed" ? (
+                    <CheckCircle2Icon className="size-3.5 text-success" />
+                  ) : (
+                    <AlertTriangleIcon className="size-3.5 text-danger" />
+                  )}
+                  <span className="font-medium">{report.result}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {report.inspectorName}
+                    {report.inspectorOrg ? ` · ${report.inspectorOrg}` : ""} · {formatDate(report.inspectedAt)}
+                  </span>
+                </span>
+                {report.clearanceIssued ? (
+                  <Badge tone="success">Clearance{report.diRef ? ` · ${report.diRef}` : ""}</Badge>
+                ) : null}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {report.drumsChecked.length} drum(s) checked
+                {report.drumsChecked.length > 0 ? `: ${report.drumsChecked.join(", ")}` : ""}
+              </p>
+              {report.nonConformances && report.nonConformances.length > 0 ? (
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-danger">
+                  {report.nonConformances.map((entry) => (
+                    <li key={entry}>{entry}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+
+      {draft ? (
+        <form className="mt-3 grid gap-3 rounded-md border bg-background p-3 md:grid-cols-2" onSubmit={submit}>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor={`${order.id}-inspector`}>
+              Inspector
+            </label>
+            <Input
+              id={`${order.id}-inspector`}
+              value={draft.inspectorName}
+              onChange={(event) => setDraft({ ...draft, inspectorName: event.target.value })}
+              placeholder="e.g. R. Kulkarni"
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor={`${order.id}-inspector-org`}>
+              Agency
+            </label>
+            <Input
+              id={`${order.id}-inspector-org`}
+              value={draft.inspectorOrg}
+              onChange={(event) => setDraft({ ...draft, inspectorOrg: event.target.value })}
+              placeholder="e.g. RITES"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground" htmlFor={`${order.id}-inspected-at`}>
+              Inspected on
+            </label>
+            <Input
+              id={`${order.id}-inspected-at`}
+              type="date"
+              value={draft.inspectedAt}
+              onChange={(event) => setDraft({ ...draft, inspectedAt: event.target.value })}
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Result</span>
+            <div className="flex gap-2">
+              {(["Passed", "Failed"] as const).map((option) => (
+                <Button
+                  key={option}
+                  type="button"
+                  size="sm"
+                  variant={draft.result === option ? "default" : "outline"}
+                  onClick={() => setDraft({ ...draft, result: option })}
+                >
+                  {option}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <fieldset className="space-y-1.5 md:col-span-2">
+            <legend className="text-xs font-medium text-muted-foreground">Drums checked</legend>
+            {plannedDrums.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No drums planned on the job card yet.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {plannedDrums.map((drumNo) => {
+                  const checked = draft.drumsChecked.includes(drumNo);
+                  return (
+                    <label
+                      key={drumNo}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs",
+                        checked ? "border-primary/40 bg-primary/10" : "bg-background",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            drumsChecked: event.target.checked
+                              ? [...draft.drumsChecked, drumNo]
+                              : draft.drumsChecked.filter((entry) => entry !== drumNo),
+                          })
+                        }
+                        className="size-3.5 accent-primary"
+                      />
+                      <span className="font-mono">{drumNo}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </fieldset>
+
+          {draft.result === "Failed" ? (
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor={`${order.id}-ncs`}>
+                Non-conformances (one per line)
+              </label>
+              <textarea
+                id={`${order.id}-ncs`}
+                value={draft.nonConformances}
+                onChange={(event) => setDraft({ ...draft, nonConformances: event.target.value })}
+                rows={3}
+                required
+                placeholder="e.g. Drum D-002 insulation thickness below IS 14255 §7.3 floor"
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+          ) : (
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={draft.clearanceIssued}
+                  onChange={(event) => setDraft({ ...draft, clearanceIssued: event.target.checked })}
+                  className="size-4 accent-primary"
+                />
+                Clearance issued — ticks the dispatch clearance item
+              </label>
+              {draft.clearanceIssued ? (
+                <Input
+                  value={draft.diRef}
+                  onChange={(event) => setDraft({ ...draft, diRef: event.target.value })}
+                  placeholder="Dispatch instruction ref (optional)"
+                  className="font-mono"
+                  aria-label="Dispatch instruction reference"
+                />
+              ) : null}
+            </div>
+          )}
+
+          <div className="flex gap-2 md:col-span-2">
+            <Button type="submit" size="sm" disabled={busy}>
+              {busy ? "Saving…" : "Log inspection"}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setDraft(null)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          disabled={!editable || busy}
+          onClick={openForm}
+        >
+          <PencilIcon className="mr-2 size-4" />
+          Log inspection result
+        </Button>
+      )}
     </div>
   );
 }
@@ -500,6 +833,57 @@ export function DispatchClient() {
     }
   }
 
+  async function verifyCert(dispatchId: string, drumNo: string, verified: boolean) {
+    setBusyKey(`${dispatchId}-cert-${drumNo}`);
+    try {
+      await dispatchService.setDrumCertVerified(dispatchId, drumNo, verified, actorFromSession());
+      await load();
+    } catch (err) {
+      setFeedback({ tone: "danger", text: err instanceof Error ? err.message : "Could not update the certificate." });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function placeCall(dispatchId: string, targetOrderId: string) {
+    setBusyKey(`${dispatchId}-inspection`);
+    try {
+      const order = await inspectionService.placeCall(targetOrderId, actorFromSession());
+      await load();
+      setFeedback({
+        tone: "success",
+        text: `Inspection call placed — inspector expected by ${formatDate(order.inspectorEtaDate ?? "")}.`,
+      });
+    } catch (err) {
+      // The service refuses the call while any drum's finished-cable QC is still open.
+      setFeedback({ tone: "danger", text: err instanceof Error ? err.message : "Could not place the inspection call." });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function logReport(dispatchId: string, input: Omit<InspectionReport, "id">) {
+    setBusyKey(`${dispatchId}-inspection`);
+    try {
+      const report = await inspectionService.logReport(input, actorFromSession());
+      await load();
+      setFeedback(
+        report.result === "Passed"
+          ? {
+              tone: "success",
+              text: report.clearanceIssued
+                ? "Inspection passed — clearance issued and the dispatch item ticked."
+                : "Inspection passed — clearance still pending.",
+            }
+          : { tone: "danger", text: "Inspection failed — order stays in production for re-inspection." },
+      );
+    } catch (err) {
+      setFeedback({ tone: "danger", text: err instanceof Error ? err.message : "Could not log the inspection." });
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   const visible = orderId
     ? data.dispatches.filter((dispatch) => dispatch.orderId === orderId)
     : data.dispatches;
@@ -614,11 +998,16 @@ export function DispatchClient() {
               dispatch={dispatch}
               order={orderFor(data.store, dispatch)}
               customer={customerName(data.store, orderFor(data.store, dispatch)?.customerId)}
+              plannedDrums={plannedDrumsFor(data.store, dispatch)}
+              reports={reportsFor(data.store, dispatch)}
               editable={editable}
               busyKey={busyKey}
               onToggle={(itemId, done) => void toggle(dispatch.id, itemId, done)}
               onGenerateEway={() => void generateEway(dispatch.id)}
               onSaveLogistics={(patch) => saveLogistics(dispatch.id, patch)}
+              onVerifyCert={(drumNo, verified) => void verifyCert(dispatch.id, drumNo, verified)}
+              onPlaceCall={() => void placeCall(dispatch.id, dispatch.orderId)}
+              onLogReport={(input) => void logReport(dispatch.id, input)}
             />
           ))}
         </section>
