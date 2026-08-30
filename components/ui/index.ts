@@ -3,6 +3,7 @@
 // by the page-1 agent per component-catalog.md.
 export * from "./button";
 export * from "./card";
+export * from "./coming-soon";
 export * from "./avatar";
 export * from "./kanban";
 export * from "./input";

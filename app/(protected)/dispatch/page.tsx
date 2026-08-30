@@ -1,13 +1,23 @@
-/* dispatch route with a fallback loading state. */
+/* Parked behind a "Coming soon" placeholder while the GTP generator is the
+   demo focus. The original page is commented out immediately below — restore
+   it by uncommenting and deleting the placeholder export. */
 
-import { Suspense } from "react";
+// /* dispatch route with a fallback loading state. */
+//
+// import { Suspense } from "react";
+//
+// import { DispatchClient } from "@/features/dispatch/components/dispatch-page";
+//
+// export default function DispatchPage() {
+//   return (
+//     <Suspense fallback={<main className="min-h-screen bg-background p-6" />}>
+//       <DispatchClient />
+//     </Suspense>
+//   );
+// }
 
-import { DispatchClient } from "@/features/dispatch/components/dispatch-page";
+import { ComingSoon } from "@/components/ui";
 
 export default function DispatchPage() {
-  return (
-    <Suspense fallback={<main className="min-h-screen bg-background p-6" />}>
-      <DispatchClient />
-    </Suspense>
-  );
+  return <ComingSoon />;
 }
