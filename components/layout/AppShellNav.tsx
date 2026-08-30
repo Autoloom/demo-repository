@@ -36,9 +36,9 @@ export function AppShellNav({ collapsed }: { collapsed: boolean }) {
                     key={item.href}
                     href={item.href}
                     title={collapsed ? item.label : undefined}
-                    aria-label={item.label}
+                    aria-label={item.tag ? `${item.label} (${item.tag})` : item.label}
                     className={cn(
-                      "flex min-h-10 items-center rounded-md text-sm transition-colors",
+                      "relative flex min-h-10 items-center rounded-md text-sm transition-colors",
                       collapsed ? "justify-center px-0" : "gap-3 px-3",
                       active
                         ? "bg-primary text-primary-foreground"
@@ -47,6 +47,28 @@ export function AppShellNav({ collapsed }: { collapsed: boolean }) {
                   >
                     <Icon className="size-4 shrink-0" />
                     {collapsed ? null : <span>{item.label}</span>}
+                    {item.tag && !collapsed ? (
+                      <span
+                        className={cn(
+                          "ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium leading-none tracking-wide",
+                          active
+                            ? "bg-primary-foreground/20 text-primary-foreground"
+                            : "bg-highlight/10 text-highlight ring-1 ring-inset ring-highlight/25",
+                        )}
+                      >
+                        {item.tag}
+                      </span>
+                    ) : null}
+                    {/* Collapsed to icons only, the pill has nowhere to go — a dot keeps the cue. */}
+                    {item.tag && collapsed ? (
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "absolute right-1.5 top-1.5 size-1.5 rounded-full",
+                          active ? "bg-primary-foreground" : "bg-highlight",
+                        )}
+                      />
+                    ) : null}
                   </Link>
                 );
               })}

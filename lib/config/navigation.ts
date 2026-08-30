@@ -7,6 +7,7 @@ import {
   Building2Icon,
   CalculatorIcon,
   ClipboardListIcon,
+  FileCheckIcon,
   FileTextIcon,
   HomeIcon,
   SettingsIcon,
@@ -26,6 +27,8 @@ export type NavItem = {
   label: string;
   resource: Resource;
   icon: LucideIcon;
+  /** Optional pill beside the label, e.g. "Try it" on a newly surfaced page. */
+  tag?: string;
 };
 
 export const navGroups: Array<{
@@ -49,6 +52,7 @@ export const navGroups: Array<{
     label: "Operations",
     items: [
       { href: "/orders", label: "Order Board", resource: "order", icon: ClipboardListIcon },
+      { href: "/gtp", label: "GTP Generator", resource: "gtp", icon: FileCheckIcon, tag: "Try it" },
       { href: "/job-card", label: "Operator Card", resource: "jobcard", icon: WrenchIcon },
       { href: "/dispatch", label: "Dispatch", resource: "dispatch", icon: TruckIcon },
     ],

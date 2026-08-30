@@ -12,6 +12,7 @@ import {
   CalendarDaysIcon,
   CheckCircle2Icon,
   ClipboardListIcon,
+  FileCheckIcon,
   HistoryIcon,
   InboxIcon,
   PackageSearchIcon,
