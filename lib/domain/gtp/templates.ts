@@ -93,6 +93,14 @@ export interface GtpTemplate {
   customParameters?: CustomParameter[];
   /** Manual edits to derived values, with the reason each was changed. */
   overrides?: Record<string, { value: string; reason: string }>;
+  /**
+   * Manual edits to the tolerance column, keyed the same way.
+   *
+   * Separate from `overrides` because a row's value and its tolerance are independently
+   * editable — a buyer may accept the standard thickness but demand a tighter acceptance band.
+   * Optional so templates saved before the column existed still load.
+   */
+  toleranceOverrides?: Record<string, { value: string; reason: string }>;
   /** @deprecated see TemplateChoices. Kept optional so old records still load. */
   choices?: TemplateChoices;
   createdAt: string;

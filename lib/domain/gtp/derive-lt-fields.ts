@@ -20,6 +20,7 @@ import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-co
 import { deriveLtCable } from "./derive-lt";
 import type { LtCableConfig } from "./derive-lt";
 import type { DerivationQuirks } from "./derive";
+import { bandTolerance, floorTolerance, notApplicable, withMandatoryTolerance } from "./tolerance";
 import type { ResolvedField } from "./types";
 
 /** Org constants, shared with the AB engine. Kept in sync deliberately, not imported cyclically. */
@@ -130,6 +131,19 @@ export function deriveLtFields(
   // ── The build-up chain, step by step ────────────────────────────────────────────────────
   // Each step keeps its `keyedBy` in the trace: on this cable type the sheath thicknesses are
   // driven by calculated diameters, and a reviewer must be able to follow that.
+  // The insulation clause differs between the two standards this engine serves: IS 7098-1 puts
+  // the thickness tolerance at §10.3, IS 1554-1 at §9.3. Citing one for both would send an
+  // inspector to a clause about something else.
+  const insulationToleranceClause = isXlpe ? "§10.3" : "§9.3";
+
+  // Some discoms print thicknesses as "(Min)" rather than a nominal ±. The floor below already
+  // IS a minimum, so their phrasing and the standard agree — this only records whose convention
+  // it matches, and never changes the number.
+  const phrasingNote =
+    opts.quirks?.tolerancePhrasing === "min"
+      ? ` — ${opts.quirks.customerName ?? opts.customerName ?? "Customer"} prints thicknesses as "(Min)"`
+      : "";
+
   for (const step of chain.steps) {
     const isCalc = step.id.startsWith("calc.");
     fields.push({
@@ -140,19 +154,23 @@ export function deriveLtFields(
       source: isCalc ? "calc" : "is-table",
       trace: step.keyedBy ? `${step.ref} — keyed by ${step.keyedBy}` : step.ref,
       editable: false,
+      // Only the insulation carries a tolerance. The inner and outer sheath values this chain
+      // prints are ALREADY minima from the protective-coverings tables, so attaching a floor to
+      // them would be a floor on a floor. Do not "fix" this by reusing the insulation rule:
+      // IS 17293 proves insulation and sheath coefficients genuinely differ (0.1 vs 0.15), and
+      // IS 7098-1 / IS 1554-1 publish no sheath tolerance for us to encode.
+      tolerance:
+        step.id === "insulation"
+          ? floorTolerance(
+              step.value,
+              insulationToleranceFloorMm(step.value),
+              `${standardRef}, ${insulationToleranceClause} — nominal ${step.value} − (0.1 + 0.1 × ${step.value})${phrasingNote}`,
+            )
+          : step.id === "innerSheath" || step.id === "outerSheath"
+            ? notApplicable(`${standardRef} publishes this as a minimum — a tolerance on a minimum would be a second, lower limit`)
+            : undefined,
     });
   }
-
-  // ── Insulation tolerance (a printed requirement, not a derived dimension) ────────────────
-  fields.push({
-    key: "lt.insulationTolerance",
-    label: "Insulation thickness, min at any point",
-    value: `${insulationToleranceFloorMm(chain.insulationThicknessMm).toFixed(2)} mm`,
-    tag: "CALC",
-    source: "calc",
-    trace: `${standardRef}, §10.3 — nominal ${chain.insulationThicknessMm} − (0.1 + 0.1 × ${chain.insulationThicknessMm})`,
-    editable: false,
-  });
 
   // ── Armour ──────────────────────────────────────────────────────────────────────────────
   if (config.armoured) {
@@ -233,26 +251,26 @@ export function deriveLtFields(
     fields.push({
       key: "drum.standardLength",
       label: "Standard drum length",
-      value: `${quirks.drumLengthM} m${quirks.drumLengthTolerance ? ` ${quirks.drumLengthTolerance}` : ""}`,
+      value: `${quirks.drumLengthM} m`,
       tag: "QUIRK",
       source: "profile",
       trace: `${quirks.customerName ?? "Customer"} profile`,
       editable: true,
+      // A commercial term, not a standards limit — hence `customer`, never `is-rule`.
+      tolerance: quirks.drumLengthTolerance
+        ? bandTolerance(
+            quirks.drumLengthTolerance,
+            "customer",
+            `${quirks.customerName ?? "Customer"} profile — agreed drum length tolerance`,
+          )
+        : undefined,
     });
   }
-  if (quirks?.tolerancePhrasing === "min") {
-    // WBSEDCL prints thicknesses as "(Min)" rather than "±5%". Restate the derived
-    // thicknesses in their phrasing rather than silently using ours.
-    fields.push({
-      key: "lt.tolerancePhrasing",
-      label: "Thickness tolerance phrasing",
-      value: "(Min) — minimum values, not nominal ±",
-      tag: "QUIRK",
-      source: "profile",
-      trace: `${quirks.customerName ?? "Customer"} uses "(Min)" phrasing`,
-      editable: true,
-    });
-  }
+  // A `lt.tolerancePhrasing` row used to sit here, explaining that thicknesses were minima rather
+  // than nominal ±. It existed only because this engine had nowhere to put a tolerance. The
+  // tolerance column now says "min 1.52 mm" on the row itself, so the explanatory row would be a
+  // legend for something already visible. The customer's phrasing survives in the insulation
+  // tolerance's trace.
 
   fields.push({
     key: "cert.standard",
@@ -264,5 +282,6 @@ export function deriveLtFields(
     editable: false,
   });
 
-  return fields;
+  // Tolerance is a mandatory column — see withMandatoryTolerance.
+  return withMandatoryTolerance(fields);
 }

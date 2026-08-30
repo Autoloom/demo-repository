@@ -10,6 +10,7 @@
  */
 import type { PdfDocument } from "@/lib/domain/pdf";
 
+import { TOLERANCE_NA } from "./types";
 import type { ResolvedField } from "./types";
 
 /** Section order and which field-key prefixes belong to each. */
@@ -45,6 +46,33 @@ export interface GtpPdfMeta {
 const REQUIRED_STAMPS = ["Divisional Engineer", "Assistant Engineer"] as const;
 
 /**
+ * Shared table geometry — one definition for every table in the document.
+ *
+ * These are a pair on purpose. `pdf.ts` indexes `widths` by column, so headers and widths that
+ * disagree used to produce a malformed content stream rather than a visible error. They are also
+ * duplicated across three call sites below, which is exactly how they would drift. Defining them
+ * once means adding a column is one edit, and a test asserts the lengths match and sum to 514.
+ */
+const TABLE_HEADERS = ["Particular", "Value", "Tolerance"];
+/** Sums to 514, the width every table in this repo uses (page 595 − 2 × 42 margin, plus gutter). */
+const TABLE_WIDTHS = [248, 176, 90];
+
+/**
+ * One printed row.
+ *
+ * The tolerance cell is never blank: a parameter with no meaningful tolerance prints "N/A", so a
+ * reader can tell "this was considered and does not apply" from "this was left unfilled". The
+ * `?? TOLERANCE_NA` fallback should be unreachable — engines guarantee a tolerance on every
+ * field — but a stored record predating the column would otherwise print an empty cell.
+ *
+ * Only `tolerance.value` is read. The reason an operator gave for changing a tolerance lives in
+ * `tolerance.override.reason` and must never print (build-plan-v2 D10).
+ */
+function toRow(f: ResolvedField): string[] {
+  return [f.label, String(f.value), f.tolerance?.value ?? TOLERANCE_NA];
+}
+
+/**
  * Build the printable document.
  *
  * The tables print particular + value only. Two things are deliberately withheld from the
@@ -62,10 +90,10 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
       .filter((f) => match(f.key))
       .map((f) => {
         used.add(f.key);
-        return [f.label, String(f.value)];
+        return toRow(f);
       });
     return rows.length > 0
-      ? { title, table: { headers: ["Particular", "Value"], widths: [260, 254], rows } }
+      ? { title, table: { headers: TABLE_HEADERS, widths: TABLE_WIDTHS, rows } }
       : null;
   }).filter((s): s is NonNullable<typeof s> => s !== null);
 
@@ -76,9 +104,11 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     sections.push({
       title: "Other particulars",
       table: {
-        headers: ["Particular", "Value"],
-        widths: [260, 254],
-        rows: leftovers.map((f) => [f.label, String(f.value)]),
+        headers: TABLE_HEADERS,
+        widths: TABLE_WIDTHS,
+        // SECTION_PLAN carries no `lt.` or `solar.` prefix, so every field of those two cable
+        // types lands here. This table is the tolerance column's main home, not an edge case.
+        rows: leftovers.map(toRow),
       },
     });
   }
@@ -91,14 +121,19 @@ export function buildGtpPdfDocument(fields: ResolvedField[], meta: GtpPdfMeta): 
     sections.push({
       title: "Quantity & drums",
       table: {
-        headers: ["Particular", "Value"],
-        widths: [260, 254],
+        headers: TABLE_HEADERS,
+        widths: TABLE_WIDTHS,
+        // Padded to three cells explicitly, and N/A rather than blank — the same mandatory-entry
+        // rule the field rows follow. These quantities describe the ORDER, so no tolerance
+        // applies here; the cable's own drum-length band is on the `drum.length` field in the
+        // Drum section.
         rows: [
-          ["Total length ordered", `${q.totalLengthM} m`],
-          ["Standard length per drum", `${q.drumLengthM} m`],
+          ["Total length ordered", `${q.totalLengthM} m`, TOLERANCE_NA],
+          ["Standard length per drum", `${q.drumLengthM} m`, TOLERANCE_NA],
           [
             "Number of drums",
             remainder > 0 ? `${q.drumCount} (last drum ${remainder} m)` : `${q.drumCount}`,
+            TOLERANCE_NA,
           ],
         ],
       },

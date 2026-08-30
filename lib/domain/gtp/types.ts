@@ -59,6 +59,61 @@ export interface CableConstruction {
   raw: string;
 }
 
+/**
+ * Where a tolerance came from — and why this is NOT `FieldSource`.
+ *
+ * `FieldSource` answers "which layer of the cascade produced this value". This answers a
+ * different question that matters to an inspector: is the permitted departure a STANDARDS
+ * ACCEPTANCE LIMIT, our own manufacturing spread, or a commercial term the buyer negotiated?
+ *
+ * The distinction is load-bearing. `power.massPerKm` carries ±3% because that is the spread our
+ * works actually holds; IS 14255 says nothing about mass tolerance at all. Presenting that ±3%
+ * in the same voice as an IS §7.3 insulation floor would invite an inspector to reject a drum
+ * for breaching a limit no standard imposes.
+ */
+export type ToleranceOrigin = "is-rule" | "works-estimate" | "customer" | "manual" | "not-applicable";
+
+/** What prints when a parameter has no meaningful tolerance. */
+export const TOLERANCE_NA = "N/A";
+
+/**
+ * The permitted departure from a field's nominal value.
+ *
+ * ─── Every field has one; a blank is never an answer ──────────────────────────────────────────
+ *
+ * This is a MANDATORY input. Where no standard specifies a tolerance the engine supplies
+ * `not-applicable`, which prints as "N/A" — an explicit statement that the parameter has no
+ * meaningful tolerance, not an empty cell.
+ *
+ * The distinction matters on a document that gets stamped. An empty cell is ambiguous between
+ * "no tolerance applies here" and "nobody filled this in", and a buyer's inspector cannot tell
+ * which. "N/A" says a person considered the question and answered it.
+ *
+ * Most parameters legitimately resolve to N/A: conductor resistance is already a maximum
+ * (IS 8130 §3.2), overall diameter is explicitly informational (IS 17293 Tables 1/2). The engine
+ * still never INVENTS a numeric tolerance — N/A is an answer, not a guess.
+ *
+ * Never emit `{ value: "" }`. If there is nothing to state, that is `not-applicable`.
+ */
+export interface FieldTolerance {
+  /** Printed text, e.g. "min 1.25 mm" or "±3%". */
+  value: string;
+  origin: ToleranceOrigin;
+  /** Clause citation for `is-rule`; the working for `works-estimate`; profile for `customer`. */
+  trace: string;
+  /**
+   * Set only when a person typed over a derived tolerance. `previousOrigin` is kept because by
+   * the time the UI checks whether a reason was required, `origin` has already become "manual".
+   */
+  override?: {
+    previous: string;
+    previousOrigin: ToleranceOrigin;
+    reason: string;
+    by: string;
+    at: string;
+  };
+}
+
 /** A field after resolution through the three-layer cascade. */
 export interface ResolvedField {
   key: string; // canonical dictionary key, e.g. "power.strands"
@@ -73,6 +128,18 @@ export interface ResolvedField {
   override?: { previous: string | number; reason: string; by: string; at: string };
   /** Flag values the engine couldn't source yet — surfaced in UI and blocks a real GTP. */
   gap?: boolean;
+  /**
+   * The permitted departure from this value — a mandatory input on every field.
+   *
+   * Optional in the TYPE only so that engines can build a field literal without it and have
+   * `withMandatoryTolerance()` fill in N/A; every field that leaves an engine has one. Reading
+   * code should treat it as always present.
+   *
+   * Mirrored on `GtpDerivedField` in lib/services/types.ts. Keep the two in step: `derivedFields`
+   * is assigned from a variable, not a literal, so TypeScript's excess-property check does NOT
+   * fire and an unmirrored member is silently dropped from every saved record.
+   */
+  tolerance?: FieldTolerance;
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────

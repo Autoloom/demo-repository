@@ -14,15 +14,22 @@
  * This is pure: no UI imports, no service calls, deterministic for a given construction+quirks.
  */
 import { findMessengerRow } from "@/lib/domain/standards/is398-4";
-import { IS14255_1995_LAY, findPhaseRow } from "@/lib/domain/standards/is14255-1995";
+import { IS14255_1995_LAY, findPhaseRow, insulationToleranceFloorMm } from "@/lib/domain/standards/is14255-1995";
 import { IS8130_2013_TABLE2_STRANDED, findConductor } from "@/lib/domain/standards/is8130-2013";
 import type { ConductorForm, ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { findWorksConductor, unverifiedWorksDataWarning } from "@/lib/domain/standards/works-conductor-data";
 
+import { bandTolerance, floorTolerance, notApplicable, withMandatoryTolerance } from "./tolerance";
 import type { CableConstruction, ConductorGroup, ResolvedField } from "./types";
 
 /** Customer quirks that shape derivation (subset of CustomerProfile, design-doc §1.4). */
 export interface DerivationQuirks {
+  /**
+   * @deprecated Affects trace wording only — no longer changes any printed value.
+   * It once selected between "(Min)" and "±5%" suffixes, but the "±5%" was invented: IS 14255
+   * §7.3 gives a floor, not a band. Both conventions now resolve to that floor in the tolerance
+   * column. Kept because customer profiles and stored templates still carry it.
+   */
   tolerancePhrasing?: "min" | "plusminus"; // WBSEDCL uses "(Min)"
   sagPercent?: number; // WBSEDCL 1.5 (not the 3% default)
   layRatioFactor?: number; // WBSEDCL 0.995
@@ -54,13 +61,18 @@ const FIXED = {
   strandTensileMinNPerMm2: 90, // DHBVN CSC-69 §1.5.1(b): ≥90 N/mm²
 };
 
-/** Apply the customer's tolerance phrasing to a numeric value, e.g. 1.5 → "1.50 mm (Min)". */
-function phraseThickness(mm: number, quirks: DerivationQuirks): { value: string; quirkTrace?: string } {
-  const fixed = mm.toFixed(2);
-  if (quirks.tolerancePhrasing === "min") {
-    return { value: `${fixed} mm (Min)`, quirkTrace: `${quirks.customerName ?? "Customer"} uses "(Min)" phrasing` };
-  }
-  return { value: `${fixed} mm ±5%` };
+/**
+ * How a customer words a thickness tolerance — trace text only, never the number.
+ *
+ * This used to be `phraseThickness()`, which appended either "(Min)" or "±5%" to the value. The
+ * "±5%" had no basis in IS 14255: §7.3 specifies a floor of t − (0.1 + 0.1·t), which at 1.50 mm
+ * is 1.25 mm, not ±0.075 mm. Both discoms now get that floor in the tolerance column, and the
+ * only thing their profile still affects is whose convention the trace names.
+ */
+function phrasingNote(quirks: DerivationQuirks): string {
+  return quirks.tolerancePhrasing === "min"
+    ? ` — ${quirks.customerName ?? "Customer"} prints thicknesses as "(Min)"`
+    : "";
 }
 
 
@@ -174,18 +186,28 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     source: "is-table",
     trace: isSpec.ref,
     editable: false,
+    // Not "no tolerance stated" but "a tolerance would be meaningless": the figure IS the upper
+    // limit, so a band around it would permit conductors the standard rejects.
+    tolerance: notApplicable("Already a maximum — IS 8130 §3.2 states the limit, not a nominal"),
   });
 
   if (phase) {
-    const insulation = phraseThickness(phase.insulationThicknessMinMm, quirks);
     fields.push({
       key: "power.insulationThickness",
       label: "Insulation thickness (power)",
-      value: insulation.value,
-      tag: quirks.tolerancePhrasing === "min" ? "QUIRK" : "LOOKUP",
-      source: quirks.tolerancePhrasing === "min" ? "profile" : "is-table",
-      trace: insulation.quirkTrace ? `${phase.ref} · ${insulation.quirkTrace}` : phase.ref,
+      value: `${phase.insulationThicknessMinMm.toFixed(2)} mm`,
+      // The customer's phrasing used to flip these to QUIRK/profile. It no longer does: the
+      // value is read straight from the IS 14255 table in every case, so calling it a customer
+      // quirk because of a word in a different column would misstate where the number came from.
+      tag: "LOOKUP",
+      source: "is-table",
+      trace: phase.ref,
       editable: false,
+      tolerance: floorTolerance(
+        phase.insulationThicknessMinMm,
+        insulationToleranceFloorMm(phase.insulationThicknessMinMm),
+        `IS 14255 : 1995, §7.3 — nominal ${phase.insulationThicknessMinMm.toFixed(2)} − (0.1 + 0.1 × ${phase.insulationThicknessMinMm.toFixed(2)})${phrasingNote(quirks)}`,
+      ),
     });
 
     // CALC: dia over insulation = compacted dia + 2 × insulation thickness.
@@ -214,11 +236,19 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     fields.push({
       key: "power.massPerKm",
       label: "Approx mass (power core)",
-      value: `${conductor.massKgPerKm} kg/km ±3%`,
+      value: `${conductor.massKgPerKm} kg/km`,
       tag: "LOOKUP",
       source: "works-data",
       trace: conductor.origin,
       editable: false,
+      // A works manufacturing spread, NOT a standards limit — IS 14255 specifies no mass
+      // tolerance at all. Marked `works-estimate` so it can never be read as an acceptance
+      // criterion an inspector could reject a drum against.
+      //
+      // The trace deliberately omits `conductor.origin`: that string ends in an internal works
+      // spec clause ("spec §0.5"), and a § sitting beside a tolerance reads as a BIS citation.
+      // The origin is already on the field's own trace, where it means what it says.
+      tolerance: bandTolerance("±3%", "works-estimate", "Works manufacturing spread on an approximate mass"),
     });
   }
 
@@ -346,11 +376,12 @@ function finishedAndComplianceFields(quirks: DerivationQuirks, groups: Conductor
       ? { key: "fin.overallDia", label: "Overall diameter (approx.)", value: `${bundle.overallDiaMm.toFixed(1)} mm`, tag: "CALC" as const, source: "calc" as const, trace: bundle.workings, editable: false }
       : { key: "fin.overallDia", label: "Overall diameter (approx.)", value: "—", tag: "CALC" as const, source: "calc" as const, trace: "A conductor size in this cable has no IS row yet", editable: false, gap: true },
     bundle
-      ? { key: "fin.totalMass", label: "Total mass (approx.)", value: `${bundle.massKgPerKm.toFixed(0)} kg/km ±5%`, tag: "CALC" as const, source: "calc" as const, trace: bundle.workings, editable: false }
+      ? { key: "fin.totalMass", label: "Total mass (approx.)", value: `${bundle.massKgPerKm.toFixed(0)} kg/km`, tag: "CALC" as const, source: "calc" as const, trace: bundle.workings, editable: false, tolerance: bandTolerance("±5%", "works-estimate", "Works spread on a calculated mass — see the trace for the working") }
       : { key: "fin.totalMass", label: "Total mass (approx.)", value: "—", tag: "CALC" as const, source: "calc" as const, trace: "A conductor size in this cable has no IS row yet", editable: false, gap: true },
     { key: "fin.layDirection", label: "Direction of lay", value: IS14255_1995_LAY.direction, tag: "LOOKUP", source: "is-table", trace: IS14255_1995_LAY.ref, editable: false },
     { key: "fin.maxLay", label: "Max lay ratio", value: `${IS14255_1995_LAY.maxLayRatio} × dia of insulated phase`, tag: "LOOKUP", source: "is-table", trace: IS14255_1995_LAY.ref, editable: false },
-    { key: "drum.length", label: "Standard length per drum", value: `${drumLength} m ${drumTol}`, tag: "CHOICE", source: "order", trace: `${quirks.customerName ?? "Customer"} default`, editable: true },
+    // The drum band is a commercial term agreed with the buyer, not a standards limit.
+    { key: "drum.length", label: "Standard length per drum", value: `${drumLength} m`, tag: "CHOICE", source: "order", trace: `${quirks.customerName ?? "Customer"} default`, editable: true, tolerance: bandTolerance(drumTol, "customer", `${quirks.customerName ?? "Customer"} agreed drum length tolerance`) },
     { key: "drum.standard", label: "Drum standard", value: "IS 10418:1982 (non-returnable wooden)", tag: "FIXED", source: "profile", trace: "DHBVN CSC-69 §1.10 / IS 10418:1982", editable: false },
     { key: "cert.isiMark", label: "Bears ISI certification mark", value: "Yes", tag: "FIXED", source: "profile", trace: "ISI-marked supply required", editable: false },
     { key: "cable.maxConductorTemp", label: "Max continuous conductor temperature", value: `${FIXED.maxConductorTempC}°C (short-circuit ${FIXED.shortCircuitTempC}°C)`, tag: "FIXED", source: "profile", trace: "XLPE 90°C continuous; 250°C short-time", editable: false },
@@ -399,7 +430,22 @@ function streetLightFields(group: ConductorGroup): ResolvedField[] {
     fields.push({ key: "streetLight.strands", label: "No. of strands (street-light)", value: conductor.wires, tag: "LOOKUP", source: "works-data", trace: `${conductor.wires} wires — ${conductor.origin}`, editable: false });
   }
   if (phase) {
-    fields.push({ key: "streetLight.insulationThickness", label: "Insulation thickness (street-light)", value: `${phase.insulationThicknessMinMm.toFixed(2)} mm`, tag: "LOOKUP", source: "is-table", trace: phase.ref, editable: false });
+    // Same §7.3 floor as the power core. This core used to print bare while the power core got
+    // an invented "±5%" — the two are governed by one clause and now say so consistently.
+    fields.push({
+      key: "streetLight.insulationThickness",
+      label: "Insulation thickness (street-light)",
+      value: `${phase.insulationThicknessMinMm.toFixed(2)} mm`,
+      tag: "LOOKUP",
+      source: "is-table",
+      trace: phase.ref,
+      editable: false,
+      tolerance: floorTolerance(
+        phase.insulationThicknessMinMm,
+        insulationToleranceFloorMm(phase.insulationThicknessMinMm),
+        `IS 14255 : 1995, §7.3 — nominal ${phase.insulationThicknessMinMm.toFixed(2)} − (0.1 + 0.1 × ${phase.insulationThicknessMinMm.toFixed(2)})`,
+      ),
+    });
     fields.push({ key: "streetLight.currentRating", label: "Current rating (street-light)", value: `${phase.currentRatingA} A`, tag: "LOOKUP", source: "is-table", trace: phase.ref, editable: false });
   }
   return fields;
@@ -476,5 +522,7 @@ export function deriveFields(construction: CableConstruction, quirks: Derivation
 
   fields.push(...finishedAndComplianceFields(quirks, construction.groups));
 
-  return fields;
+  // Tolerance is a mandatory column: anything not given one above is stated as N/A rather than
+  // left blank, so a reader can tell "no tolerance applies" from "nobody filled this in".
+  return withMandatoryTolerance(fields);
 }

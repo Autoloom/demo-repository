@@ -424,6 +424,24 @@ export interface GtpDerivedField {
   editable: boolean;
   gap?: boolean;
   override?: { previous: string | number; reason: string; by: string; at: string };
+  /**
+   * Mirror of `FieldTolerance` in lib/domain/gtp/types.ts. This member exists because
+   * `derivedFields: fields` assigns a ResolvedField[] VARIABLE here — excess-property checking
+   * only fires on fresh object literals, so omitting this would compile clean and silently drop
+   * every tolerance from the stored record. Pinned by a round-trip test, not by the type system.
+   */
+  tolerance?: {
+    value: string;
+    origin: "is-rule" | "works-estimate" | "customer" | "manual" | "not-applicable";
+    trace: string;
+    override?: {
+      previous: string;
+      previousOrigin: "is-rule" | "works-estimate" | "customer" | "manual" | "not-applicable";
+      reason: string;
+      by: string;
+      at: string;
+    };
+  };
 }
 
 // ── Raw material incoming QC ──────────────────────────────────────────────────

@@ -60,11 +60,21 @@ test("golden file — power core (70 sq mm) reproduces approved KRYFS values", (
   assert.equal(fieldValue(fields, "power.strands"), 19);
   assert.equal(fieldValue(fields, "power.strandDia"), "2.17 mm");
   assert.equal(fieldValue(fields, "power.compactedDia"), "9.44 mm");
-  assert.equal(fieldValue(fields, "power.insulationThickness"), "1.50 mm (Min)"); // QUIRK phrasing
+  // Values are bare dimensions; the permitted departure lives in the tolerance column.
+  assert.equal(fieldValue(fields, "power.insulationThickness"), "1.50 mm");
   assert.equal(fieldValue(fields, "power.diaOverInsulation"), "12.44 mm"); // CALC: 9.44 + 2×1.50
   assert.equal(fieldValue(fields, "power.currentRating"), "154 A @ 40°C");
   assert.equal(fieldValue(fields, "power.maxDcResistance"), "0.443 ohm/km");
-  assert.equal(fieldValue(fields, "power.massPerKm"), "196 kg/km ±3%");
+  assert.equal(fieldValue(fields, "power.massPerKm"), "196 kg/km");
+
+  const tol = (k: string) => fields.find((f) => f.key === k)?.tolerance;
+  // One-sided: IS 14255 §7.3 sets a floor and no upper limit, so this is −16.7%, never ±16.7%.
+  assert.equal(tol("power.insulationThickness")?.value, "−16.7%");
+  assert.match(tol("power.insulationThickness")?.trace ?? "", /1\.25 mm min at any point/);
+  assert.equal(tol("power.massPerKm")?.value, "±3%");
+  // The mass spread is ours, not the standard's. Conflating the two would let an inspector
+  // reject a drum against a limit IS 14255 never sets.
+  assert.equal(tol("power.massPerKm")?.origin, "works-estimate");
 });
 
 test("golden file — messenger (50 sq mm) reproduces approved KRYFS values", () => {
@@ -211,10 +221,28 @@ test("DHBVN profile differs from WBSEDCL — proves the quirk layer separates cu
   const wb = deriveFields(parsed.construction, WBSEDCL_QUIRKS);
   const dh = deriveFields(parsed.construction, { tolerancePhrasing: "plusminus", sagPercent: 3, customerName: "UHBVN / DHBVN" });
 
-  assert.equal(fieldValue(wb, "power.insulationThickness"), "1.50 mm (Min)");
-  assert.equal(fieldValue(dh, "power.insulationThickness"), "1.50 mm ±5%");
+  // Sag is a genuine profile difference and remains the proof that the quirk layer works.
   assert.equal(fieldValue(wb, "fin.sag"), "1.5%");
   assert.equal(fieldValue(dh, "fin.sag"), "3%");
+
+  // Insulation deliberately does NOT differ any more. It used to, but only because DHBVN's
+  // "±5%" was invented — IS 14255 §7.3 states a floor, and one standard cannot give two answers
+  // for the same cable. A customer's phrasing is not a licence to change the number.
+  assert.equal(fieldValue(wb, "power.insulationThickness"), "1.50 mm");
+  assert.equal(fieldValue(dh, "power.insulationThickness"), "1.50 mm");
+  const tolOf = (f: typeof wb) => f.find((x) => x.key === "power.insulationThickness")?.tolerance;
+  assert.equal(tolOf(wb)?.value, "−16.7%");
+  assert.equal(tolOf(dh)?.value, "−16.7%");
+
+  // Nor may phrasing rewrite provenance: the value is an IS table lookup for both.
+  for (const f of [wb, dh]) {
+    const insulation = f.find((x) => x.key === "power.insulationThickness");
+    assert.equal(insulation?.tag, "LOOKUP");
+    assert.equal(insulation?.source, "is-table");
+  }
+  // WBSEDCL's convention survives where it belongs — in the trace, not in the number.
+  assert.match(tolOf(wb)?.trace ?? "", /\(Min\)/);
+  assert.doesNotMatch(tolOf(dh)?.trace ?? "", /\(Min\)/);
 });
 
 test("golden file — computed bundle dia & mass land within tolerance of the approved KRYFS GTP", () => {

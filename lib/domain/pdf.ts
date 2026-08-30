@@ -103,14 +103,29 @@ class PdfBuilder {
       return acc;
     }, []);
 
+    // A row with more cells than `widths` has entries used to be a silent PDF corruption: the
+    // missing width made the wrap budget NaN, and the missing x-position emitted the literal
+    // "undefined" as a coordinate operator. Fall back to an even share instead — an ugly table
+    // is recoverable, a malformed content stream is not.
+    const columnWidth = (index: number, columnCount: number) =>
+      widths[index] ?? CONTENT_WIDTH / Math.max(columnCount, 1);
+
     const renderRow = (cells: PdfCell[], bold = false) => {
-      const wrapped = cells.map((cell, index) => wrapText(cell, Math.max(8, Math.floor(widths[index] / 5.6))));
+      const wrapped = cells.map((cell, index) =>
+        wrapText(cell, Math.max(8, Math.floor(columnWidth(index, cells.length) / 5.6))),
+      );
       const rowHeight = Math.max(...wrapped.map((lines) => lines.length)) * SMALL_LINE_HEIGHT + 8;
       this.ensure(rowHeight + 2);
       this.add(`${MARGIN} ${this.y + 4} m ${PAGE_WIDTH - MARGIN} ${this.y + 4} l S`);
       wrapped.forEach((lines, colIndex) => {
+        // Same guard as the width: past the last known column, lay the extra one out after it.
+        const x0 =
+          xPositions[colIndex] ??
+          (xPositions.length > 0
+            ? xPositions[xPositions.length - 1] + columnWidth(xPositions.length - 1, cells.length)
+            : MARGIN);
         lines.forEach((line, lineIndex) => {
-          const x = xPositions[colIndex] + 4;
+          const x = x0 + 4;
           const y = this.y - 9 - lineIndex * SMALL_LINE_HEIGHT;
           this.add(`BT /${bold ? "F2" : "F1"} 8 Tf ${x} ${y} Td (${esc(line)}) Tj ET`);
         });

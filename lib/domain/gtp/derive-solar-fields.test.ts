@@ -49,12 +49,32 @@ test("current rating is de-rated for ambient, and the trace shows the working", 
 });
 
 test("the sheath tolerance uses 0.15, the insulation 0.1", () => {
-  // IS 17293 §6.3 vs §5.3 — a distinction that changes the acceptance limit.
+  // IS 17293 §6.3 vs §5.3 — a distinction that changes the acceptance limit. At 400 sq mm both
+  // nominals are 2.00 mm, so the two floors differ ONLY by the coefficient. That is what makes
+  // this the test that stops the two rules being "simplified" into one.
   const f = solar({ csaSqMm: 400 });
+  const tol = (k: string) => f.find((x) => x.key === k)?.tolerance;
+
   assert.equal(value(f, "solar.insulationThickness"), "2.00 mm");
-  assert.equal(value(f, "solar.insulationToleranceFloor"), "1.70 mm");
+  assert.equal(tol("solar.insulationThickness")?.value, "−15.0%");
   assert.equal(value(f, "solar.sheathThickness"), "2.00 mm");
-  assert.equal(value(f, "solar.sheathToleranceFloor"), "1.60 mm");
+  assert.equal(tol("solar.sheathThickness")?.value, "−20.0%");
+  // The absolute floors stay recoverable in the trace — an inspector measures millimetres.
+  assert.match(tol("solar.insulationThickness")?.trace ?? "", /1\.70 mm min at any point/);
+  assert.match(tol("solar.sheathThickness")?.trace ?? "", /1\.60 mm min at any point/);
+
+  // Both are standards limits and both must cite the clause they came from.
+  assert.equal(tol("solar.insulationThickness")?.origin, "is-rule");
+  assert.match(tol("solar.insulationThickness")?.trace ?? "", /§5\.3/);
+  assert.equal(tol("solar.sheathThickness")?.origin, "is-rule");
+  assert.match(tol("solar.sheathThickness")?.trace ?? "", /§6\.3/);
+});
+
+test("the tolerance rows were absorbed into the column, not duplicated", () => {
+  // These keys used to be standalone rows. If they come back, a GTP would print each floor twice.
+  const keys = new Set(solar().map((f) => f.key));
+  assert.ok(!keys.has("solar.insulationToleranceFloor"));
+  assert.ok(!keys.has("solar.sheathToleranceFloor"));
 });
 
 test("the overall diameter is flagged as indicative, not guaranteed", () => {

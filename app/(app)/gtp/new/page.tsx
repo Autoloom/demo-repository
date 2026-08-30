@@ -63,6 +63,7 @@ import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { IS1554_1_SIZES } from "@/lib/domain/standards/is1554-1-1988";
 import { IS7098_1_SIZES } from "@/lib/domain/standards/is7098-1-2025";
 import { IS17293_CLASS2_SIZES, IS17293_CLASS5_SIZES } from "@/lib/domain/standards/is17293-2020";
+import { TOLERANCE_NA } from "@/lib/domain/gtp/types";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
 import { downloadPdf } from "@/lib/domain/pdf";
@@ -341,6 +342,126 @@ function FieldValueCell({
   );
 }
 
+/**
+ * The tolerance cell.
+ *
+ * Structurally a sibling of FieldValueCell rather than a mode of it: the two columns gate edits
+ * on different questions, and folding both into one component would make the branching
+ * unreadable.
+ *
+ * The gate here is not `editable` but where the tolerance came from:
+ *   • no tolerance at all — most rows. The standards specify none, so there is nothing to
+ *     contradict; the operator types freely and it is marked manual. Demanding "why are you
+ *     changing this?" for a cell that was empty would be a nonsense prompt.
+ *   • an `is-rule` floor — a published acceptance limit. Overwriting it is exactly as serious as
+ *     overwriting a standards value, so it keeps the lock and the mandatory reason.
+ *   • a works estimate or a customer band — ours or the buyer's to adjust, no reason required.
+ */
+function FieldToleranceCell({
+  field,
+  override,
+  unlocked,
+  reason,
+  onEdit,
+  onRequestUnlock,
+  onReasonChange,
+  onReasonCommit,
+  onRevert,
+}: {
+  field: ResolvedField;
+  override: string | undefined;
+  unlocked: boolean;
+  reason: string;
+  onEdit: (value: string) => void;
+  onRequestUnlock: () => void;
+  onReasonChange: (reason: string) => void;
+  onReasonCommit?: () => void;
+  onRevert: () => void;
+}) {
+  const isOverridden = override !== undefined;
+  // Read the ORIGINAL origin: once overridden, `origin` is "manual" and would unlock itself.
+  const derivedOrigin = field.tolerance?.override?.previousOrigin ?? field.tolerance?.origin;
+  const isStandardsFloor = derivedOrigin === "is-rule";
+  const canEditNow = !isStandardsFloor || unlocked;
+
+  if (!canEditNow) {
+    return (
+      <div className="flex items-center gap-2">
+        <Lock className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="font-mono text-sm">{field.tolerance?.value}</span>
+        <button
+          type="button"
+          onClick={onRequestUnlock}
+          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Input
+          value={override ?? field.tolerance?.value ?? ""}
+          onChange={(e) => onEdit(e.target.value)}
+          onBlur={() => onReasonCommit?.()}
+          // Tolerance is a mandatory input, so an empty box is an unfinished one. The placeholder
+          // names the two shapes a valid answer takes rather than suggesting blank is acceptable.
+          placeholder="e.g. ±5% or N/A"
+          className={cn(
+            "h-9 max-w-40 font-mono text-sm",
+            // Only flag a box the operator actually emptied — an untouched derived value is fine.
+            isOverridden && !(override ?? "").trim() && "border-danger",
+          )}
+          aria-label={`${field.label} tolerance`}
+        />
+        {/* One click for the common answer, so "no tolerance here" doesn't cost eight keystrokes
+            on the majority of rows. */}
+        {(override ?? field.tolerance?.value) !== TOLERANCE_NA ? (
+          <button
+            type="button"
+            onClick={() => onEdit(TOLERANCE_NA)}
+            className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            N/A
+          </button>
+        ) : null}
+        {isOverridden ? (
+          <button
+            type="button"
+            onClick={onRevert}
+            className="shrink-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            Undo
+          </button>
+        ) : null}
+      </div>
+      {isOverridden && !(override ?? "").trim() ? (
+        <p className="text-xs text-danger">
+          A tolerance is required. Enter a value or mark it N/A.
+        </p>
+      ) : null}
+      {isStandardsFloor ? (
+        <div>
+          <Input
+            value={reason}
+            onChange={(e) => onReasonChange(e.target.value)}
+            onBlur={() => onReasonCommit?.()}
+            placeholder="Why are you changing this? (required)"
+            className={cn("h-8 max-w-72 text-xs", isOverridden && !reason.trim() && "border-danger")}
+            aria-label={`Reason for changing the tolerance on ${field.label}`}
+          />
+          {isOverridden && !reason.trim() ? (
+            <p className="mt-1 text-xs text-danger">A reason is required to override a standards tolerance.</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function Moment({
   n,
   title,
@@ -447,6 +568,15 @@ function GtpBuilderInner() {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   /** Reasons for overriding a LOOKUP/CALC field — required, stored in the audit trail. */
   const [overrideReasons, setOverrideReasons] = useState<Record<string, string>>({});
+  /**
+   * Manual edits to the TOLERANCE column, kept separate from `overrides` rather than sharing the
+   * map under a suffixed key. A field's value and its tolerance are independently editable, and
+   * separate maps mean every existing consumer of `overrides` — the fields memo, the revert
+   * handler, the generate gate, the template writer — keeps working untouched.
+   */
+  const [toleranceOverrides, setToleranceOverrides] = useState<Record<string, string>>({});
+  const [toleranceReasons, setToleranceReasons] = useState<Record<string, string>>({});
+  const [unlockedTolerances, setUnlockedTolerances] = useState<string[]>([]);
   /**
    * Fields hidden from the printed GTP.
    *
@@ -628,10 +758,36 @@ function GtpBuilderInner() {
     ];
 
     return withCustom.map((f) => {
+      let out = f;
+
+      // Tolerance edits are applied first and independently: a row may have an edited tolerance
+      // against a derived value, or the reverse, or both.
+      const toleranceValue = toleranceOverrides[f.key];
+      if (toleranceValue !== undefined) {
+        out = {
+          ...out,
+          tolerance: {
+            value: toleranceValue,
+            origin: "manual" as const,
+            trace: "Entered manually — not derived from any standard",
+            override: {
+              previous: f.tolerance?.value ?? "",
+              // Kept because `origin` is now "manual": without this the UI could not tell an
+              // edited standards floor from a freely-typed one, and would stop asking for a
+              // reason the moment the first character was typed.
+              previousOrigin: f.tolerance?.origin ?? "manual",
+              reason: toleranceReasons[f.key] ?? "",
+              by: "current user",
+              at: new Date().toISOString(),
+            },
+          },
+        };
+      }
+
       const value = overrides[f.key];
-      if (value === undefined) return f;
+      if (value === undefined) return out;
       return {
-        ...f,
+        ...out,
         value,
         source: "override" as const,
         // An overridden field is no longer an unsourced gap — the user supplied the value.
@@ -644,7 +800,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, overrides, overrideReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters]);
+  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters]);
 
   /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
@@ -722,6 +878,58 @@ function GtpBuilderInner() {
     });
   }
 
+  /**
+   * Record a tolerance edit.
+   *
+   * Logged under a `#tolerance` suffix so the trail distinguishes "the tolerance was changed"
+   * from "the value was changed" — two different facts about the same row. Unlike a value
+   * override this does not require a reason: most tolerance cells start empty because no
+   * standard specifies one, and filling one in contradicts nothing.
+   */
+  function commitToleranceOverride(field: ResolvedField, value: string, reason: string) {
+    const auditKey = `${field.key}#tolerance`;
+    const derivedOrigin = field.tolerance?.override?.previousOrigin ?? field.tolerance?.origin;
+    // Overwriting a published acceptance limit is the one case that does demand justification.
+    if (derivedOrigin === "is-rule" && !reason.trim()) return;
+
+    const already = auditedKeys.current.has(auditKey);
+    auditedKeys.current.add(auditKey);
+    appendAuditEntry({
+      gtpId: draftId,
+      fieldKey: auditKey,
+      fieldLabel: `${field.label} — tolerance`,
+      action: already ? "amend" : "override",
+      previousValue: field.tolerance?.override?.previous ?? field.tolerance?.value ?? "",
+      newValue: value,
+      reason,
+      actor: actorFromSession().name,
+      context: { customerName: profile?.name, designation },
+    });
+  }
+
+  /** Undo a tolerance edit and go back to whatever the engine derived — often nothing at all. */
+  function revertToleranceOverride(key: string) {
+    const auditKey = `${key}#tolerance`;
+    const field = fields.find((f) => f.key === key);
+    if (field && toleranceOverrides[key] !== undefined) {
+      appendAuditEntry({
+        gtpId: draftId,
+        fieldKey: auditKey,
+        fieldLabel: `${field.label} — tolerance`,
+        action: "revert",
+        previousValue: toleranceOverrides[key],
+        newValue: "",
+        reason: "",
+        actor: actorFromSession().name,
+        context: { customerName: profile?.name, designation },
+      });
+      auditedKeys.current.delete(auditKey);
+    }
+    setToleranceOverrides(({ [key]: _removed, ...rest }) => rest);
+    setToleranceReasons(({ [key]: _r, ...rest }) => rest);
+    setUnlockedTolerances((keys) => keys.filter((k) => k !== key));
+  }
+
   /** Undo a manual edit and go back to the standards-derived value. */
   function revertOverride(key: string) {
     const field = fields.find((f) => f.key === key);
@@ -790,6 +998,10 @@ function GtpBuilderInner() {
     // Overrides restored from a template are already justified; unlock them so they are visible
     // as edits rather than appearing to be derived values.
     setUnlockedFields(Object.keys(savedOverrides));
+    const savedTolerances = template.toleranceOverrides ?? {};
+    setToleranceOverrides(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.value])));
+    setToleranceReasons(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.reason])));
+    setUnlockedTolerances(Object.keys(savedTolerances));
     setChoices(template.choices ?? null);
     setAckWarnings(false);
     recordTemplateUse(template.id);
@@ -892,6 +1104,11 @@ function GtpBuilderInner() {
       overrides: Object.fromEntries(
         Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
       ),
+      // A tolerance a customer demands is a decision about this buyer, so it belongs in their
+      // template exactly as a value override does — otherwise it has to be retyped every order.
+      toleranceOverrides: Object.fromEntries(
+        Object.entries(toleranceOverrides).map(([k, v]) => [k, { value: v, reason: toleranceReasons[k] ?? "" }]),
+      ),
     });
     setVersion((v) => v + 1);
     setTemplateName("");
@@ -919,13 +1136,27 @@ function GtpBuilderInner() {
   // An override of a locked (LOOKUP/CALC) value without a written reason blocks generation —
   // otherwise the "reason required" rule would be decorative.
   const missingReasons = fields.filter(
-    (f) => overrides[f.key] !== undefined && !f.editable && !(overrideReasons[f.key] ?? "").trim(),
+    (f) =>
+      (overrides[f.key] !== undefined && !f.editable && !(overrideReasons[f.key] ?? "").trim()) ||
+      // The same rule for the tolerance column, but ONLY where the engine derived a standards
+      // floor. Replacing an N/A or a works estimate contradicts nothing published, so demanding
+      // a justification there would train people to type "n/a" in the reason box and mean it.
+      (toleranceOverrides[f.key] !== undefined &&
+        (f.tolerance?.override?.previousOrigin ?? f.tolerance?.origin) === "is-rule" &&
+        !(toleranceReasons[f.key] ?? "").trim()),
+  );
+
+  // Tolerance is a mandatory input, so an emptied cell is an incomplete GTP — not the same thing
+  // as one marked N/A, which is a stated answer.
+  const emptyTolerances = fields.filter(
+    (f) => toleranceOverrides[f.key] !== undefined && !toleranceOverrides[f.key].trim(),
   );
 
   const canGenerate =
     validation?.passesHardGate &&
     (validation.warningCount === 0 || ackWarnings) &&
-    missingReasons.length === 0;
+    missingReasons.length === 0 &&
+    emptyTolerances.length === 0;
   const canSaveTemplate = Boolean(profile && choices && templateName.trim());
 
   return (
@@ -1501,6 +1732,11 @@ function GtpBuilderInner() {
                   <tr>
                     <th className="p-3 font-medium">Field</th>
                     <th className="p-3 font-medium">Value</th>
+                    <th className="p-3 font-medium">
+                      <span title="A required entry on every row. Defaulted from the standard where one applies, shown as N/A where none does. Minus-only figures (−16.7%) are one-sided limits: the standard sets a floor, not a band.">
+                        Tolerance
+                      </span>
+                    </th>
                     <th className="p-3 font-medium">Source</th>
                     <th className="p-3 text-right font-medium">
                       <span title="Hidden fields stay derived and audited — they are only left off the printed GTP.">
@@ -1539,6 +1775,21 @@ function GtpBuilderInner() {
                           onRevert={() => revertOverride(f.key)}
                         />
                       </td>
+                      <td className="p-3 align-top">
+                        <FieldToleranceCell
+                          field={f}
+                          override={toleranceOverrides[f.key]}
+                          unlocked={unlockedTolerances.includes(f.key)}
+                          onEdit={(value) => setToleranceOverrides((t) => ({ ...t, [f.key]: value }))}
+                          onRequestUnlock={() => setUnlockedTolerances((keys) => [...keys, f.key])}
+                          reason={toleranceReasons[f.key] ?? ""}
+                          onReasonChange={(reason) => setToleranceReasons((r) => ({ ...r, [f.key]: reason }))}
+                          onReasonCommit={() =>
+                            commitToleranceOverride(f, toleranceOverrides[f.key] ?? "", toleranceReasons[f.key] ?? "")
+                          }
+                          onRevert={() => revertToleranceOverride(f.key)}
+                        />
+                      </td>
                       <td className="p-3">
                         <span className={cn("mr-2 inline-block rounded-sm border px-1.5 py-0.5 text-[10px] font-medium", TAG_TONE[f.tag])}>
                           {f.tag}
@@ -1546,6 +1797,11 @@ function GtpBuilderInner() {
                         {overrides[f.key] !== undefined ? (
                           <span className="mr-2 inline-block rounded-sm border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
                             MANUAL OVERRIDE
+                          </span>
+                        ) : null}
+                        {toleranceOverrides[f.key] !== undefined ? (
+                          <span className="mr-2 inline-block rounded-sm border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                            MANUAL TOLERANCE
                           </span>
                         ) : null}
                         <span className="text-xs text-muted-foreground">{f.trace}</span>
@@ -1747,6 +2003,12 @@ function GtpBuilderInner() {
             <p className="mt-2 text-xs text-danger">
               You changed {missingReasons.length === 1 ? "a standards value" : `${missingReasons.length} standards values`} —
               write why below {missingReasons.map((f) => `"${f.label}"`).join(", ")} before generating.
+            </p>
+          ) : null}
+          {emptyTolerances.length > 0 ? (
+            <p className="mt-2 text-xs text-danger">
+              {emptyTolerances.length === 1 ? "A tolerance was" : `${emptyTolerances.length} tolerances were`} left
+              empty — {emptyTolerances.map((f) => `"${f.label}"`).join(", ")}. Enter a value or mark it N/A.
             </p>
           ) : null}
         </div>

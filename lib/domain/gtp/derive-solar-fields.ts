@@ -17,6 +17,7 @@ import {
 import type { SolarInstallationMethod } from "@/lib/domain/standards/is17293-2020";
 
 import type { DerivationQuirks } from "./derive";
+import { bandTolerance, floorTolerance, notApplicable, withMandatoryTolerance } from "./tolerance";
 import type { ResolvedField } from "./types";
 
 const FIXED = {
@@ -95,26 +96,37 @@ export function deriveSolarFields(
     { key: "cable.shortCircuitTemp", label: "Short-circuit temp", value: `${IS17293_SCOPE.shortCircuitTempC} °C for ${IS17293_SCOPE.shortCircuitMaxSeconds} s max`, tag: "FIXED", source: "is-table", trace: `${REF}, Annex A-3`, editable: false },
 
     // ── Dimensions, straight from the table ────────────────────────────────────────────────
-    { key: "solar.insulationThickness", label: "Insulation thickness", value: `${dims.values.insulationThicknessMm.toFixed(2)} mm`, tag: "LOOKUP", source: "is-table", trace: dims.ref, editable: false },
+    // Each thickness carries its own acceptance floor in the tolerance column rather than as a
+    // separate row, so a reader sees the nominal and its limit on one line.
     {
-      key: "solar.insulationToleranceFloor",
-      label: "Insulation thickness, min at any point",
-      value: `${insulationToleranceFloorMm(dims.values.insulationThicknessMm).toFixed(2)} mm`,
-      tag: "CALC",
-      source: "calc",
-      trace: `${REF}, §5.3 — nominal − (0.1 + 0.1 × ${dims.values.insulationThicknessMm})`,
+      key: "solar.insulationThickness",
+      label: "Insulation thickness",
+      value: `${dims.values.insulationThicknessMm.toFixed(2)} mm`,
+      tag: "LOOKUP",
+      source: "is-table",
+      trace: dims.ref,
       editable: false,
+      tolerance: floorTolerance(
+        dims.values.insulationThicknessMm,
+        insulationToleranceFloorMm(dims.values.insulationThicknessMm),
+        `${REF}, §5.3 — nominal ${dims.values.insulationThicknessMm} − (0.1 + 0.1 × ${dims.values.insulationThicknessMm})`,
+      ),
     },
-    { key: "solar.sheathThickness", label: "Sheath thickness", value: `${dims.values.sheathThicknessMm.toFixed(2)} mm`, tag: "LOOKUP", source: "is-table", trace: dims.ref, editable: false },
     {
-      key: "solar.sheathToleranceFloor",
-      label: "Sheath thickness, min at any point",
-      value: `${sheathToleranceFloorMm(dims.values.sheathThicknessMm).toFixed(2)} mm`,
-      tag: "CALC",
-      source: "calc",
-      // §6.3 uses 0.15 where §5.3 uses 0.1 — the sheath gets a wider negative tolerance.
-      trace: `${REF}, §6.3 — nominal − (0.1 + 0.15 × ${dims.values.sheathThicknessMm})`,
+      key: "solar.sheathThickness",
+      label: "Sheath thickness",
+      value: `${dims.values.sheathThicknessMm.toFixed(2)} mm`,
+      tag: "LOOKUP",
+      source: "is-table",
+      trace: dims.ref,
       editable: false,
+      // §6.3 uses 0.15 where §5.3 uses 0.1 — the sheath gets a wider negative tolerance. This is
+      // why the floor rules cannot be collapsed into one shared helper.
+      tolerance: floorTolerance(
+        dims.values.sheathThicknessMm,
+        sheathToleranceFloorMm(dims.values.sheathThicknessMm),
+        `${REF}, §6.3 — nominal ${dims.values.sheathThicknessMm} − (0.1 + 0.15 × ${dims.values.sheathThicknessMm})`,
+      ),
     },
     {
       key: "solar.overallDia",
@@ -125,6 +137,9 @@ export function deriveSolarFields(
       // The tables footnote this explicitly, and it must carry through to the document.
       trace: `${dims.ref} — indicative value for information only`,
       editable: false,
+      // Not an omission: the standard prints this figure for information and states no limit,
+      // so any tolerance we attached would be one we invented.
+      tolerance: notApplicable(`${REF}, Tables 1/2 — indicative value for information only, no limit specified`),
     },
     { key: "solar.ovality", label: "Max ovality", value: "15%", tag: "FIXED", source: "is-table", trace: `${REF}, §11.3.3`, editable: false },
 
@@ -175,11 +190,19 @@ export function deriveSolarFields(
     fields.push({
       key: "drum.standardLength",
       label: "Standard drum length",
-      value: `${quirks.drumLengthM} m${quirks.drumLengthTolerance ? ` ${quirks.drumLengthTolerance}` : ""}`,
+      value: `${quirks.drumLengthM} m`,
       tag: "QUIRK",
       source: "profile",
       trace: `${quirks.customerName ?? "Customer"} profile`,
       editable: true,
+      // A commercial term, not a standards limit — hence `customer`, never `is-rule`.
+      tolerance: quirks.drumLengthTolerance
+        ? bandTolerance(
+            quirks.drumLengthTolerance,
+            "customer",
+            `${quirks.customerName ?? "Customer"} profile — agreed drum length tolerance`,
+          )
+        : undefined,
     });
   }
 
@@ -193,5 +216,6 @@ export function deriveSolarFields(
     editable: false,
   });
 
-  return fields;
+  // Tolerance is a mandatory column — see withMandatoryTolerance.
+  return withMandatoryTolerance(fields);
 }
