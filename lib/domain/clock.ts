@@ -1,8 +1,6 @@
-/**
- * Pinned "today" so demo flows are deterministic and dates stay stable.
- * NEVER call `new Date()` directly in pages/components — always use `now()`.
- * To un-pin later (real-time mode), set PINNED to null. See architecture.md §7.
- */
+/*  Centralises application time and date-difference calculations; 
+    currently uses a pinned/reference date. */
+
 const PINNED = new Date("2026-06-23T09:00:00+05:30");
 
 export function now(): Date {

@@ -1,11 +1,6 @@
-/**
- * Pure cable-spec helpers used by the Quote Builder and Job Card.
- * `buildDesignation` / `buildCableCode` derive the printed designation + standard cable code
- * from construction. See data-models.md §2.
- *
- * Never duplicate this logic in a page — import from here so the designation reads identically
- * everywhere a spec is shown.
- */
+/*  Builds cable designations and internal 
+    cable codes from cable specifications. */
+
 import type {
   ArmourType,
   CableSpec,

@@ -1,3 +1,6 @@
+//  Main initial CableStore dataset containing demo customers,
+// inquiries, quotes, orders, materials, etc.
+
 import type { CableStore } from "@/lib/services/types";
 
 export const seedData: CableStore = {

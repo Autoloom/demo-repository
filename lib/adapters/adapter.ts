@@ -1,3 +1,5 @@
+/*  Data adapter interface for handling CRUD operations on different data sources. */
+
 import type { CableStore, Collection } from "@/lib/services/types";
 
 export type Query<T> = Partial<T> & Record<string, unknown>;

@@ -1,3 +1,6 @@
+/*  Reusable slide-over/drawer/sheet primitives including trigger, 
+    overlay, body, header, footer, title and description. */
+
 "use client";
 
 import * as React from "react";
