@@ -1,6 +1,7 @@
 /*  Encapsulates shared AppShell state/behaviour so shell components
     do not independently duplicate session/navigation logic. */
 
+
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
