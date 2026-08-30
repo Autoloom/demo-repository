@@ -82,6 +82,7 @@ const approvalKinds: KindFilter[] = [
   "BG/EMD approval",
   "Credit override",
   "Dispatch hold",
+  "Machine incident",
 ];
 
 const severities: SeverityFilter[] = ["All", "Low", "Medium", "High"];
@@ -114,6 +115,7 @@ const kindTone: Record<ApprovalKind, string> = {
   "BG/EMD approval": "border-info/30 bg-info/10 text-info",
   "Credit override": "border-danger/30 bg-danger/10 text-danger",
   "Dispatch hold": "border-warning/30 bg-warning/10 text-warning",
+  "Machine incident": "border-danger/30 bg-danger/10 text-danger",
 };
 
 const signalRecordType: Record<Signal["type"], ActivityEvent["recordType"]> = {
@@ -125,6 +127,10 @@ const signalRecordType: Record<Signal["type"], ActivityEvent["recordType"]> = {
   "Missing document": "dispatch",
   "Cash control": "invoice",
   "Credit risk": "invoice",
+  // Both carry an ORDER id in `recordId` (see gtpMissingSignals / inspectionCallSignals),
+  // so they resolve against orders even though they route to /gtp and /dispatch.
+  "GTP missing": "order",
+  "Inspection call due": "order",
 };
 
 const signalRoleScope: Record<Role, Array<ActivityEvent["recordType"]>> = {
