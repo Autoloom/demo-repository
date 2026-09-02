@@ -8,3 +8,5 @@ organised, clean, reusable, readable — refactor as you touch things, don't jus
 - Comments only for non-obvious *why*, never *what*.
 - Match existing conventions (file layout, naming, `app/globals.css` tokens).
 - Only build what's asked for this step — no extra scope.
+
+add code cleanly and keep it organized, separate, Signle responsibility in line with industry stadards
