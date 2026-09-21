@@ -58,6 +58,15 @@ export type ConductorClass =
   | "Class 2 (stranded)"
   | "Class 2 compacted"
   | "Class 5 (flexible)";
+/**
+ * Core counts across the range.
+ *
+ * The multicore steps above 5 are the control-cable ladder from IS 1554 (Part 1) —
+ * 6, 8, 10, 14, 16, 21 and 24 were missing, which made "up to 27 core" unreachable in
+ * practice even though 27C existed: an operator quoting a 16-core control cable had
+ * nothing to pick. Client request, Sept 2026: "Option upto 27 C X 2.5 Sq.mm shall be
+ * provided."
+ */
 export type CoreConfig =
   | "1C"
   | "2C"
@@ -65,9 +74,16 @@ export type CoreConfig =
   | "3.5C"
   | "4C"
   | "5C"
+  | "6C"
   | "7C"
+  | "8C"
+  | "10C"
   | "12C"
+  | "14C"
+  | "16C"
   | "19C"
+  | "21C"
+  | "24C"
   | "27C"
   | "37C";
 export type Insulation = "XLPE" | "PVC (Type A)" | "PVC (Type C)" | "EPR" | "XLPO (solar/UV)";

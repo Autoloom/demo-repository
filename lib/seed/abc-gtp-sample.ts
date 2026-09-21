@@ -89,6 +89,10 @@ export const abcSampleSpec: AbcCableSpec = {
   messengerMaterial:
     "Heat treated Aluminium Magnesium-silicon Alloy wires containing approximate 0.5% silicon conforming to IS-398 (Part-IV)/1984 with up to date amendments",
   messengerConductorForm: "Strand Compacted Circular",
+  // The approved GTP's section 4.B reads "Insulated Messenger Conductor with 4 Nos
+  // ridges", so the approved cable is the insulated construction. Bare is offered in
+  // the builder as a deviation from this.
+  messengerCovering: "Insulated",
 
   insulationMaterial: "Cross linked Polyethylene",
   insulationApplicationMethod: "Extrusion",

@@ -94,9 +94,9 @@ export const CABLE_FAMILIES: readonly CableFamilyDef[] = [
     conductor: "Aluminium or Copper, stranded",
     insulation: "XLPE, PVC inner sheath + PVC outer sheath",
     description:
-      "The flagship line — three-and-a-half core, unarmoured or strip/round-wire armoured. Higher current rating and lower weight than PVC.",
+      "The flagship line — three-and-a-half core, unarmoured or strip/round-wire armoured. Higher current rating and lower weight than PVC. Strip armour defaults to 4 × 0.8 mm GI, the widely-used size.",
     blockedOn:
-      "Dimension table not yet transcribed. The brochure's Table 7/8 carry approved weights (kg/km) per size — until those are entered, costing falls back to a generic density coefficient that runs ~16% heavy.",
+      "Dimensions are now calculated layer by layer from IS 7098 (Part 1) Tables 3, 5, 6 and 8, so armour choice drives diameter and weight. They are CALCULATED, not approved: the brochure's own approved weight table (kg/km per size) still has to be transcribed and checked against these figures before a GTP built here goes out as final.",
   },
   {
     id: "LT_PVC_POWER",
@@ -121,9 +121,9 @@ export const CABLE_FAMILIES: readonly CableFamilyDef[] = [
     conductor: "Electrolytic copper",
     insulation: "PVC, GI round steel wire armoured, black PVC outer sheath",
     description:
-      "1.5 and 2.5 sq mm, 2 to 37 cores, for control and measuring circuits — substations, railway signalling.",
+      "1.5 and 2.5 sq mm, 2 to 37 cores, for control and measuring circuits — substations, railway signalling. Cores identified by numbering per IS 1554 (Part 1) cl. 10.3 above 5 cores.",
     blockedOn:
-      "Dimension table not transcribed. Note this family runs to 37 cores, so the core-count vocabulary needs checking against the existing CoreConfig enum.",
+      "Core identification and the full 2–37 core ladder (including 27C × 2.5 sq mm) are now modelled. Dimensions are not: IS 1554 (Part 1) Table 2 gives PVC insulation thickness and IS 10462 (Part 1) the assembly coefficient above 7 cores, and neither has been transcribed — so weight here is still the generic coefficient, and the builder says so.",
   },
   {
     id: "FR_FRLS_ZHFR",

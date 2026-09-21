@@ -42,8 +42,11 @@ import { StandardBuilder } from "./StandardBuilder";
 import { CABLE_FAMILIES, getFamily, type CableFamilyId } from "@/lib/domain/families";
 import type { Material } from "@/lib/services/types";
 import {
+  abcCompletedWeightKgPerKm,
   abcConductorKgPerM,
   abcConductorLengthM,
+  abcMessengerDiaReductionMm,
+  abcMessengerInsulationKgPerM,
   abcTotalConductorKgPerM,
   buildAbcDesignation,
   buildAbcSize,
@@ -52,6 +55,7 @@ import {
   type AbcCableSpec,
   type AbcCore,
   type AbcCoreType,
+  type MessengerCovering,
 } from "@/lib/domain/abc";
 import { MARGIN_GATE_PCT, ratesForSpec, type MaterialRates } from "@/lib/domain/costing";
 import { formatINR } from "@/lib/domain/format";
@@ -115,6 +119,13 @@ export default function CableBuilderPage() {
   const [marginPct, setMarginPct] = React.useState(14);
   const [wastagePct, setWastagePct] = React.useState(0);
   const [metalRateOverride, setMetalRateOverride] = React.useState<number | null>(null);
+  /**
+   * Insulated or bare neutral-cum-messenger. The approved GTP is the insulated
+   * construction, so switching to bare is tracked as a deviation like any other edit.
+   */
+  const [messengerCovering, setMessengerCovering] = React.useState<MessengerCovering>(
+    approved.messengerCovering,
+  );
 
   const [rates, setRates] = React.useState<MaterialRates | null>(null);
   const [materials, setMaterials] = React.useState<Material[]>([]);
@@ -167,6 +178,7 @@ export default function CableBuilderPage() {
     () => ({
       ...approved,
       cores,
+      messengerCovering,
       size: buildAbcSize(cores),
       designation: buildAbcDesignation({ cores, serviceVoltageV: approved.serviceVoltageV }),
       completedCable: {
@@ -174,7 +186,7 @@ export default function CableBuilderPage() {
         approxWeightKgPerKm: { ...approved.completedCable.approxWeightKgPerKm, value: completedWeightKgPerKm },
       },
     }),
-    [approved, cores, completedWeightKgPerKm],
+    [approved, cores, completedWeightKgPerKm, messengerCovering],
   );
 
   const effectiveRates: MaterialRates | null = React.useMemo(() => {
@@ -210,8 +222,10 @@ export default function CableBuilderPage() {
     });
     if (completedWeightKgPerKm !== approved.completedCable.approxWeightKgPerKm.value)
       out.push("Completed cable weight");
+    if (messengerCovering !== approved.messengerCovering)
+      out.push(`Messenger covering → ${messengerCovering.toLowerCase()}`);
     return out;
-  }, [cores, approved, completedWeightKgPerKm]);
+  }, [cores, approved, completedWeightKgPerKm, messengerCovering]);
 
   function updateCore(index: number, patch: Partial<AbcCore>) {
     setCores((prev) => prev.map((c, i) => (i === index ? ({ ...c, ...patch } as AbcCore) : c)));
@@ -257,6 +271,7 @@ export default function CableBuilderPage() {
     setDrumLengthM(approved.drum.standardLengthM.value);
     setMetalRateOverride(null);
     setWastagePct(0);
+    setMessengerCovering(approved.messengerCovering);
   }
 
   const conductorLengthM = abcConductorLengthM(workingSpec, drumLengthM);
@@ -505,6 +520,57 @@ export default function CableBuilderPage() {
             .map((c) => `${coreTypeLabel(c.coreType)} ${abcConductorKgPerM(c, workingSpec.conductorMaterial).toFixed(3)} kg/m`)
             .join(" · ")}
         </div>
+      </Card>
+
+      {/* ── Messenger covering — insulated or bare (IS 14255 allows both) ── */}
+      <Card className="rounded-md p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="font-medium">Neutral-cum-messenger covering</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              IS 14255 covers both constructions. A bare messenger drops an insulation wall, so the
+              cable gets lighter and the messenger thinner.
+            </p>
+          </div>
+          <div className="flex shrink-0 rounded-md border p-0.5">
+            {(["Insulated", "Bare"] as MessengerCovering[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={messengerCovering === option}
+                onClick={() => setMessengerCovering(option)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  messengerCovering === option
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {messengerCovering === "Bare" ? (
+          <div className="mt-3 rounded-md border border-warning/30 bg-warning/5 p-3 text-xs">
+            <p className="font-medium text-warning">Deviation from the approved GTP</p>
+            <p className="mt-1 text-muted-foreground">
+              The approved document is the insulated construction (&ldquo;Insulated Messenger
+              Conductor with 4 Nos ridges&rdquo;), so this needs re-approval. Insulation saved:{" "}
+              <span className="font-mono">
+                {(abcMessengerInsulationKgPerM(workingSpec) * 1000).toFixed(1)} kg/km
+              </span>
+              , giving a completed weight of{" "}
+              <span className="font-mono">{Math.round(abcCompletedWeightKgPerKm(workingSpec))} kg/km</span>{" "}
+              against the approved {approved.completedCable.approxWeightKgPerKm.value}. The messenger
+              core itself is{" "}
+              <span className="font-mono">{abcMessengerDiaReductionMm(workingSpec).toFixed(2)} mm</span>{" "}
+              thinner. The bundle&rsquo;s overall diameter is left as approved — we have no approved
+              lay-up geometry for ABC, so recomputing it would be a guess.
+            </p>
+          </div>
+        ) : null}
       </Card>
 
       {/* ── Order + costing ── */}

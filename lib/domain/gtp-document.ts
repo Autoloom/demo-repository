@@ -23,6 +23,7 @@
  */
 
 import {
+  abcCompletedWeightKgPerKm,
   formatSpecValue,
   STANDARDS_AMENDMENT_NOTE,
   STANDARDS_BY_FAMILY,
@@ -92,14 +93,25 @@ function coreSection(spec: AbcCableSpec, coreType: AbcCableSpec["cores"][number]
   const core = spec.cores.find((c) => c.coreType === coreType);
   if (!core) return null;
 
+  // A bare messenger has no insulation, so the two insulation rows would otherwise
+  // print approved figures for a wall that isn't there.
+  const bareMessenger = coreType === "NEUTRAL_MESSENGER" && spec.messengerCovering === "Bare";
+  const NOT_APPLICABLE_BARE = "Not applicable — bare messenger";
+
   const rows: Omit<GtpRow, "marker">[] = [
     { label: "No of Core", value: String(core.numCores) },
     { label: `Nominal Cross sectional area of ${coreTypeLabel(coreType)} Core`, value: `${core.nominalCsaSqMm} Sqmm` },
     { label: `No of Strands of ${coreTypeLabel(coreType)} Core`, value: String(core.numStrands) },
     { label: "Strand dia", value: formatSpecValue(core.strandDiaMm) },
     { label: "Dia of Compacted Conductor (mm)", value: formatSpecValue(core.compactedConductorDiaMm) },
-    { label: "Insulation Minimum Thickness", value: formatSpecValue(core.insulationMinThicknessMm) },
-    { label: "Approximate dia over Insulation", value: formatSpecValue(core.approxDiaOverInsulationMm) },
+    {
+      label: "Insulation Minimum Thickness",
+      value: bareMessenger ? NOT_APPLICABLE_BARE : formatSpecValue(core.insulationMinThicknessMm),
+    },
+    {
+      label: "Approximate dia over Insulation",
+      value: bareMessenger ? NOT_APPLICABLE_BARE : formatSpecValue(core.approxDiaOverInsulationMm),
+    },
     {
       label: `Continuous Current carrying capacity in air at ambient temp ${core.currentRatingAmbientTempC}°C (Amp)`,
       value: formatSpecValue(core.continuousCurrentRatingAmp),
@@ -175,7 +187,7 @@ export function buildGtpSections(doc: GtpDocument): GtpSection[] {
 
   sections.push({
     slNo: "5",
-    title: "Details of Power Core Conductor & Street Light Core",
+    title: `Details of ${coreTypeLabel("POWER")} Core Conductor & Street Light Core`,
     rows: [
       { marker: "a", label: "Material", value: spec.conductorMaterialGrade },
       { marker: "b", label: "Flexibility class as per IS: 8130-1984", value: spec.flexibilityClass },
@@ -191,6 +203,14 @@ export function buildGtpSections(doc: GtpDocument): GtpSection[] {
     rows: [
       { marker: "a", label: "Material", value: spec.messengerMaterial },
       { marker: "b", label: "Form of Conductor", value: spec.messengerConductorForm },
+      {
+        marker: "c",
+        label: "Covering",
+        value:
+          spec.messengerCovering === "Bare"
+            ? "Bare (uninsulated) messenger"
+            : "Insulated messenger",
+      },
     ],
   });
 
@@ -233,7 +253,18 @@ export function buildGtpSections(doc: GtpDocument): GtpSection[] {
     title: "Details about Completed Cables",
     rows: [
       { marker: "a", label: "Approx. overall Diameter (mm)", value: formatSpecValue(spec.completedCable.approxOverallDiaMm) },
-      { marker: "b", label: "Approx. Weight (Kg/Km)", value: formatSpecValue(spec.completedCable.approxWeightKgPerKm) },
+      {
+        marker: "b",
+        label: "Approx. Weight (Kg/Km)",
+        // With a bare messenger the approved 966 kg/km describes a different cable, so
+        // we print the derived figure and say it is derived rather than reprinting an
+        // approved number against a construction it was not approved for.
+        value:
+          spec.messengerCovering === "Bare"
+            ? `${Math.round(abcCompletedWeightKgPerKm(spec))} Kg/Km (derived for bare messenger — ` +
+              `approved figure ${spec.completedCable.approxWeightKgPerKm.value} Kg/Km is for the insulated construction)`
+            : formatSpecValue(spec.completedCable.approxWeightKgPerKm),
+      },
       {
         marker: "c",
         label: "Allowable sag as a percentage of span length at 40°C ambient temperature",
