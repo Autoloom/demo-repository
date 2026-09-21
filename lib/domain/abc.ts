@@ -114,6 +114,12 @@ export function formatSpecValue(v: SpecValue): string {
 
 export type AbcCoreType = "POWER" | "NEUTRAL_MESSENGER" | "STREET_LIGHTING";
 
+/**
+ * Insulated or bare neutral-cum-messenger. Both are IS 14255 constructions; the choice
+ * changes weight, overall diameter and which GTP rows apply.
+ */
+export type MessengerCovering = "Insulated" | "Bare";
+
 /** Fields every ABC core states, regardless of what the core is for. */
 interface AbcCoreBase {
   numCores: number;
@@ -186,6 +192,21 @@ export interface AbcCableSpec {
 
   messengerMaterial: string;
   messengerConductorForm: string;
+
+  /**
+   * Whether the neutral-cum-messenger is insulated or bare.
+   *
+   * Client request, Sept 2026: "option of Bare messenger shall also be provided
+   * accordingly other parameter viz. Dimensions / Weight will also change." IS 14255
+   * covers both constructions, and the choice is genuinely structural rather than
+   * cosmetic — a bare messenger removes an insulation wall, so the cable gets lighter
+   * and thinner, and the messenger's insulation rows stop applying.
+   *
+   * The source GTP is an insulated-messenger cable ("Insulated Messenger Conductor with
+   * 4 Nos ridges"), so `Insulated` is what the approved spec carries. Switching to
+   * `Bare` is a deviation from that approval, and the builder treats it as one.
+   */
+  messengerCovering: MessengerCovering;
 
   insulationMaterial: string;
   insulationApplicationMethod: string;
@@ -318,7 +339,62 @@ export function abcInsulationKgPerM(spec: AbcCableSpec): number {
   const completed = spec.completedCable?.approxWeightKgPerKm?.value;
   if (!completed || completed <= 0) return 0;
   const diff = completed / 1000 - abcTotalConductorKgPerM(spec);
-  return diff > 0 ? diff : 0;
+  const insulated = diff > 0 ? diff : 0;
+  // A bare messenger carries no insulation, so its wall comes off the total.
+  return Math.max(0, insulated - abcMessengerInsulationKgPerM(spec));
+}
+
+/** XLPE density, expressed as kg per metre per mm² of cross-section (0.92 g/cm³). */
+const XLPE_KG_PER_M_PER_SQMM = 0.00092;
+
+/**
+ * Weight of the insulation wall on the messenger core, kg/m — the amount a bare
+ * messenger saves. Returns 0 when the messenger is already insulated, absent, or when
+ * its geometry is not stated.
+ *
+ * Derived from the messenger's own approved geometry (compacted conductor diameter and
+ * minimum insulation thickness), not from a coefficient: the wall is an annulus of area
+ * π(d + t)t, and XLPE is 0.92 g/cm³. Nothing here is invented — if either figure is
+ * missing the answer is 0 and the UI says the saving is unquantified.
+ */
+export function abcMessengerInsulationKgPerM(spec: AbcCableSpec): number {
+  if (spec.messengerCovering !== "Bare") return 0;
+  const messenger = spec.cores.find((c) => c.coreType === "NEUTRAL_MESSENGER");
+  if (!messenger) return 0;
+
+  const d = messenger.compactedConductorDiaMm?.value ?? 0;
+  const t = messenger.insulationMinThicknessMm?.value ?? 0;
+  if (d <= 0 || t <= 0) return 0;
+
+  return Math.PI * (d + t) * t * XLPE_KG_PER_M_PER_SQMM * messenger.numCores;
+}
+
+/**
+ * Completed-cable weight after the messenger covering is taken into account, kg/km.
+ *
+ * The GTP's approved 966 kg/km is for an INSULATED messenger. Choosing a bare messenger
+ * means the approved figure no longer describes the cable, so we state the derived one
+ * and the builder flags it as a deviation rather than reprinting an approved number
+ * against a cable it was not approved for.
+ */
+export function abcCompletedWeightKgPerKm(spec: AbcCableSpec): number {
+  const approved = spec.completedCable?.approxWeightKgPerKm?.value ?? 0;
+  if (approved <= 0) return 0;
+  return approved - abcMessengerInsulationKgPerM(spec) * 1000;
+}
+
+/**
+ * How much thinner the messenger core is when bare, mm — twice its insulation wall.
+ *
+ * Stated on the messenger rather than rolled into an overall-diameter figure: the
+ * bundle's overall diameter depends on how the cores lay up around the messenger, and
+ * we have no approved lay-up geometry for ABC. The messenger's own reduction is exact;
+ * a recomputed bundle diameter would not be.
+ */
+export function abcMessengerDiaReductionMm(spec: AbcCableSpec): number {
+  if (spec.messengerCovering !== "Bare") return 0;
+  const messenger = spec.cores.find((c) => c.coreType === "NEUTRAL_MESSENGER");
+  return 2 * (messenger?.insulationMinThicknessMm?.value ?? 0);
 }
 
 /**
@@ -410,16 +486,31 @@ export function computeAbcLine(input: AbcCostingInput): CostingResult {
     lineMarginInr,
     lineTotalInr: Math.round(lineSubtotalInr + lineMarginInr),
     totalConductorKgPerM,
+    // ABC weights come from the GTP's approved masses where present, and the completed
+    // mass is approved too — so this path is never the armoured family's coefficient
+    // fallback. `abcInsulationKgPerM` returns 0 rather than guessing when it is absent.
+    weightBasis: "calculated",
+    totalWeightKgPerM: components.reduce((sum, c) => sum + c.kgPerM, 0),
   };
 }
 
 /** ABC skips armouring and outer sheathing, so its labour add-on sits below the armoured default. */
 const DEFAULT_ABC_LABOUR_PER_M = 14;
 
+/**
+ * How a core type is named on the GTP and in the cost breakdown.
+ *
+ * "Phase (Conductor)" rather than "Power": client correction, Sept 2026 — "Replace
+ * Power by Phase (Conductor)". The enum key stays `POWER` on purpose. It is the
+ * discriminant on a union that the seed data, the deviation tracker and the per-core
+ * editor all key off; renaming it would churn every one of those for a wording change
+ * that belongs on the printed document. Label and key are allowed to differ — that is
+ * what this function is for.
+ */
 export function coreTypeLabel(coreType: AbcCoreType): string {
   switch (coreType) {
     case "POWER":
-      return "Power";
+      return "Phase (Conductor)";
     case "NEUTRAL_MESSENGER":
       return "Neutral-cum-messenger";
     case "STREET_LIGHTING":

@@ -23,7 +23,8 @@
  * The weight COEFFICIENTS below are engineering estimates so a quote is realistic without a
  * full IS dimensional table. They are deliberately easy to tune from real production data.
  */
-import type { CableSpec, ConductorMaterial, Material } from "@/lib/services/types";
+import type { CableDimensions } from "@/lib/domain/dimensions";
+import type { CableSpec, ConductorMaterial, Insulation, Material } from "@/lib/services/types";
 
 /** Aluminium home-state code (Maharashtra). IGST applies when the customer is in another state. */
 export const OUR_STATE_CODE = "27";
@@ -41,22 +42,20 @@ export const CONDUCTOR_KG_PER_M_PER_SQMM: Record<ConductorMaterial, number> = {
   Aluminium: 0.00325,
 };
 
-/** How many "full" cores a core-config represents for conductor weight (3.5C = 3 full + 1 half). */
+/**
+ * How many "full" cores a core-config represents for conductor weight.
+ *
+ * Parsed rather than switched: the old switch listed each config by hand and fell
+ * through to `1` for anything unlisted, so adding a core count to `CoreConfig` silently
+ * costed it as single-core — a 16-core control cable priced at one core's metal. The
+ * label is always "<n>C", so read the number.
+ *
+ * 3.5C returns 3; its reduced neutral is added separately from `neutralSizeSqMm`.
+ */
 function coreCount(spec: Pick<CableSpec, "cores">): number {
-  switch (spec.cores) {
-    case "1C": return 1;
-    case "2C": return 2;
-    case "3C": return 3;
-    case "3.5C": return 3; // the 0.5 neutral is added separately from neutralSizeSqMm
-    case "4C": return 4;
-    case "5C": return 5;
-    case "7C": return 7;
-    case "12C": return 12;
-    case "19C": return 19;
-    case "27C": return 27;
-    case "37C": return 37;
-    default: return 1;
-  }
+  if (spec.cores === "3.5C") return 3;
+  const n = Number.parseInt(spec.cores, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
 /** Rough non-conductor weight coefficients (kg/m), scaled by conductor size. Tunable. */
@@ -64,6 +63,27 @@ const INSULATION_KG_PER_M_PER_SQMM = 0.0011; // insulation wall grows with condu
 const SHEATH_KG_PER_M_PER_SQMM = 0.0009; // outer sheath, scaled by overall size
 const ARMOUR_KG_PER_M_PER_SQMM = 0.0016; // strip/wire armour, only when armoured
 const DEFAULT_LABOUR_PER_M = 18; // drawing + extrusion + armouring + test + drum + wastage
+
+/**
+ * Compound densities, g/cm³ — equivalently kg per metre per 1000 mm² of cross-section.
+ * Used only on the geometry path, where a real annulus area is available to multiply.
+ */
+const DENSITY_G_PER_CM3 = {
+  XLPE: 0.92,
+  PVC: 1.4,
+} as const;
+
+/** g/cm³ → kg per metre per mm² of cross-section. */
+const kgPerMPerSqMm = (gPerCm3: number) => gPerCm3 / 1000;
+
+/** Area of an annulus of wall thickness `t` applied over diameter `d`, mm². */
+function annulusAreaSqMm(dMm: number, tMm: number): number {
+  return Math.PI * (dMm + tMm) * tMm;
+}
+
+function insulationDensity(insulation?: Insulation): number {
+  return insulation === "XLPE" ? DENSITY_G_PER_CM3.XLPE : DENSITY_G_PER_CM3.PVC;
+}
 
 /** Per-component ₹/kg rates the costing needs. Pulled from the Materials table by the caller. */
 export interface MaterialRates {
@@ -120,10 +140,23 @@ export interface CostingInput {
   spec: Pick<
     CableSpec,
     "cores" | "conductorMaterial" | "conductorSizeSqMm" | "neutralSizeSqMm" | "armour"
-  >;
+  > & { insulation?: Insulation };
   lengthM: number;
   marginPct: number;
   rates: MaterialRates;
+  /**
+   * The dimensional build-up, when one could be calculated (see domain/dimensions.ts).
+   *
+   * When present, insulation / armour / sheath weights come from real annulus areas and
+   * the armour's own geometry instead of coefficients keyed to the conductor size. This
+   * is what makes "change the armour and the weight changes" true — under the
+   * coefficient path, swapping wire for strip moved nothing, because the coefficient
+   * never knew what the armour was.
+   *
+   * Absent, costing falls back to the original coefficients, and `weightBasis` says so
+   * rather than letting an estimate pass for a calculation.
+   */
+  dimensions?: CableDimensions | null;
 }
 
 /** One row of the per-component breakdown, so the UI can show exactly where the cost comes from. */
@@ -134,6 +167,16 @@ export interface CostComponent {
   costPerM: number; // ₹/m for this component
 }
 
+/**
+ * Where the non-conductor weights came from. Shown in the UI, because a quote built on
+ * a generic coefficient must not look identical to one built from real geometry.
+ */
+export type WeightBasis =
+  /** Annulus areas and armour geometry, off the standard's dimension tables. */
+  | "calculated"
+  /** The original density coefficients keyed to conductor size. */
+  | "estimated";
+
 export interface CostingResult {
   components: CostComponent[];
   conductorCostPerM: number;
@@ -142,6 +185,9 @@ export interface CostingResult {
   lineMarginInr: number;
   lineTotalInr: number;
   totalConductorKgPerM: number; // handy for drum/logistics later
+  weightBasis: WeightBasis;
+  /** Total cable weight, kg/m — only meaningful on the calculated path. */
+  totalWeightKgPerM: number;
 }
 
 /** Costing for a single quote line, broken down by physical component. Pure. */
@@ -160,11 +206,60 @@ export function computeLine(input: CostingInput): CostingResult {
   const totalConductorKgPerM = fullCoresKgPerM + neutralKgPerM;
   const conductorCostPerM = totalConductorKgPerM * rates.conductorPerKg;
 
-  // ── Non-conductor components (scaled by size; armour only when armoured) ──
+  // ── Non-conductor components ──
+  // Two paths. With a dimensional build-up, every wall is a real annulus and the armour
+  // brings its own steel area; without one, we fall back to the original coefficients.
   const isArmoured = spec.armour !== "Unarmoured";
-  const insulationKgPerM = size * INSULATION_KG_PER_M_PER_SQMM * fullCores;
-  const armourKgPerM = isArmoured ? size * ARMOUR_KG_PER_M_PER_SQMM : 0;
-  const sheathKgPerM = size * SHEATH_KG_PER_M_PER_SQMM;
+  const dims = input.dimensions ?? null;
+  const weightBasis: WeightBasis = dims ? "calculated" : "estimated";
+
+  let insulationKgPerM: number;
+  let armourKgPerM: number;
+  let sheathKgPerM: number;
+  let insulationLabel = "Insulation";
+  let armourLabel = "Armour";
+  let sheathLabel = "Sheath";
+
+  if (dims) {
+    // Insulation: one annulus per core, over the conductor. The reduced neutral is a
+    // smaller conductor but carries the same wall, so it is counted as a full core here.
+    const insulatedCores = spec.cores === "3.5C" ? fullCores + 1 : fullCores;
+    const insulationAreaSqMm =
+      annulusAreaSqMm(dims.conductorDiaMm, dims.insulationThicknessMm) * insulatedCores;
+    insulationKgPerM = insulationAreaSqMm * kgPerMPerSqMm(insulationDensity(spec.insulation));
+    insulationLabel = `Insulation (${insulatedCores} × ${dims.insulationThicknessMm} mm wall)`;
+
+    // Inner sheath is PVC over the laid-up cores — a real component the old model never
+    // costed at all.
+    const innerSheathAreaSqMm =
+      dims.innerSheathThicknessMm > 0
+        ? annulusAreaSqMm(dims.laidUpDiaMm, dims.innerSheathThicknessMm)
+        : 0;
+
+    armourKgPerM = dims.armour?.kgPerM ?? 0;
+    if (dims.armour && dims.armourDims) {
+      armourLabel =
+        dims.armourDims.kind === "strip"
+          ? `Armour — ${dims.armour.count} × GI strip ${dims.armourDims.widthMm} × ${dims.armourDims.thicknessMm} mm`
+          : `Armour — ${dims.armour.count} × GI wire Ø ${dims.armourDims.diameterMm} mm`;
+    }
+
+    const outerSheathAreaSqMm = annulusAreaSqMm(
+      dims.diaUnderOuterSheathMm,
+      dims.outerSheathThicknessMm,
+    );
+    sheathKgPerM =
+      (innerSheathAreaSqMm + outerSheathAreaSqMm) * kgPerMPerSqMm(DENSITY_G_PER_CM3.PVC);
+    sheathLabel =
+      innerSheathAreaSqMm > 0
+        ? `Sheath (inner ${dims.innerSheathThicknessMm} mm + outer ${dims.outerSheathThicknessMm} mm)`
+        : `Sheath (outer ${dims.outerSheathThicknessMm} mm)`;
+  } else {
+    insulationKgPerM = size * INSULATION_KG_PER_M_PER_SQMM * fullCores;
+    armourKgPerM = isArmoured ? size * ARMOUR_KG_PER_M_PER_SQMM : 0;
+    sheathKgPerM = size * SHEATH_KG_PER_M_PER_SQMM;
+  }
+
   const labourPerM = rates.labourPerM ?? DEFAULT_LABOUR_PER_M;
 
   const components: CostComponent[] = [
@@ -175,7 +270,7 @@ export function computeLine(input: CostingInput): CostingResult {
       costPerM: conductorCostPerM,
     },
     {
-      label: "Insulation",
+      label: insulationLabel,
       kgPerM: insulationKgPerM,
       ratePerKg: rates.insulationPerKg,
       costPerM: insulationKgPerM * rates.insulationPerKg,
@@ -183,7 +278,7 @@ export function computeLine(input: CostingInput): CostingResult {
     ...(isArmoured
       ? [
           {
-            label: "Armour",
+            label: armourLabel,
             kgPerM: armourKgPerM,
             ratePerKg: rates.armourPerKg,
             costPerM: armourKgPerM * rates.armourPerKg,
@@ -191,7 +286,7 @@ export function computeLine(input: CostingInput): CostingResult {
         ]
       : []),
     {
-      label: "Sheath",
+      label: sheathLabel,
       kgPerM: sheathKgPerM,
       ratePerKg: rates.sheathPerKg,
       costPerM: sheathKgPerM * rates.sheathPerKg,
@@ -211,6 +306,8 @@ export function computeLine(input: CostingInput): CostingResult {
     lineMarginInr,
     lineTotalInr: Math.round(lineSubtotalInr + lineMarginInr),
     totalConductorKgPerM,
+    weightBasis,
+    totalWeightKgPerM: components.reduce((sum, c) => sum + c.kgPerM, 0),
   };
 }
 
