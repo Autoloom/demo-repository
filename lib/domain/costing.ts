@@ -72,20 +72,13 @@ function conductorRateMaterial(material: ConductorMaterial): ConductorMaterial {
 
 /** How many "full" cores a core-config represents for conductor weight (3.5C = 3 full + 1 half). */
 function coreCount(spec: Pick<CableSpec, "cores">): number {
-  switch (spec.cores) {
-    case "1C": return 1;
-    case "2C": return 2;
-    case "3C": return 3;
-    case "3.5C": return 3; // the 0.5 neutral is added separately from neutralSizeSqMm
-    case "4C": return 4;
-    case "5C": return 5;
-    case "7C": return 7;
-    case "12C": return 12;
-    case "19C": return 19;
-    case "27C": return 27;
-    case "37C": return 37;
-    default: return 1;
-  }
+  // Parsed, not hand-listed. The old switch enumerated each config and fell through to `1` for
+  // anything unlisted, so every core count added to CoreConfig was silently priced as a SINGLE
+  // core — a 16-core control cable at one core's metal. Control cable runs to 61 cores, so that
+  // trap was going to fire. 3.5C returns 3; its reduced neutral is added from neutralSizeSqMm.
+  if (spec.cores === "3.5C") return 3;
+  const n = Number.parseInt(spec.cores, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
 /**

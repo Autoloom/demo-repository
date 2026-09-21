@@ -94,6 +94,14 @@ export type ConductorClass =
   | "Class 5 (flexible)"
   | "Messenger conductor"
   | "Thermocouple extension";
+/**
+ * Core counts across the range.
+ *
+ * The steps above 5 are the control-cable ladder. Niraj (13 Sept 2026): control cables "go up to
+ * 61" cores and are a separate category from power. The gaps in this list were not cosmetic —
+ * `specFromFields` rejects any config it cannot represent, so a 16-core control GTP derived
+ * perfectly well and then could not be quoted at all.
+ */
 export type CoreConfig =
   | "1C"
   | "2C"
@@ -101,11 +109,28 @@ export type CoreConfig =
   | "3.5C"
   | "4C"
   | "5C"
+  | "6C"
   | "7C"
+  | "8C"
+  | "10C"
   | "12C"
+  | "14C"
+  | "16C"
   | "19C"
+  | "21C"
+  | "24C"
   | "27C"
-  | "37C";
+  | "30C"
+  | "37C"
+  | "44C"
+  | "52C"
+  | "61C";
+
+/** Every CoreConfig, for callers that need to test representability rather than hardcode a list. */
+export const CORE_CONFIGS: readonly CoreConfig[] = [
+  "1C", "2C", "3C", "3.5C", "4C", "5C", "6C", "7C", "8C", "10C", "12C",
+  "14C", "16C", "19C", "21C", "24C", "27C", "30C", "37C", "44C", "52C", "61C",
+];
 export type Insulation =
   | "XLPE"
   | "PVC (Type A)"

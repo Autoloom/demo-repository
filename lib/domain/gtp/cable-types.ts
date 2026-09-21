@@ -173,8 +173,16 @@ const LT_POWER_XLPE: CableTypeDefinition = {
     { id: "IS 5831", edition: "1984", purpose: "PVC sheath compounds (ST-2)" },
   ],
   configSchema: [
-    { kind: "choice", key: "coreCount", label: "Cores", options: [1, 2, 3, 3.5, 4, 5], defaultValue: 3.5 },
-    { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400, 500, 630, 800, 1000], defaultValue: 300, hint: "sq mm" },
+    // Power cable tops out at 3.5 or 4 core. Niraj (13 Sept 2026) flagged the previous list as an
+    // error: "current system allows core count beyond 4 for power cables; needs a constraint" —
+    // anything above 4 core is a CONTROL cable, which is a separate type with a separate standard
+    // and a copper conductor. Offering 5 here let an operator build a power GTP that the factory
+    // does not make.
+    { kind: "choice", key: "coreCount", label: "Cores", options: [1, 2, 3, 3.5, 4], defaultValue: 3.5 },
+    // 4 sq mm to 400-500, with 630 a single-core edge case (Niraj, same call). The tables run
+    // further, but 800 and 1000 sq mm are not cable this manufacturer makes, and 1.5 / 2.5 sq mm
+    // are control and house-wiring sizes rather than power.
+    { kind: "choice", key: "csa", label: "Conductor size", options: [4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400, 500, 630], defaultValue: 300, hint: "sq mm — 630 is single-core only" },
     { kind: "choice", key: "material", label: "Conductor material", options: ["Aluminium", "Copper"], defaultValue: "Aluminium" },
     { kind: "choice", key: "shape", label: "Conductor shape", options: [...CONDUCTOR_SHAPES], defaultValue: "circular", hint: "Sector cores pack tighter, reducing overall diameter" },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },

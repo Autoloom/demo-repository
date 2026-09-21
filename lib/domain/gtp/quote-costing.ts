@@ -18,11 +18,19 @@ export function quoteConstruction(spec: CableSpec): GtpSpecSource {
   if (spec.insulation !== (config.standard === "IS7098-1" ? "XLPE" : "PVC (Type A)")) throw new Error("Selected insulation contradicts the standard's construction");
   if (!["Unarmoured", "GI round wire (GSW)", "GI strip (GSS)"].includes(spec.armour)) throw new Error("No encoded mass model for this armour material");
   config.armourForm = spec.armour === "GI strip (GSS)" ? "formed-wire" : "round-wire";
+  // Carry the armouring PRACTICE across from the GTP.
+  //
+  // `ltConfigFromLegacySpec` rebuilds the config from the legacy CableSpec fields, which record
+  // the armour MATERIAL ("GI strip (GSS)") but not which of IS 7098-1 Table 6's two methods
+  // produced its thickness. Left to default, a GTP approved under method B (1.4 mm strip) would
+  // be re-derived here at method A (0.8 mm) — on 3.5C x 300 that is 5971 vs 5071 kg/km, so the
+  // quote would price ~900 kg/km less metal than the cable the customer stamped.
+  config.armourMethod = spec.gtpSource.config.armourMethod;
   config.conductorClass = "Class 2";
   const chain = deriveLtCable(config);
   if (spec.cores === "3.5C" && spec.neutralSizeSqMm !== chain.steps.find((s) => s.id === "neutral.reduced")?.value) throw new Error("Reduced neutral contradicts IS Table 2 for the selected phase size");
   const original = spec.gtpSource;
-  const unchanged = config.standard === original.config.standard && config.coreCount === original.config.coreCount && config.csaSqMm === original.config.csaSqMm && config.material === original.config.material && config.armoured === original.config.armoured && chain.armourForm === original.armourForm;
+  const unchanged = config.standard === original.config.standard && config.coreCount === original.config.coreCount && config.csaSqMm === original.config.csaSqMm && config.material === original.config.material && config.armoured === original.config.armoured && chain.armourForm === original.armourForm && (config.armourMethod ?? "A") === (original.config.armourMethod ?? "A");
   if (unchanged) return original;
   const fields = deriveLtFields(config).map((field) => field.key.startsWith("mfr.") ? original.fields.find((f) => f.key === field.key) ?? field : field);
   return { productLine: config.standard === "IS7098-1" ? "XLPE_POWER" : "PVC_CONTROL", config, armourForm: chain.armourForm, fields };
