@@ -16,6 +16,7 @@
 import { IS1554_1_MANDATORY_LEGEND, IS1554_1_THERMAL } from "@/lib/domain/standards/is1554-1-1988";
 import { IS7098_1_RATED_VOLTAGE, IS7098_1_THERMAL } from "@/lib/domain/standards/is7098-1-2025";
 import { coreIdentification } from "@/lib/domain/standards/core-identification";
+import { fictitiousDiameterCaveat } from "@/lib/domain/standards/is10462-1-1983";
 import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-coverings";
 
 import { deriveLtCable } from "./derive-lt";
@@ -154,7 +155,15 @@ export function deriveLtFields(
       value: withUnit(step.value, step.unit),
       tag: isCalc ? "CALC" : "LOOKUP",
       source: isCalc ? "calc" : "is-table",
-      trace: step.keyedBy ? `${step.ref} — keyed by ${step.keyedBy}` : step.ref,
+      // §0.4: a fictitious diameter selects sheath and armour rows; it is NOT the finished
+      // cable's diameter, which "should be calculated separately". Saying so on the row stops a
+      // reader taking D_X for the cable they will put on a drum — which matters most on sector
+      // conductors, where the real cable is appreciably smaller than the fictitious figure.
+      trace: isCalc
+        ? `${step.keyedBy ? `${step.ref} — keyed by ${step.keyedBy}` : step.ref}. ${fictitiousDiameterCaveat}`
+        : step.keyedBy
+          ? `${step.ref} — keyed by ${step.keyedBy}`
+          : step.ref,
       editable: false,
       // Only the insulation carries a tolerance. The inner and outer sheath values this chain
       // prints are ALREADY minima from the protective-coverings tables, so attaching a floor to
@@ -171,6 +180,28 @@ export function deriveLtFields(
           : step.id === "innerSheath" || step.id === "outerSheath"
             ? notApplicable(`${standardRef} publishes this as a minimum — a tolerance on a minimum would be a second, lower limit`)
             : undefined,
+    });
+  }
+
+  // ── Conductor form ──────────────────────────────────────────────────────────────────────
+  // A stated construction particular an inspector checks against the cable. LT power aluminium
+  // is generally sector-shaped and compacted; IS 8130 §3.3 permits solid, circular, shaped,
+  // compacted, stranded or bunched "as required by the appropriate cable specification", and
+  // §5.3 covers compacted circular and shaped conductors under one clause with one wire-count
+  // table. This row does NOT move any dimension — see the note on LtCableConfig.shape.
+  {
+    const shape = config.shape ?? (config.material === "AL" ? "sector" : "circular");
+    fields.push({
+      key: "lt.conductorForm",
+      label: "Form of conductor",
+      value: shape === "sector" ? "Shaped (sector), compacted" : "Circular, compacted",
+      tag: "CHOICE",
+      source: "order",
+      trace:
+        "IS 8130 : 2013, §3.3 (form as required by the cable specification); §5.3 covers " +
+        "compacted circular and shaped conductors together, with the same minimum wire count " +
+        "and the same maximum resistance",
+      editable: true,
     });
   }
 

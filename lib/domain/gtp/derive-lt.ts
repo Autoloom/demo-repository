@@ -36,6 +36,7 @@ import {
   FORMED_WIRE_WIDTH_REF,
 } from "@/lib/domain/standards/protective-coverings";
 import type { ArmourMethod, CoveringStandard } from "@/lib/domain/standards/protective-coverings";
+import type { ConductorShape } from "./cable-types";
 
 export interface LtCableConfig {
   standard: CoveringStandard;
@@ -55,6 +56,22 @@ export interface LtCableConfig {
    * used"). Has no effect on round wire, which has only one table.
    */
   armourMethod?: ArmourMethod;
+  /**
+   * Conductor shape. LT power aluminium is generally sector-shaped and compacted, and the GTP
+   * has to say so — an inspector checks the conductor form against the sheet.
+   *
+   * DELIBERATELY NOT USED IN THE FICTITIOUS CHAIN. IS 10462 (Part 1) §0.3 ignores conductor
+   * shape and compactness by design, so that every manufacturer keying into the sheath and
+   * armour tables lands on the same row for the same cable. A 3-core 70 sq mm cable has a
+   * fictitious conductor diameter of 9.4 mm whether the real conductor measures 9.44 circular
+   * or is sector-shaped and not round at all. Making shape move those lookups would select a
+   * DIFFERENT sheath thickness from the one the standard prescribes. `shapeDoesNotMoveTheChain`
+   * in the tests pins this.
+   *
+   * The real overall diameter of a sector cable IS smaller, and §0.4 says that figure "should be
+   * calculated separately" — it is not this method's output and we do not hold a source for it.
+   */
+  shape?: ConductorShape;
 }
 
 /** One traced step, carrying the value AND where it came from. */
