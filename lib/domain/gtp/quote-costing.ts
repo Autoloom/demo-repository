@@ -6,6 +6,7 @@ import { deriveLtCable } from "./derive-lt";
 import { deriveLtFields } from "./derive-lt-fields";
 import type { GtpSpecSource } from "./spec-from-fields";
 import { deriveLtMass, isMassGap } from "./mass";
+import { abDerivedMass, abGroupsFromSpec, isSpecGap, solarDerivedMass } from "./spec-from-construction";
 
 /** Re-derive quote-local construction edits; never attach the old cable's mass to new inputs. */
 export function quoteConstruction(spec: CableSpec): GtpSpecSource {
@@ -46,7 +47,25 @@ export function quoteBuild(spec: CableSpec, previous?: BuildSpec): { source: Gtp
 
 export function costCable(spec: CableSpec, commercial: { lengthM: number; marginPctByCategory: Record<MarginCategory, number>; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
   let mass;
-  if (spec.gtpSource) {
+  // AB and solar have their own derivation chains and no `gtpSource` — their constructions do not
+  // fit LtCableConfig. Routed by family so the shared engine keeps one branch per FAMILY rather
+  // than a product-line conditional buried in the costing.
+  if (spec.family === "Aerial Bunched Cable" && spec.aerialBunched) {
+    const derived = abDerivedMass(
+      { productLine: "AB_CABLE", groups: abGroupsFromSpec(spec.aerialBunched), raw: spec.designation },
+      spec.aerialBunched.messengerInsulated === false ? "bare" : "covered",
+    );
+    if (isSpecGap(derived)) throw new Error(derived.reason);
+    mass = derived;
+  } else if (spec.family === "Solar DC Cable") {
+    const derived = solarDerivedMass({
+      csaSqMm: spec.conductorSizeSqMm,
+      // The class the spec was built with is the class the standard's dimension table needs.
+      directlyConnectedToModules: spec.conductorClass === "Class 5 (flexible)",
+    });
+    if (isSpecGap(derived)) throw new Error(derived.reason);
+    mass = derived;
+  } else if (spec.gtpSource) {
     if ((spec.flameClass === "FRLS" || spec.flameClass === "FR") && !materials.some((m) => m.category === "Sheath" && (spec.flameClass === "FRLS" ? /FRLS/i.test(m.name) : /\bFR\b/i.test(m.name)))) {
       throw new Error(`Enter a ${spec.flameClass} sheath compound rate in Materials before pricing this buyer requirement`);
     }

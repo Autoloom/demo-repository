@@ -45,6 +45,9 @@ import {
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
+import { specFromAbConstruction, specFromSolarConstruction } from "@/lib/domain/gtp/spec-from-construction";
+import { deriveSolarMass, isMassGap } from "@/lib/domain/gtp/mass";
+import { conductorClassFor, solarDimensions } from "@/lib/domain/standards/is17293-2020";
 import { deriveSolarFields } from "@/lib/domain/gtp/derive-solar-fields";
 import { appendAuditEntry, reassignAuditEntries } from "@/lib/domain/gtp/audit-log";
 import { buildGtpPdfDocument, sectionSourceFor } from "@/lib/domain/gtp/pdf-document";
@@ -850,6 +853,46 @@ function GtpBuilderInner() {
   }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters, messengerConstruction, effectiveArmourForm, effectiveArmourMethod]);
 
   const cableCandidate = useMemo(() => {
+    // AB and solar build their spec from their own construction — see spec-from-construction.ts.
+    // Until this existed, both derived a perfect GTP and then could not be quoted at all.
+    if (productLine === "AB_CABLE") {
+      if (!construction) return null;
+      try {
+        return specFromAbConstruction({
+          specId: cableSpecId, designation, construction, fields,
+          messengerConstruction: messengerConstruction ?? profile?.quirks.messengerConstruction ?? "covered",
+        });
+      } catch (error) {
+        return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (productLine === "SOLAR_DC") {
+      try {
+        const { klass } = conductorClassFor(solarConfig.directlyConnectedToModules);
+        const dims = solarDimensions(solarConfig.csaSqMm, klass);
+        const conductorDiaMm =
+          dims.values.meanOverallDiaMm - 2 * (dims.values.insulationThicknessMm + dims.values.sheathThicknessMm);
+        const mass = deriveSolarMass({
+          csaSqMm: solarConfig.csaSqMm,
+          insulationThicknessMm: dims.values.insulationThicknessMm,
+          sheathThicknessMm: dims.values.sheathThicknessMm,
+          conductorDiaMm,
+        });
+        if (isMassGap(mass)) return { gap: true as const, reason: mass.missing };
+        return specFromSolarConstruction({
+          specId: cableSpecId, designation, fields,
+          csaSqMm: solarConfig.csaSqMm,
+          directlyConnectedToModules: solarConfig.directlyConnectedToModules,
+          insulationThicknessMm: dims.values.insulationThicknessMm,
+          sheathThicknessMm: dims.values.sheathThicknessMm,
+          conductorDiaMm,
+          overallDiaMm: dims.values.meanOverallDiaMm,
+          massKgPerKm: mass.totalKgPerKm,
+        });
+      } catch (error) {
+        return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (productLine !== "XLPE_POWER" && productLine !== "PVC_CONTROL") return null;
     const config: LtCableConfig = {
       ...ltConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
@@ -862,7 +905,7 @@ function GtpBuilderInner() {
     } catch (error) {
       return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
     }
-  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod]);
+  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod, construction, messengerConstruction, profile, solarConfig]);
 
   /**
    * Identity of the cable by VALUE, not by object reference.

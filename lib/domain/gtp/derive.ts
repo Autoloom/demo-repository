@@ -317,10 +317,27 @@ const PHYSICAL = {
  * exactly as the schedules do; they are marked CALC with their working in the trace so an engineer
  * can check them.
  */
-function finishedBundle(
+export interface AbBundle {
+  overallDiaMm: number;
+  massKgPerKm: number;
+  /** Conductor metal only — phases, messenger and street light. */
+  conductorMassKgPerKm: number;
+  /** Everything that is not metal. AB has no armour and no overall sheath. */
+  insulationMassKgPerKm: number;
+  workings: string;
+}
+
+/**
+ * Overall diameter and mass of a finished AB bundle.
+ *
+ * Exported because a quote needs the same numbers the GTP prints: pricing an AB cable off a
+ * second model is the divergence the LT path already refuses to allow. The split is returned
+ * as well as the total so costing can price metal and insulation at their own rates.
+ */
+export function deriveAbBundle(
   groups: ConductorGroup[],
   messengerConstruction: "bare" | "covered" = "covered",
-): { overallDiaMm: number; massKgPerKm: number; workings: string } | undefined {
+): AbBundle | undefined {
   let conductorMassKgPerKm = 0;
   let insulationMassKgPerKm = 0;
   let largestInsulatedDiaMm = 0;
@@ -361,10 +378,14 @@ function finishedBundle(
   const bundleFactor = PHYSICAL.bundleDiaFactor * Math.sqrt(Math.max(coreCount, 1) / 4);
   const overallDiaMm = largestInsulatedDiaMm * bundleFactor;
   const massKgPerKm = (conductorMassKgPerKm + insulationMassKgPerKm) * PHYSICAL.layUpFactor;
+  const conductorScaledKgPerKm = conductorMassKgPerKm * PHYSICAL.layUpFactor;
 
   return {
     overallDiaMm,
     massKgPerKm,
+    conductorMassKgPerKm: conductorScaledKgPerKm,
+    // Scaled by the same lay-up factor as the total, so the parts sum to the whole.
+    insulationMassKgPerKm: insulationMassKgPerKm * PHYSICAL.layUpFactor,
     workings:
       `largest insulated core ${largestInsulatedDiaMm.toFixed(2)} mm × bundle factor ` +
       `${bundleFactor.toFixed(2)} (${coreCount} cores); mass = conductor ` +
@@ -376,7 +397,7 @@ function finishedBundle(
 function finishedAndComplianceFields(quirks: DerivationQuirks, groups: ConductorGroup[]): ResolvedField[] {
   const drumLength = quirks.drumLengthM ?? 1000;
   const drumTol = quirks.drumLengthTolerance ?? "±5%";
-  const bundle = finishedBundle(groups, quirks.messengerConstruction ?? "covered");
+  const bundle = deriveAbBundle(groups, quirks.messengerConstruction ?? "covered");
   return [
     { key: "cable.ratedVoltage", label: "Rated voltage", value: FIXED.ratedVoltage, tag: "FIXED", source: "profile", trace: "IS 14255:1995 scope (up to and including 1100 V)", editable: false },
     bundle

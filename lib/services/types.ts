@@ -48,6 +48,9 @@ export type CableStandard =
   | "IS 694"
   | "IS 8130"
   | "IS 14255"
+  // The Indian solar cable standard, and the right citation for a GTP produced here — the
+  // cable-type registry already pins IS 17293 as SOLAR_DC's primary standard.
+  | "IS 17293"
   | "IS 398-4"
   | "EN 50618"
   | "BS EN 60228"

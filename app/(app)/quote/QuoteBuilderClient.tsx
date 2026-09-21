@@ -255,7 +255,14 @@ function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult;
       </div>
 
       <div className="space-y-1.5">
-        {costing.components.map((component) => (
+        {costing.components
+          // A construction that has no armour or no sheath should not print a zero row for it.
+          // An AB bundle is insulated cores laid up bare and a solar cable is unarmoured, so
+          // those rows were rendering as "Sheath +14% margin — ₹0", which reads like a costing
+          // error rather than a fact about the cable. Labour is always shown: it has no mass but
+          // it does have a cost.
+          .filter((component) => component.category === "Labour" || component.kgPerM > 0 || component.costPerM > 0)
+          .map((component) => (
           <CostingRow
             key={component.label}
             label={component.label}
@@ -551,6 +558,23 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
+  /**
+   * Which margin inputs to offer.
+   *
+   * Every category used to render regardless of construction, so an unarmoured solar cable asked
+   * for an armour margin and an AB bundle asked for a sheath margin — inputs that can never
+   * change the price, on a screen where the operator is deciding what to charge. Derived from
+   * the priced components, with labour always present because it has cost but no mass.
+   */
+  const activeMarginCategories = React.useMemo(() => {
+    const active = new Set<MarginCategory>(["Labour"]);
+    if (priced && "costing" in priced) {
+      for (const component of priced.costing.components) {
+        if (component.kgPerM > 0 || component.costPerM > 0) active.add(component.category);
+      }
+    }
+    return active;
+  }, [priced]);
   const marginGate = blendedMarginPct < MARGIN_GATE_PCT;
   const permissionCtx = { record: { marginReviewRequired: marginGate } };
   const needsApproval = requiresApproval(role, "transition", "quote", permissionCtx);
@@ -763,7 +787,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-3">
-              {MARGIN_CATEGORIES.map((category) => (
+              {MARGIN_CATEGORIES.filter((category) => activeMarginCategories.has(category)).map((category) => (
                 <NumberField
                   key={category}
                   id={`margin-${category}`}
