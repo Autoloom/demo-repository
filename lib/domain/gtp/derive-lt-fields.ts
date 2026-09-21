@@ -15,6 +15,7 @@
  */
 import { IS1554_1_MANDATORY_LEGEND, IS1554_1_THERMAL } from "@/lib/domain/standards/is1554-1-1988";
 import { IS7098_1_RATED_VOLTAGE, IS7098_1_THERMAL } from "@/lib/domain/standards/is7098-1-2025";
+import { coreIdentification } from "@/lib/domain/standards/core-identification";
 import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-coverings";
 
 import { deriveLtCable } from "./derive-lt";
@@ -173,8 +174,53 @@ export function deriveLtFields(
     });
   }
 
+  // ── Core identification ─────────────────────────────────────────────────────────────────
+  // A particular an inspector checks against the drum, so it is derived from the standard's own
+  // clause rather than left to a customer profile. A profile may still override it below.
+  if (!opts.quirks?.coreIdentification) {
+    const ident = coreIdentification(config.standard, config.coreCount);
+    fields.push({
+      key: "cable.identification",
+      label: "Core identification",
+      value: ident.printed,
+      tag: "LOOKUP",
+      source: "is-table",
+      trace: ident.alternative ? `${ident.ref}. ${ident.alternative}` : ident.ref,
+      editable: true,
+    });
+  }
+
   // ── Armour ──────────────────────────────────────────────────────────────────────────────
   if (config.armoured) {
+    // The size as a buyer writes it. The chain already carries thickness and width as separate
+    // traced steps; this row is the pair read back in the form the manufacturer asked for
+    // ("Galvanised Steel Strip Armour size 4 × 0.8 mm"), so a GTP does not make a reader
+    // assemble it from two rows.
+    if (chain.armourForm === "formed-wire" && chain.armourDiaOrThicknessMm != null) {
+      const size =
+        chain.armourWidthMm != null
+          ? `${chain.armourWidthMm} × ${chain.armourDiaOrThicknessMm} mm`
+          : `${chain.armourDiaOrThicknessMm} mm thick`;
+      fields.push({
+        key: "lt.armourSize",
+        label: "Armour size (galvanised steel strip)",
+        value: size,
+        tag: "LOOKUP",
+        source: "is-table",
+        trace: `${standardRef}, Table 6 — method ${chain.armourMethod ?? "A"}; width nominal, it takes no part in the build-up`,
+        editable: false,
+      });
+    } else if (chain.armourForm === "round-wire" && chain.armourDiaOrThicknessMm != null) {
+      fields.push({
+        key: "lt.armourSize",
+        label: "Armour size (galvanised round steel wire)",
+        value: `${chain.armourDiaOrThicknessMm} mm dia`,
+        tag: "LOOKUP",
+        source: "is-table",
+        trace: `${standardRef}, Table 6 — keyed by the calculated diameter under armour`,
+        editable: false,
+      });
+    }
     fields.push({
       key: "lt.armourCoverage",
       label: "Armour coverage",

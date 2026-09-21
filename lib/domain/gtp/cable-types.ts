@@ -127,6 +127,18 @@ const AERIAL_BUNCHED: CableTypeDefinition = {
     { kind: "choice", key: "phaseSizeSqMm", label: "Phase size", options: [16, 25, 35, 50, 70, 95], defaultValue: 70, hint: "sq mm — IS 14255 covers 16 to 95" },
     { kind: "choice", key: "streetLightSizeSqMm", label: "Street-light core", options: [16], defaultValue: 16, optional: true, hint: "IS 14255 §6.4 fixes this at 16 sq mm" },
     { kind: "choice", key: "messengerSizeSqMm", label: "Messenger", options: [25, 35, 50, 70], hint: "Auto-paired from IS 14255 Table 3; editable" },
+    // Both constructions are real and materially different cables — DHBVN specifies bare
+    // Al-Mg-Si, WBSEDCL a covered messenger. Asked for by the manufacturer (Sept 2026):
+    // "option of Bare messenger shall also be provided, accordingly other parameters viz.
+    // Dimensions / Weight will also change."
+    {
+      kind: "choice",
+      key: "messengerConstruction",
+      label: "Messenger construction",
+      options: ["covered", "bare"],
+      defaultValue: "covered",
+      hint: "Bare drops the messenger's insulation wall, so the bundle gets lighter and thinner.",
+    },
   ],
   derivationChain: [
     { id: "conductor.phase", describes: "Phase conductor strands, diameter, resistance", standardId: "IS 8130" },
@@ -166,6 +178,26 @@ const LT_POWER_XLPE: CableTypeDefinition = {
     { kind: "choice", key: "material", label: "Conductor material", options: ["Aluminium", "Copper"], defaultValue: "Aluminium" },
     { kind: "choice", key: "shape", label: "Conductor shape", options: [...CONDUCTOR_SHAPES], defaultValue: "circular", hint: "Sector cores pack tighter, reducing overall diameter" },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },
+    // Strip by default on this line. The manufacturer's own correction (Sept 2026): "Instead of
+    // Wire Armour used for 3.5 Core Cables the Galvanised Steel Strip Armour size 4 × 0.8 mm
+    // shall be placed, which is very widely used." Round wire stays selectable — and is forced
+    // anyway below 13 mm calculated diameter, where the standard permits nothing else.
+    {
+      kind: "choice",
+      key: "armourForm",
+      label: "Armour form",
+      options: ["formed-wire", "round-wire"],
+      defaultValue: "formed-wire",
+      hint: "Formed wire is galvanised steel strip. Round wire is forced below 13 mm calculated diameter (§14.2).",
+    },
+    {
+      kind: "choice",
+      key: "armourMethod",
+      label: "Armouring practice",
+      options: ["A", "B"],
+      defaultValue: "A",
+      hint: "Both are printed in Table 6. A = 4.0 × 0.8 mm strip at every diameter above 13 mm. B = the banded table, stepping to 6.1 × 1.4 mm above 40 mm.",
+    },
     { kind: "choice", key: "sheath", label: "Outer sheath", options: ["PVC ST-2", "PE", "LSHF"], defaultValue: "PVC ST-2" },
   ],
   // The build-up chain. Each `keyedBy` step needs the PREVIOUS step's output as its lookup key.
@@ -204,6 +236,25 @@ const PVC_CONTROL: CableTypeDefinition = {
     { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6], defaultValue: 2.5, hint: "sq mm" },
     { kind: "choice", key: "material", label: "Conductor material", options: ["Copper", "Aluminium"], defaultValue: "Copper", hint: "Both are supported. Copper is the corpus norm for control; the manufacturer also runs aluminium. IS 8130 specifies both, and the minimum wire counts differ." },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },
+    // Control cable is conventionally round-wire armoured, and at these sizes the calculated
+    // diameter often falls at or below 13 mm, where the standard permits nothing else. Strip is
+    // offered rather than assumed.
+    {
+      kind: "choice",
+      key: "armourForm",
+      label: "Armour form",
+      options: ["round-wire", "formed-wire"],
+      defaultValue: "round-wire",
+      hint: "Round wire is forced below 13 mm calculated diameter (§13.2), whatever is selected here.",
+    },
+    {
+      kind: "choice",
+      key: "armourMethod",
+      label: "Armouring practice",
+      options: ["A", "B"],
+      defaultValue: "A",
+      hint: "Applies only to formed wire. A = 4.0 × 0.8 mm strip above 13 mm; B = the banded table.",
+    },
   ],
   derivationChain: LT_POWER_XLPE.derivationChain, // structurally identical (build-plan-v1 §0.3)
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],

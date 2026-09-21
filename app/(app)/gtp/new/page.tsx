@@ -495,11 +495,25 @@ function GtpBuilderInner() {
   // the choice survives template loading and flows into derivation as a quirk.
   const [conductorMaterial, setConductorMaterial] = useState<ConductorMaterialCode>("AL");
   /**
+   * Messenger construction for AB cable. Both are IS 14255 constructions and they are materially
+   * different cables — bare drops an insulation wall, so the bundle gets lighter and thinner.
+   * Undefined means "take the customer profile's", which is how DHBVN (bare) and WBSEDCL
+   * (covered) have always differed; picking here overrides it for this GTP.
+   */
+  const [messengerConstruction, setMessengerConstruction] = useState<"bare" | "covered" | undefined>(undefined);
+  /**
    * LT power / control configuration. Distinct from `selection` (the AB size pickers) because
    * these are different cables: an LT cable has no messenger and no street-light core, so the
    * two types genuinely need different inputs rather than a shared shape.
    */
-  const [ltConfig, setLtConfig] = useState<{ csaSqMm: number; coreCount: number; armoured: boolean }>({
+  const [ltConfig, setLtConfig] = useState<{
+    csaSqMm: number;
+    coreCount: number;
+    armoured: boolean;
+    /** Undefined means "whatever this cable type conventionally uses" — see effectiveArmourForm. */
+    armourForm?: "round-wire" | "formed-wire";
+    armourMethod?: "A" | "B";
+  }>({
     csaSqMm: 300,
     coreCount: 3.5,
     armoured: true,
@@ -538,6 +552,19 @@ function GtpBuilderInner() {
   const [generating, setGenerating] = useState(false);
   // Only AB cable is derivable today; the other lines render as disabled placeholders.
   const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
+
+  /**
+   * Armour form, with the per-type convention applied until an operator says otherwise.
+   *
+   * XLPE power defaults to strip — the manufacturer's Sept 2026 correction, "Instead of Wire
+   * Armour used for 3.5 Core Cables the Galvanised Steel Strip Armour size 4 × 0.8 mm shall be
+   * placed". Control cable stays round wire, which is its convention and what the standard
+   * forces anyway at the diameters control cables reach. Resolved here rather than in an effect
+   * so switching cable type needs no state reset.
+   */
+  const effectiveArmourForm: "round-wire" | "formed-wire" =
+    ltConfig.armourForm ?? (productLine === "XLPE_POWER" ? "formed-wire" : "round-wire");
+  const effectiveArmourMethod: "A" | "B" = ltConfig.armourMethod ?? "A";
 
 
   /**
@@ -667,6 +694,8 @@ function GtpBuilderInner() {
                     coreCount: ltConfig.coreCount,
                     material: conductorMaterial,
                     armoured: ltConfig.armoured,
+                    armourForm: effectiveArmourForm,
+                    armourMethod: effectiveArmourMethod,
                   },
                   { quirks: p.quirks },
                 )
@@ -678,7 +707,7 @@ function GtpBuilderInner() {
       }
     }
     return counts;
-  }, [productLine, construction, ltConfig, solarConfig, conductorMaterial]);
+  }, [productLine, construction, ltConfig, solarConfig, conductorMaterial, effectiveArmourForm, effectiveArmourMethod]);
 
 
   // Moment 4 — derive the full field map as soon as a customer is chosen, then lay any manual
@@ -726,6 +755,8 @@ function GtpBuilderInner() {
             coreCount: ltConfig.coreCount,
             material,
             armoured: ltConfig.armoured,
+            armourForm: effectiveArmourForm,
+            armourMethod: effectiveArmourMethod,
           },
           { customerName: profile.name, quirks: profile.quirks },
         );
@@ -749,6 +780,7 @@ function GtpBuilderInner() {
         ...profile.quirks,
         drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
         conductorMaterial: material,
+        messengerConstruction: messengerConstruction ?? profile.quirks.messengerConstruction,
       });
     }
     // Hand-added parameters join the derived list rather than living beside it, so hide/show,
@@ -815,13 +847,14 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters]);
+  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters, messengerConstruction, effectiveArmourForm, effectiveArmourMethod]);
 
   const cableCandidate = useMemo(() => {
     if (productLine !== "XLPE_POWER" && productLine !== "PVC_CONTROL") return null;
     const config: LtCableConfig = {
       ...ltConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
       material: conductorMaterial, conductorClass: "Class 2",
+      armourForm: effectiveArmourForm, armourMethod: effectiveArmourMethod,
     };
     try {
       return specFromFields({ specId: cableSpecId, productLine, config,
@@ -829,7 +862,7 @@ function GtpBuilderInner() {
     } catch (error) {
       return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
     }
-  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation]);
+  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod]);
 
   /**
    * Identity of the cable by VALUE, not by object reference.
@@ -1619,6 +1652,47 @@ function GtpBuilderInner() {
                   </select>
                 </div>
 
+                {/* Armour form and practice. Only meaningful on an armoured cable, and the
+                    standard overrides the choice below 13 mm calculated diameter — the derived
+                    schedule shows which it actually used. */}
+                {ltConfig.armoured ? (
+                  <>
+                    <div className="flex flex-col gap-1 pl-2">
+                      <Label htmlFor="lt-armour-form" className="text-xs text-muted-foreground">
+                        Armour form
+                      </Label>
+                      <select
+                        id="lt-armour-form"
+                        value={effectiveArmourForm}
+                        onChange={(e) =>
+                          setLtConfig((c) => ({ ...c, armourForm: e.target.value as "round-wire" | "formed-wire" }))
+                        }
+                        className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="formed-wire">GI strip (formed wire)</option>
+                        <option value="round-wire">GI round wire</option>
+                      </select>
+                    </div>
+
+                    {effectiveArmourForm === "formed-wire" ? (
+                      <div className="flex flex-col gap-1 pl-2">
+                        <Label htmlFor="lt-armour-method" className="text-xs text-muted-foreground">
+                          Strip size
+                        </Label>
+                        <select
+                          id="lt-armour-method"
+                          value={effectiveArmourMethod}
+                          onChange={(e) => setLtConfig((c) => ({ ...c, armourMethod: e.target.value as "A" | "B" }))}
+                          className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="A">4.0 × 0.8 mm (Table 6, method A)</option>
+                          <option value="B">Banded (Table 6, method B)</option>
+                        </select>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
                 <div className="ml-auto border-l border-border pl-4">
                   <MaterialControl
                     value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
@@ -1687,6 +1761,27 @@ function GtpBuilderInner() {
                 onChange={(v) => updateSelection({ messengerSizeSqMm: v })}
               />
               <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
+
+              {/* Bare or covered messenger — IS 14255 covers both, and they weigh differently. */}
+              <div className="flex flex-col gap-1 pl-2">
+                <Label htmlFor="messenger-construction" className="text-xs text-muted-foreground">
+                  Messenger
+                </Label>
+                <select
+                  id="messenger-construction"
+                  value={messengerConstruction ?? "profile"}
+                  onChange={(e) =>
+                    setMessengerConstruction(
+                      e.target.value === "profile" ? undefined : (e.target.value as "bare" | "covered"),
+                    )
+                  }
+                  className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="profile">As per customer</option>
+                  <option value="covered">Covered / insulated</option>
+                  <option value="bare">Bare Al-Mg-Si</option>
+                </select>
+              </div>
 
               {/* Conductor material. Driven by the registry, not hardcoded: AB pins aluminium
                   (IS 14255), so this shows as a read-only fact; LT power and control leave it

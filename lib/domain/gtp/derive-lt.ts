@@ -32,9 +32,10 @@ import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { IS8130_2013_TABLE2_STRANDED, findConductor } from "@/lib/domain/standards/is8130-2013";
 import type { ConductorForm } from "@/lib/domain/standards/is8130-2013";
 import {
-  armourDimensions, innerSheathThickness, outerSheathThickness,
+  armourDimensions, formedWireThickness, formedWireWidthMm, innerSheathThickness, outerSheathThickness,
+  FORMED_WIRE_WIDTH_REF,
 } from "@/lib/domain/standards/protective-coverings";
-import type { CoveringStandard } from "@/lib/domain/standards/protective-coverings";
+import type { ArmourMethod, CoveringStandard } from "@/lib/domain/standards/protective-coverings";
 
 export interface LtCableConfig {
   standard: CoveringStandard;
@@ -47,6 +48,13 @@ export interface LtCableConfig {
   armoured: boolean;
   /** Armour style. Ignored when the calculated diameter forces round wire (≤ 13 mm). */
   armourForm?: "round-wire" | "formed-wire";
+  /**
+   * Which of the standard's two armouring practices to apply to formed wire (strip).
+   * Defaults to A — the flat 0.8 mm strip, which is the size in common use and the one the
+   * manufacturer asked for ("Galvanised Steel Strip Armour size 4 × 0.8 mm ... very widely
+   * used"). Has no effect on round wire, which has only one table.
+   */
+  armourMethod?: ArmourMethod;
 }
 
 /** One traced step, carrying the value AND where it came from. */
@@ -68,6 +76,10 @@ export interface LtDerivation {
   insulationThicknessMm: number;
   innerSheathThicknessMm: number | null;
   armourDiaOrThicknessMm: number | null;
+  /** Nominal strip width, printed only — it takes no part in the dimensional build-up. */
+  armourWidthMm: number | null;
+  /** Which of the standard's two armouring practices produced the formed-wire thickness. */
+  armourMethod: ArmourMethod | null;
   outerSheathThicknessMm: number;
 }
 
@@ -235,23 +247,46 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   // ── Armour ──────────────────────────────────────────────────────────────────────────────
   let dX = dB;
   let armourMm: number | null = null;
+  let armourWidthMm: number | null = null;
   let armourForm: LtDerivation["armourForm"] = null;
   if (config.armoured) {
     const armour = armourDimensions(config.standard, dB);
+    const method: ArmourMethod = config.armourMethod ?? "A";
     // Below 13 mm the standards permit round wire only, whatever was asked for.
-    const useRoundWire = armour.values.roundWireOnly || (config.armourForm ?? "round-wire") === "round-wire";
-    armourForm = useRoundWire ? "round-wire" : "formed-wire";
-    armourMm = useRoundWire ? armour.values.roundWireDiaMm : armour.values.formedWireThicknessMm;
-    if (armourMm === null) throw new Error(`No formed-wire armour dimension at ${dB} mm`);
+    const formed =
+      armour.values.roundWireOnly || (config.armourForm ?? "round-wire") === "round-wire"
+        ? null
+        : formedWireThickness(config.standard, dB, method);
+
+    armourForm = formed ? "formed-wire" : "round-wire";
+    armourMm = formed ? formed.values.thicknessMm : armour.values.roundWireDiaMm;
+    if (armourMm === null) throw new Error(`No armour dimension at ${dB} mm`);
 
     steps.push({
       id: "armour",
-      label: useRoundWire ? "Armour round wire diameter" : "Armour formed wire thickness",
+      label: formed ? "Armour formed wire thickness" : "Armour round wire diameter",
       value: armourMm,
       unit: "mm",
-      ref: armour.ref,
+      ref: formed ? formed.ref : armour.ref,
       keyedBy: `calculated diameter under armour = ${dB} mm`,
     });
+
+    // Width is printed, never load-bearing: the steel area of a strip layer is π(D + t)·t, in
+    // which width cancels. Emitted as its own step so the GTP can say "4.0 × 0.8 mm" with a
+    // citation, and so a reviewer can see it took no part in the build-up.
+    if (formed) {
+      armourWidthMm = formedWireWidthMm(formed.values.thicknessMm);
+      if (armourWidthMm !== null) {
+        steps.push({
+          id: "armour.width",
+          label: "Armour formed wire width (nominal)",
+          value: armourWidthMm,
+          unit: "mm",
+          ref: FORMED_WIRE_WIDTH_REF,
+          keyedBy: `paired to ${formed.values.thicknessMm} mm thickness`,
+        });
+      }
+    }
 
     dX = fictitiousOverArmour(dB, armourMm);
     steps.push({
@@ -287,6 +322,8 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     insulationThicknessMm: insulation.nominalMm,
     innerSheathThicknessMm: innerSheathMm,
     armourDiaOrThicknessMm: armourMm,
+    armourWidthMm,
+    armourMethod: armourForm === "formed-wire" ? (config.armourMethod ?? "A") : null,
     outerSheathThicknessMm: outerMm,
   };
 }
