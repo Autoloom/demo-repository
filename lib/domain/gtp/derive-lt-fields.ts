@@ -15,6 +15,7 @@
  */
 import { IS1554_1_MANDATORY_LEGEND, IS1554_1_THERMAL } from "@/lib/domain/standards/is1554-1-1988";
 import { IS7098_1_RATED_VOLTAGE, IS7098_1_THERMAL } from "@/lib/domain/standards/is7098-1-2025";
+import { catalogueForArmour, findCatalogueRow } from "@/lib/domain/catalogue/daksha-2026";
 import { coreIdentification } from "@/lib/domain/standards/core-identification";
 import { fictitiousDiameterCaveat } from "@/lib/domain/standards/is10462-1-1983";
 import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-coverings";
@@ -182,6 +183,25 @@ export function deriveLtFields(
             : undefined,
     });
   }
+
+  // ── Works catalogue ─────────────────────────────────────────────────────────────────────
+  // Client instruction, 22 Sept: read the specs off the catalogue rather than deriving them
+  // every time. Where the works publishes a row for this cable it is the better source — it
+  // describes cable they actually make, sector conductors and all, where the fictitious chain
+  // describes a notional one. Null is a normal answer: the brochure covers 3½ core XLPE and
+  // 1.5/2.5 control, not every cable the engine can derive.
+  const catalogue = findCatalogueRow({
+    family: isXlpe ? "XLPE_POWER" : "PVC_CONTROL",
+    material: config.material,
+    csaSqMm: config.csaSqMm,
+    coreCount: config.coreCount,
+  });
+  const catalogueArmour = !config.armoured
+    ? "unarmoured"
+    : chain.armourForm === "formed-wire"
+      ? "strip"
+      : "round-wire";
+  const catalogueFigures = catalogue ? catalogueForArmour(catalogue.row, catalogueArmour) : null;
 
   // ── Conductor form ──────────────────────────────────────────────────────────────────────
   // A stated construction particular an inspector checks against the cable. LT power aluminium
@@ -371,31 +391,53 @@ export function deriveLtFields(
   // supersedes it the moment we hold one; until then this is stated as what it is rather than
   // left off the document.
   {
-    const overallDiaMm = chain.calculatedDiaUnderOuterSheathMm + 2 * chain.outerSheathThicknessMm;
-    fields.push({
-      key: "lt.overallDia",
-      label: "Overall diameter (calculated)",
-      value: `${overallDiaMm.toFixed(1)} mm`,
-      tag: "CALC",
-      source: "calc",
-      trace:
-        `D_X ${chain.calculatedDiaUnderOuterSheathMm} mm + 2 × ${chain.outerSheathThicknessMm} mm outer sheath. ` +
-        fictitiousDiameterCaveat +
-        " A works or catalogue diameter, where one exists, supersedes this figure.",
-      editable: true,
-      tolerance: bandTolerance(
-        "±2%",
-        "works-estimate",
-        "Works spread on a calculated diameter — replace with the catalogue figure when held",
-      ),
-    });
+    const calculatedMm = chain.calculatedDiaUnderOuterSheathMm + 2 * chain.outerSheathThicknessMm;
+    if (catalogueFigures) {
+      // The catalogue wins. It is the "separate calculation" IS 10462 §0.4 says the fictitious
+      // method is not a substitute for, and the gap is real: on 3½C x 300 the chain gives
+      // 59.2 mm against the works' 56.0 mm, because a sector-shaped compacted core packs tighter
+      // than the notional round one the fictitious method assumes.
+      const deltaMm = calculatedMm - catalogueFigures.overallDiaMm;
+      fields.push({
+        key: "lt.overallDia",
+        label: "Overall diameter",
+        value: `${catalogueFigures.overallDiaMm.toFixed(1)} mm`,
+        tag: "LOOKUP",
+        source: "works-data",
+        trace:
+          `${catalogue!.ref}. Works figure for the cable as built. ` +
+          `The IS 10462 fictitious build-up gives ${calculatedMm.toFixed(1)} mm ` +
+          `(${deltaMm >= 0 ? "+" : ""}${deltaMm.toFixed(1)} mm), which §0.4 says is not the ` +
+          "finished cable's diameter.",
+        editable: true,
+        tolerance: bandTolerance("±2%", "works-estimate", "Works spread on a published diameter"),
+      });
+    } else {
+      fields.push({
+        key: "lt.overallDia",
+        label: "Overall diameter (calculated)",
+        value: `${calculatedMm.toFixed(1)} mm`,
+        tag: "CALC",
+        source: "calc",
+        trace:
+          `D_X ${chain.calculatedDiaUnderOuterSheathMm} mm + 2 × ${chain.outerSheathThicknessMm} mm outer sheath. ` +
+          fictitiousDiameterCaveat +
+          " The works catalogue publishes no row for this cable, so this is the best available figure.",
+        editable: true,
+        tolerance: bandTolerance(
+          "±2%",
+          "works-estimate",
+          "Works spread on a calculated diameter — replace with the catalogue figure when held",
+        ),
+      });
+    }
   }
 
   // ── Finished mass ─────────────────────────────────────────────────────────────────────────
   // Derived from this same chain, layer by layer, so a printed dimension and a priced mass can
   // never disagree. The quote reads this field; before it existed the quote estimated from
   // coefficients and was ~35% out on a comparable cable.
-  const massResult = deriveLtMass(config);
+  const massResult = deriveLtMass(config, {}, catalogueFigures?.massKgPerKm);
   if (isMassGap(massResult)) {
     // A missing dimension is stated, never guessed. `gap: true` blocks a real GTP and tells the
     // quote it must not price this cable.
@@ -408,6 +450,21 @@ export function deriveLtFields(
       trace: `Cannot derive: ${massResult.missing}`,
       editable: false,
       gap: true,
+    });
+  } else if (catalogueFigures?.massKgPerKm !== undefined) {
+    // The works publishes a measured mass for this cable, and the layer split above has been
+    // reconciled to it — so the printed components sum to the printed total, and the quote
+    // prices the same kilograms the GTP states. Only the control tables carry kg/km; the LT XLPE
+    // tables publish diameters and no mass, so power cable uses the derived value below.
+    fields.push({
+      key: "fin.totalMass",
+      label: "Total mass",
+      value: `${catalogueFigures.massKgPerKm} kg/km`,
+      tag: "LOOKUP",
+      source: "works-data",
+      trace: `${catalogue!.ref}. ${massResult.workings}`,
+      editable: false,
+      tolerance: bandTolerance("±5%", "works-estimate", "Works spread on a published mass"),
     });
   } else {
     fields.push({

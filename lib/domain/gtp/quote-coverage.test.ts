@@ -19,7 +19,7 @@ import { deriveFields } from "./derive";
 import { deriveLtCable, type LtCableConfig } from "./derive-lt";
 import { deriveLtFields } from "./derive-lt-fields";
 import { deriveSolarFields, type SolarCableConfig } from "./derive-solar-fields";
-import { deriveSolarMass, isMassGap } from "./mass";
+import { deriveLtMass, deriveSolarMass, isMassGap } from "./mass";
 import { parseSizeString } from "./parse-size";
 import { specFromFields } from "./spec-from-fields";
 import { isSpecGap, specFromAbConstruction, specFromSolarConstruction } from "./spec-from-construction";
@@ -158,4 +158,50 @@ test("an unfinished GTP still cannot be quoted, on any family", () => {
   );
   const spec = specFromAbConstruction({ specId: "S", designation: "AB", construction: parsed.construction, fields: withGap, messengerConstruction: "covered" });
   assert.ok(isSpecGap(spec), "a GTP with an unresolved parameter must not produce a quotable cable");
+});
+
+test("a control quote prices the works mass, not the derived one", () => {
+  // The derived build-up runs 3.5-10% light against the Daksha catalogue across the whole
+  // control range — always light, because fillers, binder tape and armour lay take-up are in no
+  // standard and so cannot be derived. That was unpriced material on every control line.
+  const config: LtCableConfig = {
+    standard: "IS1554-1", csaSqMm: 2.5, coreCount: 27, material: "CU",
+    armoured: true, armourForm: "round-wire",
+  };
+  const spec = specFromFields({
+    specId: "S-WORKS", productLine: "PVC_CONTROL", config,
+    armourForm: deriveLtCable(config).armourForm,
+    fields: fill(deriveLtFields(config)), designation: "27C x 2.5",
+  });
+  assert.ok(!isSpecGap(spec));
+  if (isSpecGap(spec)) return;
+
+  // The catalogue publishes 2015 kg/km for 27C x 2.5 round-wire armoured.
+  assert.equal(spec.approxWeightKgPerKm, 2015);
+
+  const result = priced(spec);
+  const pricedKgPerKm = result.components.reduce((sum, c) => sum + c.kgPerM, 0) * 1000;
+  assert.ok(
+    Math.abs(pricedKgPerKm - 2015) < 25,
+    `the quote must price the works mass: got ${pricedKgPerKm.toFixed(0)} against 2015 kg/km`,
+  );
+});
+
+test("the conductor is never scaled — only the layers the build-up cannot model", () => {
+  // Reconciling to the works mass must not touch the conductor: its weight follows from the
+  // nominal area the standard specifies, and it is what the metal rate is charged against.
+  const config: LtCableConfig = {
+    standard: "IS1554-1", csaSqMm: 2.5, coreCount: 27, material: "CU",
+    armoured: true, armourForm: "round-wire",
+  };
+  const plain = deriveLtMass(config);
+  const reconciled = deriveLtMass(config, {}, 2015);
+  assert.ok(!isMassGap(plain) && !isMassGap(reconciled));
+  if (isMassGap(plain) || isMassGap(reconciled)) return;
+
+  const conductorOf = (m: typeof plain) =>
+    m.components.filter((c) => c.layer === "Conductor").reduce((s, c) => s + c.massKgPerKm, 0);
+  assert.equal(conductorOf(reconciled), conductorOf(plain), "conductor mass must be untouched");
+  assert.ok(reconciled.totalKgPerKm > plain.totalKgPerKm, "reconciling upward must raise the total");
+  assert.match(reconciled.workings, /scaled x[\d.]+ to meet the works mass/);
 });

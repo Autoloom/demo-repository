@@ -5,6 +5,7 @@ import { derivedLineMassFromLegacySpec, isBridgeGap, ltConfigFromLegacySpec } fr
 import { deriveLtCable } from "./derive-lt";
 import { deriveLtFields } from "./derive-lt-fields";
 import type { GtpSpecSource } from "./spec-from-fields";
+import { catalogueForArmour, findCatalogueRow } from "@/lib/domain/catalogue/daksha-2026";
 import { deriveLtMass, isMassGap } from "./mass";
 import { abDerivedMass, abGroupsFromSpec, isSpecGap, solarDerivedMass } from "./spec-from-construction";
 
@@ -70,7 +71,27 @@ export function costCable(spec: CableSpec, commercial: { lengthM: number; margin
       throw new Error(`Enter a ${spec.flameClass} sheath compound rate in Materials before pricing this buyer requirement`);
     }
     const { source, build: checked } = quoteBuild(spec, build);
-    const result = deriveLtMass(source.config, targetsFromBuild(checked));
+    // Price the kilograms the GTP states. Where the works publishes a mass the chain is
+    // reconciled to it, so the quote cannot drift from the sheet it was raised against — the
+    // derived model runs 3.5-10% light on control cable, which was that much unpriced material
+    // on every line.
+    const catalogueHit = findCatalogueRow({
+      family: source.productLine === "XLPE_POWER" ? "XLPE_POWER" : "PVC_CONTROL",
+      material: source.config.material,
+      csaSqMm: source.config.csaSqMm,
+      coreCount: source.config.coreCount,
+    });
+    const worksMass = catalogueHit
+      ? catalogueForArmour(
+          catalogueHit.row,
+          !source.config.armoured
+            ? "unarmoured"
+            : source.armourForm === "formed-wire"
+              ? "strip"
+              : "round-wire",
+        )?.massKgPerKm
+      : undefined;
+    const result = deriveLtMass(source.config, targetsFromBuild(checked), worksMass);
     if (isMassGap(result)) throw new Error(result.missing);
     mass = lineMassFromDerived(result);
   } else {

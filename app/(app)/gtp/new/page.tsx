@@ -46,6 +46,7 @@ import {
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
 import { CHAIN_INPUT_FIELD_KEYS, DEFAULT_HIDDEN_FIELD_KEYS, chainInputOverrideMessage } from "@/lib/domain/gtp/types";
+import { DAKSHA_CONTROL_2_5 } from "@/lib/domain/catalogue/daksha-2026";
 import { specFromAbConstruction, specFromSolarConstruction } from "@/lib/domain/gtp/spec-from-construction";
 import { deriveSolarMass, isMassGap } from "@/lib/domain/gtp/mass";
 import { conductorClassFor, solarDimensions } from "@/lib/domain/standards/is17293-2020";
@@ -110,7 +111,22 @@ interface OrderDetails {
 }
 
 /** Core counts LT power and control are built in. 3.5 = three cores plus a reduced neutral. */
-const LT_CORE_OPTIONS = [1, 2, 3, 3.5, 4, 5] as const;
+/**
+ * Power cable tops out at 4 core (3½ counting the reduced neutral). Above that it is a CONTROL
+ * cable — a different type, a different standard and a copper conductor. Niraj, 13 Sept: "current
+ * system allows core count beyond 4 for power cables; needs a constraint".
+ */
+const LT_POWER_CORE_OPTIONS = [1, 2, 3, 3.5, 4] as const;
+
+/**
+ * Control cable cores, taken from the works catalogue rather than invented.
+ *
+ * The registry models control as a free number from 2, but this picker offered the POWER options
+ * (1, 2, 3, 3½, 4, 5) whatever the cable type — so "27 core × 2.5 sq mm", which the client asked
+ * for on 13 Sept and again on 22 Sept, could not actually be selected however willing the engine
+ * was. These are the core counts Daksha publishes, so every option leads to a catalogue row.
+ */
+const LT_CONTROL_CORE_OPTIONS = DAKSHA_CONTROL_2_5.rows.map((r) => r.coreCount);
 
 /** IS 17293 Table 8 ambients. Not a free number — the standard tabulates these eight. */
 const SOLAR_AMBIENT_OPTIONS = [0, 10, 20, 30, 40, 50, 60, 70] as const;
@@ -498,6 +514,8 @@ function GtpBuilderInner() {
   // AB cable is aluminium by standard (IS 14255); LT power and control offer both. Held here so
   // the choice survives template loading and flows into derivation as a quirk.
   const [conductorMaterial, setConductorMaterial] = useState<ConductorMaterialCode>("AL");
+  /** Set once the operator picks a material themselves, so the type default stops overriding. */
+  const [materialTouched, setMaterialTouched] = useState(false);
   /**
    * Messenger construction for AB cable. Both are IS 14255 constructions and they are materially
    * different cables — bare drops an insulation wall, so the bundle gets lighter and thinner.
@@ -557,6 +575,74 @@ function GtpBuilderInner() {
   // Only AB cable is derivable today; the other lines render as disabled placeholders.
   const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
 
+  const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
+
+  /**
+   * Sizes the SELECTED line is built in, from the cable-type registry.
+   *
+   * Previously the whole IS 1554 size list, which is the standard's range for PVC cables of every
+   * kind — so control cable offered 300 sq mm, and switching from power left it there, producing
+   * a "27 core x 300 sq mm control cable" at 95,567 kg/km. Control is a 1.5/2.5 sq mm line
+   * (Niraj, 13 Sept; and the works catalogue publishes nothing else). The registry already says
+   * so; the picker just was not reading it.
+   */
+  const ltSizeOptions = useMemo(() => {
+    const field = CABLE_TYPES.find((t) => t.id === productLine)?.configSchema.find((f) => f.key === "csa");
+    if (field && "options" in field) {
+      return field.options.filter((o): o is number => typeof o === "number");
+    }
+    return productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES;
+  }, [productLine]);
+
+  const ltCoreOptions = useMemo(
+    () => (productLine === "PVC_CONTROL" ? LT_CONTROL_CORE_OPTIONS : [...LT_POWER_CORE_OPTIONS]),
+    [productLine],
+  );
+
+  /**
+   * The material actually in force, with the cable type's own default applied.
+   *
+   * The registry gives control cable `defaultValue: "Copper"` — it is a copper line, and the
+   * works catalogue only publishes copper control rows. The picker's state defaults to aluminium
+   * for AB and power, so selecting Control quietly produced an aluminium cable: 27C x 2.5 came
+   * out at 1474 kg/km against the works' 2015, and no catalogue row matched. Resolved here
+   * rather than by an effect, so switching type needs no state reset.
+   */
+  const effectiveMaterial: ConductorMaterialCode =
+    activeCableType?.fixedConductorMaterial?.material ??
+    (productLine === "PVC_CONTROL" && !materialTouched ? "CU" : conductorMaterial);
+
+  /**
+   * The LT config clamped to what the SELECTED cable type actually offers.
+   *
+   * `ltConfig` persists across a change of cable type, and the option lists do not — so choosing
+   * Control after Power left the size on 300 sq mm and the cores on 27, producing a "27 core x
+   * 300 sq mm control cable" at 95,567 kg/km. That is not a cable; control is a 1.5/2.5 sq mm
+   * line. Clamped at render rather than reset in an effect, for the same reason as
+   * `effectiveMaterial`: setState inside an effect cascades renders.
+   *
+   * Falls back to the registry's own defaultValue, so the type definition stays the one source
+   * for what each line is built in.
+   */
+  const effectiveLtConfig = useMemo(() => {
+    const fallback = (key: string, current: number, options: readonly number[]) => {
+      if (options.includes(current)) return current;
+      const field = activeCableType?.configSchema.find((f) => f.key === key);
+      const registryDefault =
+        field && "defaultValue" in field && typeof field.defaultValue === "number"
+          ? field.defaultValue
+          : undefined;
+      return registryDefault !== undefined && options.includes(registryDefault)
+        ? registryDefault
+        : options[0];
+    };
+    return {
+      ...ltConfig,
+      coreCount: fallback("coreCount", ltConfig.coreCount, ltCoreOptions),
+      csaSqMm: fallback("csa", ltConfig.csaSqMm, ltSizeOptions),
+    };
+  }, [ltConfig, ltCoreOptions, ltSizeOptions, activeCableType]);
+
   /**
    * Armour form, with the per-type convention applied until an operator says otherwise.
    *
@@ -584,11 +670,11 @@ function GtpBuilderInner() {
       return `1Cx${solarConfig.csaSqMm} (${solarConfig.directlyConnectedToModules ? "Class 5" : "Class 2"})`;
     }
     if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
-      const cores = ltConfig.coreCount === 3.5 ? "3.5" : String(ltConfig.coreCount);
-      return `${cores}Cx${ltConfig.csaSqMm}`;
+      const cores = effectiveLtConfig.coreCount === 3.5 ? "3.5" : String(effectiveLtConfig.coreCount);
+      return `${cores}Cx${effectiveLtConfig.csaSqMm}`;
     }
     return sizeInput;
-  }, [productLine, sizeInput, ltConfig, solarConfig]);
+  }, [productLine, sizeInput, effectiveLtConfig, solarConfig]);
 
   /** Full cable description for the stored record — type AND size, both following the selection. */
   const cableTypeLabel = useMemo(() => {
@@ -647,7 +733,6 @@ function GtpBuilderInner() {
   /** Locked fields the user has deliberately unlocked (two actions before editing). */
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
-  const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
   const isLtType = productLine === "XLPE_POWER" || productLine === "PVC_CONTROL";
   const isSolarType = productLine === "SOLAR_DC";
   /** IS 17293 Table 1 (class 5) runs from 1.5; Table 2 (class 2) starts at 16. */
@@ -656,10 +741,8 @@ function GtpBuilderInner() {
     [solarConfig.directlyConnectedToModules],
   );
   /** Sizes this standard actually has an insulation row for. */
-  const ltSizeOptions = useMemo(
-    () => (productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES),
-    [productLine],
-  );
+
+
   /** Plain-language playback, per cable type — the operator confirms what they meant. */
   const cableDescription = useMemo(() => {
     if (isSolarType) {
@@ -667,11 +750,11 @@ function GtpBuilderInner() {
       return `**1 core** × **${solarConfig.csaSqMm} sq mm** tinned copper, **${klass}**, 1.5 kV DC solar.`;
     }
     if (!isLtType) return describeSelection(selection);
-    const cores = ltConfig.coreCount === 3.5 ? "3½" : String(ltConfig.coreCount);
-    const material = (activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial) === "AL" ? "aluminium" : "copper";
+    const cores = effectiveLtConfig.coreCount === 3.5 ? "3½" : String(effectiveLtConfig.coreCount);
+    const material = effectiveMaterial === "AL" ? "aluminium" : "copper";
     const kind = productLine === "XLPE_POWER" ? "XLPE insulated" : "PVC insulated";
-    return `**${cores} core** × **${ltConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
-  }, [isLtType, isSolarType, selection, ltConfig, solarConfig, productLine, conductorMaterial, activeCableType]);
+    return `**${cores} core** × **${effectiveLtConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
+  }, [isLtType, isSolarType, selection, ltConfig, solarConfig, productLine, effectiveMaterial, activeCableType, effectiveLtConfig]);
 
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
@@ -694,9 +777,9 @@ function GtpBuilderInner() {
               ? deriveLtFields(
                   {
                     standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-                    csaSqMm: ltConfig.csaSqMm,
-                    coreCount: ltConfig.coreCount,
-                    material: conductorMaterial,
+                    csaSqMm: effectiveLtConfig.csaSqMm,
+                    coreCount: effectiveLtConfig.coreCount,
+                    material: effectiveMaterial,
                     armoured: ltConfig.armoured,
                     armourForm: effectiveArmourForm,
                     armourMethod: effectiveArmourMethod,
@@ -711,7 +794,7 @@ function GtpBuilderInner() {
       }
     }
     return counts;
-  }, [productLine, construction, ltConfig, solarConfig, conductorMaterial, effectiveArmourForm, effectiveArmourMethod]);
+  }, [productLine, construction, ltConfig, effectiveLtConfig, solarConfig, effectiveMaterial, effectiveArmourForm, effectiveArmourMethod]);
 
 
   // Moment 4 — derive the full field map as soon as a customer is chosen, then lay any manual
@@ -727,7 +810,7 @@ function GtpBuilderInner() {
     // The order's drum length overrides the customer's default — it's the more specific layer.
     // A standard-pinned material always wins over the picker state — the operator cannot
     // choose copper for an AB cable, so the engine must never be told they did.
-    const material = activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial;
+    const material = effectiveMaterial;
 
     // Route by cable type. These are DIFFERENT SCHEDULES, not the same fields with different
     // numbers: an LT GTP has an armour and an inner sheath where an AB GTP has a messenger and
@@ -755,8 +838,8 @@ function GtpBuilderInner() {
         derived = deriveLtFields(
           {
             standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-            csaSqMm: ltConfig.csaSqMm,
-            coreCount: ltConfig.coreCount,
+            csaSqMm: effectiveLtConfig.csaSqMm,
+            coreCount: effectiveLtConfig.coreCount,
             material,
             armoured: ltConfig.armoured,
             armourForm: effectiveArmourForm,
@@ -851,7 +934,7 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters, messengerConstruction, effectiveArmourForm, effectiveArmourMethod]);
+  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, effectiveMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters, messengerConstruction, effectiveArmourForm, effectiveArmourMethod, effectiveLtConfig]);
 
   const cableCandidate = useMemo(() => {
     // AB and solar build their spec from their own construction — see spec-from-construction.ts.
@@ -896,8 +979,8 @@ function GtpBuilderInner() {
     }
     if (productLine !== "XLPE_POWER" && productLine !== "PVC_CONTROL") return null;
     const config: LtCableConfig = {
-      ...ltConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-      material: conductorMaterial, conductorClass: "Class 2",
+      ...effectiveLtConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
+      material: effectiveMaterial, conductorClass: "Class 2",
       armourForm: effectiveArmourForm, armourMethod: effectiveArmourMethod,
     };
     try {
@@ -906,7 +989,7 @@ function GtpBuilderInner() {
     } catch (error) {
       return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
     }
-  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod, construction, messengerConstruction, profile, solarConfig]);
+  }, [productLine, ltConfig, effectiveLtConfig, effectiveMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod, construction, messengerConstruction, profile, solarConfig]);
 
   /**
    * Identity of the cable by VALUE, not by object reference.
@@ -1648,9 +1731,9 @@ function GtpBuilderInner() {
 
                 <div className="ml-auto border-l border-border pl-4">
                   <MaterialControl
-                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    value={effectiveMaterial}
                     fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                    onChange={setConductorMaterial}
+                    onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                   />
                 </div>
               </div>
@@ -1676,8 +1759,8 @@ function GtpBuilderInner() {
                 <SizePicker
                   id="lt-cores"
                   label="Cores"
-                  value={ltConfig.coreCount}
-                  options={LT_CORE_OPTIONS}
+                  value={effectiveLtConfig.coreCount}
+                  options={ltCoreOptions}
                   format={(v) => (v === 3.5 ? "3½" : String(v))}
                   onChange={(v) => setLtConfig((c) => ({ ...c, coreCount: v }))}
                 />
@@ -1685,7 +1768,7 @@ function GtpBuilderInner() {
                 <SizePicker
                   id="lt-size"
                   label="Conductor size"
-                  value={ltConfig.csaSqMm}
+                  value={effectiveLtConfig.csaSqMm}
                   options={ltSizeOptions}
                   onChange={(v) => setLtConfig((c) => ({ ...c, csaSqMm: v }))}
                 />
@@ -1749,9 +1832,9 @@ function GtpBuilderInner() {
 
                 <div className="ml-auto border-l border-border pl-4">
                   <MaterialControl
-                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    value={effectiveMaterial}
                     fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                    onChange={setConductorMaterial}
+                    onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                   />
                 </div>
               </div>
@@ -1842,9 +1925,9 @@ function GtpBuilderInner() {
                   open and this becomes a live picker the moment those types ship. */}
               <div className="ml-auto border-l border-border pl-4">
                 <MaterialControl
-                  value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                  value={effectiveMaterial}
                   fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                  onChange={setConductorMaterial}
+                  onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                 />
               </div>
             </div>

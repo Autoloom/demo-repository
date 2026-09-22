@@ -100,6 +100,11 @@ function nextQuoteId(): string {
   return `Q-${stamp.slice(2, 4)}${stamp.slice(5, 7)}-${Math.floor(100 + Math.random() * 900)}`;
 }
 
+/** The inputs a save writes, serialised identically at load and on every render. */
+function signatureOf(commercial: Commercial, customerId?: string, specId?: string): string {
+  return JSON.stringify({ commercial, customerId: customerId ?? null, specId: specId ?? null });
+}
+
 function lineFromCommercial(spec: CableSpec, commercial: Commercial, materials: Material[], lineId: string): { line: QuoteLine; costing: CostingResult } {
   const costing = costCable(spec, commercial, materials, commercial.buildSpec);
   const buildSpec = spec.gtpSource ? quoteBuild(spec, commercial.buildSpec).build : undefined;
@@ -485,8 +490,6 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
    */
   const [savedAt, setSavedAt] = React.useState<Date | null>(null);
   const [savedSignature, setSavedSignature] = React.useState<string | null>(null);
-  /** Set when an existing quote loads, so the first computed signature becomes the baseline. */
-  const [justLoadedSaved, setJustLoadedSaved] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [refreshingRate, setRefreshingRate] = React.useState(false);
   const [gtpChangedSinceQuote, setGtpChangedSinceQuote] = React.useState(false);
@@ -511,16 +514,16 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         setSpec(existingSpec);
         setCustomer(store.customers.find((entry) => entry.id === existing.customerId));
         const line = existing.lines[0];
-        setCommercial({ lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, marginPctByCategory: line.marginPctByCategory ?? defaultMarginByCategory(line.marginPct), buildSpec: line.buildSpec });
+        const loadedCommercial = { lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, marginPctByCategory: line.marginPctByCategory ?? defaultMarginByCategory(line.marginPct), buildSpec: line.buildSpec };
+        setCommercial(loadedCommercial);
         setStatus(existing.status);
         setExistingQuoteId(existing.id);
         // Seed the saved indicator from the record. Saving navigates to /quote/<id>, which
         // remounts this component — without this the chip vanished the instant it was earned.
-        // The signature is recomputed from the same inputs on the next render, so it matches
-        // until the operator actually changes something.
+        // Built from the loaded values here rather than adopted in an effect: setState inside an
+        // effect cascades renders, which this codebase rules out.
         setSavedAt(existing.createdAt ? new Date(existing.createdAt) : new Date());
-        setSavedSignature(null); // replaced by the effect below once `currentSignature` exists
-        setJustLoadedSaved(true);
+        setSavedSignature(signatureOf(loadedCommercial, existing.customerId, existing.lines[0]?.specId));
         return;
       }
 
@@ -578,16 +581,10 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   /** What a save would write. Compared against `savedSignature` to decide saved vs unsaved. */
   const currentSignature = React.useMemo(
-    () => JSON.stringify({ commercial, customerId: customer?.id ?? null, specId: spec?.id ?? null }),
+    () => signatureOf(commercial, customer?.id, spec?.id),
     [commercial, customer, spec],
   );
   const isDirty = savedSignature !== null && savedSignature !== currentSignature;
-  // Adopt the loaded quote's signature as the baseline once the commercial inputs have settled.
-  React.useEffect(() => {
-    if (!justLoadedSaved) return;
-    setSavedSignature(currentSignature);
-    setJustLoadedSaved(false);
-  }, [justLoadedSaved, currentSignature]);
 
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
