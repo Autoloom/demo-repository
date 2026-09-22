@@ -80,12 +80,26 @@ test("an explicit choice overrides the default", () => {
   assert.match(String(row!.value), /Circular, compacted/);
 });
 
-test("every fictitious row warns that it is not the finished cable's diameter", () => {
-  // §0.4. Without this a reader takes D_X for the cable going on the drum — worst on sector
-  // conductors, where the real cable is appreciably smaller than the fictitious figure.
+test("every calculated row says what it is for, and none of them says \"fictitious\"", () => {
+  // Two things at once. The substance: a reader must not take D_X for the cable going on the
+  // drum — worst on sector conductors, where the real cable is appreciably smaller. And the
+  // wording: IS 10462's title calls this the "fictitious calculation method", which is right in
+  // code and wrong on a document a customer signs. IS 7098 and IS 1554 both head these columns
+  // "CALCULATED DIAMETER", so that is what prints.
   const calcRows = deriveLtFields(base).filter((f) => f.key.startsWith("lt.calc."));
   assert.ok(calcRows.length > 0, "the chain must publish its calculated diameters");
   for (const row of calcRows) {
-    assert.match(row.trace, /ignores conductor shape and compactness/, `${row.key} must carry the §0.4 caveat`);
+    assert.match(row.trace, /basis on which IS 7098 \/ IS 1554 tabulate/, `${row.key} must say what it is for`);
+    assert.doesNotMatch(row.label, /fictitious/i, `${row.key} label must not say "fictitious"`);
+    assert.doesNotMatch(row.trace, /fictitious/i, `${row.key} trace must not say "fictitious"`);
+  }
+});
+
+test("no printed field on any LT GTP says \"fictitious\"", () => {
+  // The whole schedule, not just the calculated rows — the word had reached twenty labels.
+  for (const row of deriveLtFields(base)) {
+    assert.doesNotMatch(row.label, /fictitious/i, `${row.key}: label`);
+    assert.doesNotMatch(row.trace, /fictitious/i, `${row.key}: trace`);
+    assert.doesNotMatch(String(row.value), /fictitious/i, `${row.key}: value`);
   }
 });

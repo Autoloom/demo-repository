@@ -156,7 +156,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   const dL = fictitiousConductorDiameter(config.csaSqMm, "fixed");
   steps.push({
     id: "calc.dL",
-    label: "Fictitious conductor diameter (d_L)",
+    label: "Calculated conductor diameter (d_L)",
     value: dL,
     unit: "mm",
     ref: "IS 10462 (Part 1) : 1983, Table 1",
@@ -166,7 +166,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   const dC = fictitiousCoreDiameter({ dLMm: dL, insulationThicknessMm: insulation.nominalMm });
   steps.push({
     id: "calc.diaOverCore",
-    label: "Fictitious core diameter (D_c)",
+    label: "Calculated core diameter (D_c)",
     value: dC,
     unit: "mm",
     ref: "IS 10462 (Part 1) : 1983, §3.2",
@@ -196,7 +196,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     });
     steps.push({
       id: "calc.diaOverCore.neutral",
-      label: "Fictitious core diameter, reduced neutral (D_c2)",
+      label: "Calculated core diameter, reduced neutral (D_c2)",
       value: neutralDC,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.2",
@@ -205,7 +205,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = fictitiousLaidUpDiameter({ form: "threeAndHalf", fullCoreDMm: dC, halfCoreDMm: neutralDC });
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over laid-up cores (D_f, 3½ core)",
+      label: "Calculated diameter over laid-up cores (D_f, 3½ core)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3(b)",
@@ -216,7 +216,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = dC;
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over core (single core, no lay-up)",
+      label: "Calculated diameter over core (single core, no lay-up)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3",
@@ -226,7 +226,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = fictitiousLaidUpDiameter({ form: "uniform", cores: config.coreCount, dCMm: dC });
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over laid-up cores (D_f)",
+      label: "Calculated diameter over laid-up cores (D_f)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3(a) + Table 3",
@@ -253,7 +253,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dB = fictitiousOverInnerSheath(dF, innerSheathMm);
     steps.push({
       id: "calc.diaUnderArmour",
-      label: "Fictitious diameter over inner sheath (D_B = under armour)",
+      label: "Calculated diameter over inner sheath (D_B = under armour)",
       value: dB,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.4",
@@ -308,7 +308,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dX = fictitiousOverArmour(dB, armourMm);
     steps.push({
       id: "calc.diaUnderSheath",
-      label: "Fictitious diameter over armour (D_X = under outer sheath)",
+      label: "Calculated diameter over armour (D_X = under outer sheath)",
       value: dX,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.5",

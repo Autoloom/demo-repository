@@ -17,7 +17,7 @@ import { IS1554_1_MANDATORY_LEGEND, IS1554_1_THERMAL } from "@/lib/domain/standa
 import { IS7098_1_RATED_VOLTAGE, IS7098_1_THERMAL } from "@/lib/domain/standards/is7098-1-2025";
 import { catalogueForArmour, findCatalogueRow } from "@/lib/domain/catalogue/daksha-2026";
 import { coreIdentification } from "@/lib/domain/standards/core-identification";
-import { fictitiousDiameterCaveat } from "@/lib/domain/standards/is10462-1-1983";
+import { calculatedDiameterNote } from "@/lib/domain/standards/is10462-1-1983";
 import { insulationToleranceFloorMm } from "@/lib/domain/standards/protective-coverings";
 
 import { deriveLtCable } from "./derive-lt";
@@ -161,7 +161,7 @@ export function deriveLtFields(
       // reader taking D_X for the cable they will put on a drum — which matters most on sector
       // conductors, where the real cable is appreciably smaller than the fictitious figure.
       trace: isCalc
-        ? `${step.keyedBy ? `${step.ref} — keyed by ${step.keyedBy}` : step.ref}. ${fictitiousDiameterCaveat}`
+        ? `${step.keyedBy ? `${step.ref} — keyed by ${step.keyedBy}` : step.ref}. ${calculatedDiameterNote}`
         : step.keyedBy
           ? `${step.ref} — keyed by ${step.keyedBy}`
           : step.ref,
@@ -406,9 +406,9 @@ export function deriveLtFields(
         source: "works-data",
         trace:
           `${catalogue!.ref}. Works figure for the cable as built. ` +
-          `The IS 10462 fictitious build-up gives ${calculatedMm.toFixed(1)} mm ` +
-          `(${deltaMm >= 0 ? "+" : ""}${deltaMm.toFixed(1)} mm), which §0.4 says is not the ` +
-          "finished cable's diameter.",
+          `The IS 10462 calculated build-up gives ${calculatedMm.toFixed(1)} mm ` +
+          `(${deltaMm >= 0 ? "+" : ""}${deltaMm.toFixed(1)} mm), which is the basis for selecting ` +
+          "the sheath and armour thicknesses rather than the finished cable's diameter.",
         editable: true,
         tolerance: bandTolerance("±2%", "works-estimate", "Works spread on a published diameter"),
       });
@@ -421,7 +421,7 @@ export function deriveLtFields(
         source: "calc",
         trace:
           `D_X ${chain.calculatedDiaUnderOuterSheathMm} mm + 2 × ${chain.outerSheathThicknessMm} mm outer sheath. ` +
-          fictitiousDiameterCaveat +
+          calculatedDiameterNote +
           " The works catalogue publishes no row for this cable, so this is the best available figure.",
         editable: true,
         tolerance: bandTolerance(
