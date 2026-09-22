@@ -474,6 +474,19 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [status, setStatus] = React.useState<QuoteStatus>("Draft");
   const [existingQuoteId, setExistingQuoteId] = React.useState<string | undefined>(quoteId);
   const [feedback, setFeedback] = React.useState<{ tone: Tone; message: string } | null>(null);
+  /**
+   * Persistent saved / unsaved indicator.
+   *
+   * The success banner auto-dismisses after six seconds, so an operator who looked away had no
+   * way to tell whether a quote had been saved — the client asked for a standing indication
+   * rather than a message that disappears (22 Sept 2026). This tracks the inputs that change a
+   * price against the ones last written, so "Saved" means the figures on screen are the figures
+   * in the record, not merely that a save happened at some point.
+   */
+  const [savedAt, setSavedAt] = React.useState<Date | null>(null);
+  const [savedSignature, setSavedSignature] = React.useState<string | null>(null);
+  /** Set when an existing quote loads, so the first computed signature becomes the baseline. */
+  const [justLoadedSaved, setJustLoadedSaved] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [refreshingRate, setRefreshingRate] = React.useState(false);
   const [gtpChangedSinceQuote, setGtpChangedSinceQuote] = React.useState(false);
@@ -501,6 +514,13 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         setCommercial({ lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, marginPctByCategory: line.marginPctByCategory ?? defaultMarginByCategory(line.marginPct), buildSpec: line.buildSpec });
         setStatus(existing.status);
         setExistingQuoteId(existing.id);
+        // Seed the saved indicator from the record. Saving navigates to /quote/<id>, which
+        // remounts this component — without this the chip vanished the instant it was earned.
+        // The signature is recomputed from the same inputs on the next render, so it matches
+        // until the operator actually changes something.
+        setSavedAt(existing.createdAt ? new Date(existing.createdAt) : new Date());
+        setSavedSignature(null); // replaced by the effect below once `currentSignature` exists
+        setJustLoadedSaved(true);
         return;
       }
 
@@ -555,6 +575,19 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       return { error: err instanceof Error ? err.message : "This cable could not be priced." };
     }
   }, [spec, commercial, materials, existingQuoteId]);
+
+  /** What a save would write. Compared against `savedSignature` to decide saved vs unsaved. */
+  const currentSignature = React.useMemo(
+    () => JSON.stringify({ commercial, customerId: customer?.id ?? null, specId: spec?.id ?? null }),
+    [commercial, customer, spec],
+  );
+  const isDirty = savedSignature !== null && savedSignature !== currentSignature;
+  // Adopt the loaded quote's signature as the baseline once the commercial inputs have settled.
+  React.useEffect(() => {
+    if (!justLoadedSaved) return;
+    setSavedSignature(currentSignature);
+    setJustLoadedSaved(false);
+  }, [justLoadedSaved, currentSignature]);
 
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
@@ -618,6 +651,8 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       const saved = await quotesService.saveDraft(quoteRecord, actor);
       setExistingQuoteId(saved.id);
       setStatus(saved.status);
+      setSavedAt(new Date());
+      setSavedSignature(currentSignature);
       setFeedback({
         tone: "success",
         message: nextStatus === "Review" ? `${saved.id} saved and sent for owner review.` : `${saved.id} saved as a draft.`,
@@ -848,6 +883,27 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                 <SaveIcon className="mr-2 size-4" />
                 {needsApproval ? "Save for owner review" : "Save draft"}
               </Button>
+              {/* Standing saved/unsaved state — the success banner dismisses itself, this does not. */}
+              {savedAt ? (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                    isDirty ? "border-warning/40 text-warning" : "border-success/40 text-success",
+                  )}
+                >
+                  {isDirty ? (
+                    <>
+                      <AlertTriangleIcon className="size-3.5" />
+                      Unsaved changes
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2Icon className="size-3.5" />
+                      Saved {savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </>
+                  )}
+                </span>
+              ) : null}
               {status !== "Approved" && !needsApproval && role === "Owner" && existingQuoteId ? (
                 <Button type="button" variant="outline" disabled={saving || !priced || "error" in priced} onClick={() => void save("Approved")}>
                   Mark approved

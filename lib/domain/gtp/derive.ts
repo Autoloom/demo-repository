@@ -485,7 +485,7 @@ export function deriveFields(construction: CableConstruction, quirks: Derivation
 
   // FIXED org constants.
   fields.push({ key: "mfr.name", label: "Manufacturer", value: FIXED.manufacturer, tag: "FIXED", source: "profile", trace: "Org constant", editable: false });
-  fields.push({ key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant", editable: false, gap: true });
+  fields.push({ key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant. Required on the supplied cable, not at offer stage — a quotation goes out before the licence is quoted against, so this does not block a GTP (client, 22 Sept 2026).", editable: true });
 
   // Appendix-I 3.i — buyers ask for the phase-conductor count explicitly.
   const powerGroup = construction.groups.find((g) => g.role === "power");

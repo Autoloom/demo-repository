@@ -45,6 +45,7 @@ import {
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
+import { CHAIN_INPUT_FIELD_KEYS, DEFAULT_HIDDEN_FIELD_KEYS, chainInputOverrideMessage } from "@/lib/domain/gtp/types";
 import { specFromAbConstruction, specFromSolarConstruction } from "@/lib/domain/gtp/spec-from-construction";
 import { deriveSolarMass, isMassGap } from "@/lib/domain/gtp/mass";
 import { conductorClassFor, solarDimensions } from "@/lib/domain/standards/is17293-2020";
@@ -624,7 +625,7 @@ function GtpBuilderInner() {
    * only the PDF omits it. A field carrying an unresolved gap can never be hidden, because
    * hiding a known-missing value would turn a visible problem into an invisible one.
    */
-  const [hiddenFields, setHiddenFields] = useState<string[]>([]);
+  const [hiddenFields, setHiddenFields] = useState<string[]>([...DEFAULT_HIDDEN_FIELD_KEYS]);
   /**
    * Parameters the operator added by hand. Buyers ask for tender clauses and project codes that
    * no cable standard covers; the alternative to supporting them is someone editing the PDF
@@ -1329,6 +1330,15 @@ function GtpBuilderInner() {
     });
   }
 
+  // An override on a CHAIN INPUT blocks generation. The override mechanism replaces a printed
+  // value without re-running the build-up, so overriding "Nominal conductor area" left every
+  // dimension and the mass describing the previous cable on a sheet that named a new one. The
+  // chain cannot be re-run from the overridden value either — a size the picker does not offer
+  // has no row in IS 10462 Table 1 — so the honest answer is to send the operator to the picker.
+  const overriddenInputs = fields.filter(
+    (f) => overrides[f.key] !== undefined && CHAIN_INPUT_FIELD_KEYS.includes(f.key),
+  );
+
   // An override of a locked (LOOKUP/CALC) value without a written reason blocks generation —
   // otherwise the "reason required" rule would be decorative.
   const missingReasons = fields.filter(
@@ -1353,6 +1363,7 @@ function GtpBuilderInner() {
     validation?.passesHardGate &&
     (validation.warningCount === 0 || ackWarnings) &&
     missingReasons.length === 0 &&
+    overriddenInputs.length === 0 &&
     emptyTolerances.length === 0;
   const canSaveTemplate = Boolean(profile && choices && templateName.trim());
 
@@ -2283,6 +2294,15 @@ function GtpBuilderInner() {
             <p className="mt-2 text-xs text-danger">
               Fix the errors above before generating — the GTP can&rsquo;t be issued on unverified data.
             </p>
+          ) : null}
+          {overriddenInputs.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {overriddenInputs.map((f) => (
+                <p key={f.key} className="text-xs text-danger">
+                  {chainInputOverrideMessage(f.label)}
+                </p>
+              ))}
+            </div>
           ) : null}
           {missingReasons.length > 0 ? (
             <p className="mt-2 text-xs text-danger">

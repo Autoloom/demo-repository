@@ -55,7 +55,7 @@ export function deriveLtFields(
   // ── Manufacturer ────────────────────────────────────────────────────────────────────────
   fields.push(
     { key: "mfr.name", label: "Manufacturer", value: FIXED.manufacturer, tag: "FIXED", source: "profile", trace: "Org constant", editable: false },
-    { key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant", editable: false, gap: true },
+    { key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant. Required on the supplied cable, not at offer stage — a quotation goes out before the licence is quoted against, so this does not block a GTP (client, 22 Sept 2026).", editable: true },
   );
 
   // ── Cable identity ──────────────────────────────────────────────────────────────────────
@@ -359,6 +359,37 @@ export function deriveLtFields(
     trace: opts.customerName ? `For ${opts.customerName}` : "Standards conformance",
     editable: false,
   });
+
+  // ── Overall diameter ──────────────────────────────────────────────────────────────────────
+  // Client, 22 Sept 2026: "customers will not accept specs without it" — and it genuinely was
+  // not on the sheet. It is D_X grown by the outer sheath on both sides.
+  //
+  // Labelled CALCULATED, not measured, and deliberately so. IS 10462 §0.4 is explicit that the
+  // fictitious method "is not a replacement for the calculation of normal diameters required for
+  // practical purposes, which should be calculated separately". A real cable — especially one
+  // with sector-shaped compacted conductors — measures under this. The works/catalogue figure
+  // supersedes it the moment we hold one; until then this is stated as what it is rather than
+  // left off the document.
+  {
+    const overallDiaMm = chain.calculatedDiaUnderOuterSheathMm + 2 * chain.outerSheathThicknessMm;
+    fields.push({
+      key: "lt.overallDia",
+      label: "Overall diameter (calculated)",
+      value: `${overallDiaMm.toFixed(1)} mm`,
+      tag: "CALC",
+      source: "calc",
+      trace:
+        `D_X ${chain.calculatedDiaUnderOuterSheathMm} mm + 2 × ${chain.outerSheathThicknessMm} mm outer sheath. ` +
+        fictitiousDiameterCaveat +
+        " A works or catalogue diameter, where one exists, supersedes this figure.",
+      editable: true,
+      tolerance: bandTolerance(
+        "±2%",
+        "works-estimate",
+        "Works spread on a calculated diameter — replace with the catalogue figure when held",
+      ),
+    });
+  }
 
   // ── Finished mass ─────────────────────────────────────────────────────────────────────────
   // Derived from this same chain, layer by layer, so a printed dimension and a priced mass can

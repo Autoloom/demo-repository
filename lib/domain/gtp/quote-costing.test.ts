@@ -55,9 +55,24 @@ test("margin is set per material — raising only one category's margin moves on
 });
 
 test("a cable with an unresolved GTP gap never reaches a price", () => {
-  const fields = deriveLtFields(config); // mfr.isiLicence is still gap: true here
+  // The ISI licence used to be the convenient example here, but it is no longer a gap: it is
+  // required on the supplied cable, not at offer stage, so it must not block a quotation
+  // (client, 22 Sept 2026). The RULE under test is unchanged — any unresolved field still
+  // blocks pricing — so this now marks a real one.
+  const fields = deriveLtFields(config).map((f) =>
+    f.key === "lt.insulation" ? { ...f, gap: true, value: "not yet known" } : f,
+  );
   const result = specFromFields({ specId: "SPEC-QC-2", designation: "3.5C x 240", productLine: "XLPE_POWER", config, armourForm: deriveLtCable(config).armourForm, fields });
   assert.ok("gap" in result, "an unresolved GTP must not yield a priceable spec in the first place");
+});
+
+test("the ISI licence alone does NOT block a quotation", () => {
+  // Offers go out before the licence is quoted against. Pinning this so it is not "fixed" back
+  // into a blocker by someone reading the old test.
+  const fields = deriveLtFields(config);
+  assert.equal(fields.find((f) => f.key === "mfr.isiLicence")?.gap ?? false, false);
+  const result = specFromFields({ specId: "SPEC-QC-3", designation: "3.5C x 240", productLine: "XLPE_POWER", config, armourForm: deriveLtCable(config).armourForm, fields });
+  assert.ok(!("gap" in result), "a GTP whose only unfilled field is the licence must still price");
 });
 
 test("costCable itself refuses a spec assembled with an unbuildable size", () => {
