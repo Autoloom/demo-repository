@@ -1990,9 +1990,11 @@ function GtpBuilderInner() {
           </button>
           {fieldsOpen ? (
             <div className="overflow-x-auto border-t border-border">
-              <table className="w-full text-left text-sm">
+              {/* Outside the <table>: a <div> is not a valid child of one, and React's hydration
+                  refuses it. It only ever rendered when something was hidden, so it stayed quiet
+                  until armour thickness and width started defaulting to hidden. */}
               {hiddenFields.length > 0 ? (
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+                <div className="m-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
                   <span className="text-sm text-foreground">
                     {hiddenFields.length} field{hiddenFields.length === 1 ? "" : "s"} hidden from the printed GTP.
                   </span>
@@ -2008,6 +2010,7 @@ function GtpBuilderInner() {
                   </button>
                 </div>
               ) : null}
+              <table className="w-full text-left text-sm">
                 <thead className="bg-muted text-xs text-muted-foreground">
                   <tr>
                     <th className="p-3 font-medium">Field</th>
