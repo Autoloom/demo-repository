@@ -10,6 +10,15 @@ export interface PdfSection {
   title?: string;
   lines?: PdfCell[];
   table?: PdfTable;
+  /**
+   * Start this section on a fresh page.
+   *
+   * Needed for documents whose parts are separate sheets rather than a continuous flow — a
+   * customer offer is a covering letter, a priced schedule and a terms page, each headed and
+   * each footed, and letting the schedule begin halfway down the letter would not be the same
+   * document. Ignored when the page is already empty, so it never leaves a blank sheet.
+   */
+  pageBreak?: boolean;
 }
 
 export interface PdfDocument {
@@ -28,6 +37,13 @@ const SMALL_LINE_HEIGHT = 12;
 function clean(value: PdfCell): string {
   return String(value ?? "")
     .replace(/[₹]/g, "INR ")
+    // "+/-" rather than dropped. The final filter strips everything outside printable ASCII,
+    // which silently turned "1000 meters ± 10%" into "1000 meters 10%" and "length variation
+    // ± 5%" into "variation 5%" — a tolerance band read as an absolute, on the terms page of a
+    // document a buyer holds us to.
+    .replace(/±/g, "+/-")
+    .replace(/[×]/g, "x")
+    .replace(/°/g, " deg ")
     .replace(/[–—]/g, "-")
     .replace(/[“”]/g, "\"")
     .replace(/[‘’]/g, "'")
@@ -90,6 +106,13 @@ class PdfBuilder {
     this.y -= size;
   }
 
+  /** Begin a fresh page, unless nothing has been drawn on this one yet. */
+  newPage() {
+    if (this.page().length === 0) return;
+    this.pages.push([]);
+    this.y = PAGE_HEIGHT - MARGIN;
+  }
+
   rule() {
     this.ensure(10);
     this.add(`${MARGIN} ${this.y} m ${PAGE_WIDTH - MARGIN} ${this.y} l S`);
@@ -133,7 +156,10 @@ class PdfBuilder {
       this.y -= rowHeight;
     };
 
-    renderRow(table.headers, true);
+    // A table whose headers are all blank has no header row — it is a layout block, not a
+    // table of data. The customer offer's client/project/offer-no header is one: rendering an
+    // empty bold row above it left four ruled blank lines at the top of every page.
+    if (table.headers.some((header) => header.trim().length > 0)) renderRow(table.headers, true);
     table.rows.forEach((row) => renderRow(row));
     this.add(`${MARGIN} ${this.y + 4} m ${PAGE_WIDTH - MARGIN} ${this.y + 4} l S`);
     this.y -= 8;
@@ -149,6 +175,7 @@ class PdfBuilder {
     this.rule();
 
     for (const section of doc.sections) {
+      if (section.pageBreak) this.newPage();
       if (section.title) {
         this.gap(4);
         this.text(section.title, MARGIN, 12, true, 90);

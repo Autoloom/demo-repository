@@ -1109,10 +1109,9 @@ function GtpBuilderInner() {
     // builder sat there looking like a new GTP. The ref alone gives the same "load once" and a
     // late setState on an unmounted component is a no-op.
     //
-    // applySheetInputs is a stable function declaration in this component; the guard makes this
-    // a one-shot load, so re-running on identity changes would be wrong rather than merely
-    // wasteful — it would discard whatever the operator has since changed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The guard also makes this a one-shot load, so re-running on any other dependency would be
+    // wrong rather than merely wasteful — it would discard whatever the operator has since
+    // changed.
   }, [editGtpId]);
 
   /**

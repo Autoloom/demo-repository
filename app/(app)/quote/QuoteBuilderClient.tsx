@@ -40,6 +40,17 @@ import { costCable, quoteBuild } from "@/lib/domain/gtp/quote-costing";
 import { formatINR } from "@/lib/domain/format";
 import { downloadPdf } from "@/lib/domain/pdf";
 import { quotePdfDocument } from "@/lib/domain/quote-pdf";
+import { customerOfferDocument, offerDescription } from "@/lib/domain/offer/customer-offer";
+import {
+  consumeOfferSerial,
+  DEFAULT_LETTERHEAD,
+  loadLetterhead,
+  offerNumber,
+  peekOfferSerial,
+  saveLetterhead,
+  setNextOfferSerial,
+  type Letterhead,
+} from "@/lib/domain/offer/letterhead";
 import { can, requiresApproval } from "@/lib/rbac";
 import {
   dataService,
@@ -285,6 +296,30 @@ function formatPct(value: number): string {
  * control cable at 561.90/RMT, not 562 — and rounding here would put our sheet and their sheet
  * a few hundred rupees apart on a 5,600 m line.
  */
+/**
+ * The offer letterhead and number, read as an external store.
+ *
+ * Nothing pushes updates — a save bumps a version and the component re-reads — so `subscribe`
+ * is a no-op and the snapshots are cached per version, which is what `useSyncExternalStore`
+ * requires for referential stability. Same shape as the GTP builder's template store.
+ */
+function subscribeToOfferStore(): () => void {
+  return () => {};
+}
+
+let letterheadCache: { version: number; value: Letterhead } | null = null;
+function getLetterheadSnapshot(version: number): Letterhead {
+  if (!letterheadCache || letterheadCache.version !== version) {
+    letterheadCache = { version, value: loadLetterhead() };
+  }
+  return letterheadCache.value;
+}
+
+function getSerialSnapshot(version: number): number {
+  void version;
+  return peekOfferSerial();
+}
+
 function ratePerMetre(lineTotalInr: number, lengthM: number): string {
   if (lengthM <= 0) return "—";
   return `₹${(lineTotalInr / lengthM).toLocaleString("en-IN", {
@@ -718,6 +753,55 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     };
   }, [priced, commercial.buildUp]);
 
+  /**
+   * The customer's copy — the offer Navya actually sends, as distinct from the costing sheet.
+   *
+   * Held here rather than on the quote record because it is presentation of a price that already
+   * exists: the same quote goes out under a different project name or to a different contact
+   * without being re-priced. The letterhead and the standing terms are the works' own and are
+   * persisted once, not per quote, which is what "save the branding" means in practice —
+   * nobody retypes fifteen terms of supply to send one offer.
+   */
+  const [letterhead, setLetterhead] = React.useState<Letterhead>(DEFAULT_LETTERHEAD);
+  const [offerOpen, setOfferOpen] = React.useState(false);
+  const [projectName, setProjectName] = React.useState("");
+  const [offerSubject, setOfferSubject] = React.useState("");
+  /**
+   * The stored letterhead and the offer counter live in localStorage, which the server does not
+   * have. Read through `useSyncExternalStore` — the same pattern the GTP builder uses for saved
+   * templates — so the server renders the seeded defaults, the client renders what is stored, and
+   * the two agree during hydration. `storedVersion` bumps after a save to re-read.
+   */
+  const [storedVersion, setStoredVersion] = React.useState(0);
+  const storedLetterhead = React.useSyncExternalStore(
+    subscribeToOfferStore,
+    () => getLetterheadSnapshot(storedVersion),
+    () => DEFAULT_LETTERHEAD,
+  );
+  const offerSerial = React.useSyncExternalStore(
+    subscribeToOfferStore,
+    () => getSerialSnapshot(storedVersion),
+    () => 1,
+  );
+  /** What the panel shows: the operator's unsaved edits if any, else what is stored. */
+  const [letterheadEdited, setLetterheadEdited] = React.useState(false);
+  const activeLetterhead = letterheadEdited ? letterhead : storedLetterhead;
+  function editLetterhead(next: Letterhead) {
+    setLetterhead(next);
+    setLetterheadEdited(true);
+  }
+
+  /**
+   * Who the offer is addressed to, defaulting to the customer's own contact.
+   *
+   * Derived rather than copied into state by an effect: the default has to follow a change of
+   * customer, and a setState in an effect body cascades renders for a value that is simply a
+   * function of two things already on screen.
+   */
+  const [attention, setAttention] = React.useState<{ name: string; phone: string } | null>(null);
+  const attentionName = attention?.name ?? customer?.contactName ?? "";
+  const attentionPhone = attention?.phone ?? customer?.phone ?? "";
+
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
   const marginGate = blendedMarginPct < MARGIN_GATE_PCT;
   const permissionCtx = { record: { marginReviewRequired: marginGate } };
@@ -776,6 +860,51 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     }
   }
 
+  /**
+   * Issue the customer's copy.
+   *
+   * Consumes an offer number, because this is the point at which a document leaves the building
+   * — previewing a price must not burn a serial, and a gap in a numbered series is exactly what
+   * accounts notice. The rate per metre is the line total divided by the length, which is the
+   * only figure that crosses from the costing sheet to this document.
+   */
+  function downloadCustomerOffer() {
+    if (!spec || !priced || "error" in priced) return;
+    const serial = consumeOfferSerial();
+    setStoredVersion((v) => v + 1);
+    const now = new Date();
+    const offerNo = offerNumber(activeLetterhead.offerPrefix, serial, now);
+    downloadPdf(
+      `${offerNo.replace(/\//g, "-")}.pdf`,
+      customerOfferDocument({
+        letterhead: activeLetterhead,
+        offerNo,
+        date: now.toISOString(),
+        buyer: {
+          name: customer?.name ?? "Customer pending",
+          addressLines: (customer?.billingAddress ?? "")
+            .split(/\r?\n|,\s*/)
+            .map((part) => part.trim())
+            .filter(Boolean),
+          attentionName: attentionName.trim() || undefined,
+          attentionPhone: attentionPhone.trim() || undefined,
+        },
+        projectName: projectName.trim() || "your enquiry",
+        subject: offerSubject.trim() || undefined,
+        lines: [
+          {
+            description: offerDescription(spec),
+            unit: "RMT",
+            quantity: priced.line.lengthM,
+            ratePerMetreInr:
+              priced.line.lengthM > 0 ? priced.line.lineTotalInr / priced.line.lengthM : 0,
+          },
+        ],
+      }),
+    );
+    setFeedback({ tone: "success", message: `Offer ${offerNo} downloaded. The next one will be ${offerSerial + 1}.` });
+  }
+
   function downloadQuotePdf() {
     if (!spec || !priced || "error" in priced) return;
     downloadPdf(
@@ -823,10 +952,19 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             )}
           </div>
         </div>
-        <Button type="button" variant="outline" onClick={downloadQuotePdf} disabled={!priced || "error" in priced}>
-          <DownloadIcon className="mr-2 size-4" />
-          Download quote PDF
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {/* Two documents, named for who reads them. They were one button and one PDF, which
+              printed a per-material rate per kilogram to the buyer — the metal content of the
+              cable and what we paid for it, which is the whole of the negotiation. */}
+          <Button type="button" variant="outline" onClick={downloadQuotePdf} disabled={!priced || "error" in priced}>
+            <DownloadIcon className="mr-2 size-4" />
+            Internal costing sheet
+          </Button>
+          <Button type="button" onClick={downloadCustomerOffer} disabled={!priced || "error" in priced}>
+            <DownloadIcon className="mr-2 size-4" />
+            Customer offer
+          </Button>
+        </div>
       </header>
 
       {feedback || gtpChangedSinceQuote ? (
@@ -1050,6 +1188,181 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                 <ShieldAlertIcon className="size-3.5 shrink-0" />
                 Blended margin is below the company minimum ({MARGIN_GATE_PCT}%) — saving this will need owner review.
               </p>
+            ) : null}
+          </section>
+
+          {/* What the customer's copy says, over and above the price.
+              The offer is a letter, not a table: it is addressed to a person, it names the job,
+              and it carries the works' own letterhead and standing terms. None of that is
+              derivable from a cable, and all of it has to be retyped on every offer unless the
+              parts that never change are kept. So the branding and the fifteen terms persist
+              once, and only the three things that are genuinely per-offer are asked for here. */}
+          <section className="space-y-4 rounded-md border bg-card p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-medium">Customer offer</h3>
+                <p className="text-xs text-muted-foreground">
+                  The covering letter, priced schedule and terms of supply that go to the buyer.
+                  Next offer number{" "}
+                  <span className="font-mono">
+                    {offerNumber(activeLetterhead.offerPrefix, offerSerial, new Date())}
+                  </span>
+                  .
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOfferOpen((open) => !open)} aria-expanded={offerOpen}>
+                {offerOpen ? "Done" : "Letterhead & terms"}
+              </Button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="offer-project">Project</Label>
+                <Input
+                  id="offer-project"
+                  value={projectName}
+                  placeholder="e.g. MSETCL Tilwani Substation Project"
+                  onChange={(event) => setProjectName(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The job, named as the end client names it — often not the buyer. Heads the
+                  schedule and the terms page.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="offer-attn">Kind attention</Label>
+                <Input
+                  id="offer-attn"
+                  value={attentionName}
+                  placeholder="Who the offer is addressed to"
+                  onChange={(event) => setAttention({ name: event.target.value, phone: attentionPhone })}
+                />
+                <Input
+                  className="mt-2"
+                  value={attentionPhone}
+                  placeholder="Contact no."
+                  aria-label="Contact number"
+                  onChange={(event) => setAttention({ name: attentionName, phone: event.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="offer-subject">Subject (optional)</Label>
+                <Input
+                  id="offer-subject"
+                  value={offerSubject}
+                  placeholder="Left blank, it reads from the cables on the schedule and the project"
+                  onChange={(event) => setOfferSubject(event.target.value)}
+                />
+              </div>
+            </div>
+
+            {offerOpen ? (
+              <div className="space-y-4 rounded-md border border-border bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">
+                  Saved once and reused on every offer. Change it here when the works&rsquo; own
+                  details change, not per quote.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-company">Company</Label>
+                    <Input id="lh-company" value={activeLetterhead.companyName} onChange={(e) => editLetterhead({ ...activeLetterhead, companyName: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-prefix">Offer no. prefix</Label>
+                    <div className="flex gap-2">
+                      <Input id="lh-prefix" className="font-mono" value={activeLetterhead.offerPrefix} onChange={(e) => editLetterhead({ ...activeLetterhead, offerPrefix: e.target.value })} />
+                      <Input
+                        type="number"
+                        min={1}
+                        className="w-24 font-mono"
+                        aria-label="Next offer number"
+                        value={offerSerial}
+                        onChange={(e) => {
+                          setNextOfferSerial(Number(e.target.value));
+                          setStoredVersion((v) => v + 1);
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Prefix, running number, financial year — set the number to carry on from an
+                      existing series rather than restarting at 1.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-address">Address</Label>
+                    <textarea
+                      id="lh-address"
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={activeLetterhead.addressLines.join("\n")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, addressLines: e.target.value.split("\n") })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-phone">Phone</Label>
+                    <Input id="lh-phone" value={activeLetterhead.phone} onChange={(e) => editLetterhead({ ...activeLetterhead, phone: e.target.value })} />
+                    <Input
+                      className="mt-2"
+                      aria-label="E-mail addresses"
+                      value={activeLetterhead.emails.join(", ")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, emails: e.target.value.split(/,\s*/) })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-signatory">Signatory</Label>
+                    <Input id="lh-signatory" value={activeLetterhead.signatoryName} onChange={(e) => editLetterhead({ ...activeLetterhead, signatoryName: e.target.value })} />
+                    <Input className="mt-2" aria-label="Signatory phone" value={activeLetterhead.signatoryPhone} onChange={(e) => editLetterhead({ ...activeLetterhead, signatoryPhone: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-footer">Footer</Label>
+                    <textarea
+                      id="lh-footer"
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={activeLetterhead.footerLines.join("\n")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, footerLines: e.target.value.split("\n") })}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Terms &amp; conditions of supply</Label>
+                  <div className="space-y-2">
+                    {activeLetterhead.terms.map((term, index) => (
+                      <div key={term.label} className="grid gap-2 sm:grid-cols-[180px_1fr]">
+                        <span className="pt-2 text-xs text-muted-foreground">{term.label}</span>
+                        <textarea
+                          rows={term.value.length > 90 ? 3 : 1}
+                          aria-label={term.label}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={term.value}
+                          onChange={(e) =>
+                            setLetterhead({
+                              ...letterhead,
+                              terms: activeLetterhead.terms.map((t, i) => (i === index ? { ...t, value: e.target.value } : t)),
+                            })
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    saveLetterhead(activeLetterhead);
+                    setLetterheadEdited(false);
+                    setStoredVersion((v) => v + 1);
+                    setFeedback({ tone: "success", message: "Letterhead and terms saved — every offer from now uses them." });
+                  }}
+                >
+                  <SaveIcon className="mr-2 size-4" />
+                  Save letterhead &amp; terms
+                </Button>
+              </div>
             ) : null}
           </section>
 
