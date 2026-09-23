@@ -1,4 +1,4 @@
-import { computeLine, ratesForSpec, type CostingResult, type MarginCategory } from "@/lib/domain/costing";
+import { computeLine, ratesForSpec, type CostBuildUp, type CostingResult } from "@/lib/domain/costing";
 import type { CableSpec, Material } from "@/lib/services/types";
 import { buildSpecFromFields, constructionKey, lineMassFromDerived, targetsFromBuild, type BuildSpec } from "./build-spec";
 import { derivedLineMassFromLegacySpec, isBridgeGap, ltConfigFromLegacySpec } from "./legacy-bridge";
@@ -46,7 +46,7 @@ export function quoteBuild(spec: CableSpec, previous?: BuildSpec): { source: Gtp
   return { source, build: buildSpecFromFields(spec.id, source, targets) };
 }
 
-export function costCable(spec: CableSpec, commercial: { lengthM: number; marginPctByCategory: Record<MarginCategory, number>; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
+export function costCable(spec: CableSpec, commercial: { lengthM: number; buildUp: CostBuildUp; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
   let mass;
   // AB and solar have their own derivation chains and no `gtpSource` — their constructions do not
   // fit LtCableConfig. Routed by family so the shared engine keeps one branch per FAMILY rather
@@ -100,6 +100,6 @@ export function costCable(spec: CableSpec, commercial: { lengthM: number; margin
     mass = result;
   }
   const rates = ratesForSpec(spec, materials);
-  return computeLine({ spec, lengthM: commercial.lengthM, marginPctByCategory: commercial.marginPctByCategory, derivedMass: mass,
+  return computeLine({ spec, lengthM: commercial.lengthM, buildUp: commercial.buildUp, derivedMass: mass,
     rates: { ...rates, conductorPerKg: commercial.metalRatePerKg || rates.conductorPerKg, labourPerM: commercial.overheadPerM } });
 }

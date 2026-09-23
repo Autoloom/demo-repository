@@ -24,7 +24,7 @@ import { parseSizeString } from "./parse-size";
 import { specFromFields } from "./spec-from-fields";
 import { isSpecGap, specFromAbConstruction, specFromSolarConstruction } from "./spec-from-construction";
 import { conductorClassFor, solarDimensions } from "@/lib/domain/standards/is17293-2020";
-import { defaultMarginByCategory, type MarginCategory } from "@/lib/domain/costing";
+import { DEFAULT_COST_BUILD_UP } from "@/lib/domain/costing";
 import type { CableSpec, Material } from "@/lib/services/types";
 import type { ResolvedField } from "./types";
 
@@ -42,7 +42,7 @@ const MATERIALS: Material[] = [
 
 const COMMERCIAL = {
   lengthM: 1000,
-  marginPctByCategory: defaultMarginByCategory(14) as Record<MarginCategory, number>,
+  buildUp: { ...DEFAULT_COST_BUILD_UP },
   metalRatePerKg: 0,
   overheadPerM: 18,
 };

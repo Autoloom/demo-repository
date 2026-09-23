@@ -306,15 +306,16 @@ export interface QuoteLine {
   metalRatePerKg: number;
   overheadPerM: number;
   /**
-   * Margin %, independent per material (conductor/insulation/armour/sheath/labour). Optional
-   * only so pre-existing lines saved before per-material margin (which carried a single flat
-   * `marginPct`) still typecheck and load — a reader falls back to that flat value spread across
-   * every category. Every line the quote builder writes now sets this.
+   * The cost build-up this line was priced with: conversion, wastage, finance, drum, freight and
+   * the margin over the total.
+   *
+   * Optional so lines saved before it still load. Per-material margins were removed on Niraj's
+   * instruction (13 Sept) — "a single blended margin, not per-component" — and a line saved under
+   * the old model falls back to its flat `marginPct` with zero uplifts, which reproduces exactly
+   * what that line was quoted at rather than silently re-pricing history.
    */
-  marginPctByCategory?: import("@/lib/domain/costing").MarginCategoryMargins;
-  /** Blended margin across the whole line (total margin ÷ total cost) — what the 12% owner-review
-   *  gate checks, and what a summary display shows. Derived from `marginPctByCategory`, never
-   *  edited directly. */
+  buildUp?: import("@/lib/domain/costing").CostBuildUp;
+  /** Margin % over total cost. The 12% owner-review gate checks this. */
   marginPct: number;
   metalCostPerM: number;
   baseCostPerM: number;

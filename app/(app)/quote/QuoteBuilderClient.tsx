@@ -32,8 +32,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { now } from "@/lib/domain/clock";
-import { computeGst, MARGIN_CATEGORIES, MARGIN_GATE_PCT, defaultMarginByCategory, ratesForSpec } from "@/lib/domain/costing";
-import type { CostingResult, MarginCategory } from "@/lib/domain/costing";
+import { computeGst, DEFAULT_COST_BUILD_UP, MARGIN_GATE_PCT, ratesForSpec } from "@/lib/domain/costing";
+import type { CostBuildUp, CostingResult } from "@/lib/domain/costing";
 import { appendAuditEntry } from "@/lib/domain/gtp/audit-log";
 import { buildSpecFromFields, targetsFromBuild, type BuildSpec } from "@/lib/domain/gtp/build-spec";
 import { costCable, quoteBuild } from "@/lib/domain/gtp/quote-costing";
@@ -85,7 +85,7 @@ interface Commercial {
   overheadPerM: number;
   /** Margin %, independent per material — conductor, insulation, armour and sheath move with
    *  different markets, and a buyer's leverage often differs by material. */
-  marginPctByCategory: Record<MarginCategory, number>;
+  buildUp: CostBuildUp;
   buildSpec?: BuildSpec;
 }
 
@@ -116,7 +116,7 @@ function lineFromCommercial(spec: CableSpec, commercial: Commercial, materials: 
     lengthM: commercial.lengthM,
     metalRatePerKg: commercial.metalRatePerKg,
     overheadPerM: commercial.overheadPerM,
-    marginPctByCategory: commercial.marginPctByCategory,
+    buildUp: commercial.buildUp,
     marginPct: costing.blendedMarginPct,
     metalCostPerM: costing.conductorCostPerM,
     baseCostPerM: costing.baseCostPerM,
@@ -165,6 +165,8 @@ function NumberField({
   min,
   step,
   suffix,
+  prefix,
+  hint,
   disabled,
   onChange,
 }: {
@@ -174,6 +176,9 @@ function NumberField({
   min?: number;
   step?: number;
   suffix?: string;
+  prefix?: string;
+  /** One line under the field. Carries meaning here: "0 = not yet entered" is not decoration. */
+  hint?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
@@ -188,15 +193,21 @@ function NumberField({
           step={step ?? 1}
           value={value}
           disabled={disabled}
-          className="font-mono"
+          className={cn("font-mono", prefix && "pl-7")}
           onChange={(event) => onChange(Number(event.target.value))}
         />
+        {prefix ? (
+          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-xs text-muted-foreground">
+            {prefix}
+          </span>
+        ) : null}
         {suffix ? (
           <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
             {suffix}
           </span>
         ) : null}
       </div>
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }
@@ -251,12 +262,20 @@ function CostingRow({ label, detail, amount, emphasis }: { label: string; detail
   );
 }
 
+/** Percentages print as people write them: 12.5, not 12.500000000000002. */
+function formatPct(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
 function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult; line: QuoteLine; gstSplit: ReturnType<typeof computeGst> }) {
   return (
     <section className="space-y-4 rounded-md border bg-card p-4 text-sm">
       <div>
         <h3 className="font-medium">Price</h3>
-        <p className="text-xs text-muted-foreground">Each material carries its own margin, scaled to {line.lengthM} m.</p>
+        <p className="text-xs text-muted-foreground">
+          Internal costing sheet, scaled to {line.lengthM} m. Never shown to a customer — the
+          buyer document carries a rate per metre and nothing else.
+        </p>
       </div>
 
       <div className="space-y-1.5">
@@ -271,15 +290,40 @@ function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult;
           <CostingRow
             key={component.label}
             label={component.label}
-            detail={`${component.kgPerM > 0 ? `${component.kgPerM.toFixed(3)} kg × ${formatINR(component.ratePerKg)} · ` : ""}+${component.marginPct}% margin`}
-            amount={Math.round(component.totalInr)}
+            detail={component.kgPerM > 0 ? `${component.kgPerM.toFixed(3)} kg × ${formatINR(component.ratePerKg)}` : ""}
+            amount={Math.round(component.subtotalInr)}
           />
         ))}
+        <div className="border-t border-border pt-1.5">
+          <CostingRow label="Raw material" amount={Math.round(costing.materialCostInr)} />
+        </div>
       </div>
 
+      {/* The build-up, step by step. Without these rows the component list summed to raw
+          material while the total included the uplifts, and nothing on screen explained the
+          difference — which is exactly the "where did that come from" a costing sheet exists
+          to answer. Zero-value steps (drum, freight, before anyone enters them) are dropped so
+          the sheet does not read as though the cable ships free. */}
       <div className="space-y-1.5 border-t border-border pt-3">
-        <CostingRow label="Cost (before margin)" amount={Math.round(costing.lineSubtotalInr)} />
-        <CostingRow label={`Margin (blended ${costing.blendedMarginPct.toFixed(1)}%)`} amount={Math.round(costing.lineMarginInr)} />
+        {costing.buildUpSteps
+          .filter((step) => step.label !== "Raw material" && step.label !== "Margin" && step.label !== "Total cost")
+          .filter((step) => step.amountInr > 0)
+          .map((step) => (
+            <CostingRow
+              key={step.label}
+              label={step.label}
+              detail={step.pct !== undefined ? `${formatPct(step.pct)}% of ${step.basis}` : ""}
+              amount={Math.round(step.amountInr)}
+            />
+          ))}
+        <div className="border-t border-border pt-1.5">
+          <CostingRow label="Total cost" amount={Math.round(costing.totalCostInr)} />
+        </div>
+        <CostingRow
+          label="Margin"
+          detail={`${formatPct(costing.blendedMarginPct)}% of total cost`}
+          amount={Math.round(costing.lineMarginInr)}
+        />
         <div className="border-t border-border pt-1.5">
           <CostingRow label="Line total" amount={line.lineTotalInr} emphasis />
         </div>
@@ -475,7 +519,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [customer, setCustomer] = React.useState<Customer | undefined>(undefined);
   const [gtp, setGtp] = React.useState<Gtp | null>(null);
   const [spec, setSpec] = React.useState<CableSpec | null>(null);
-  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 18, marginPctByCategory: defaultMarginByCategory() });
+  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 18, buildUp: { ...DEFAULT_COST_BUILD_UP } });
   const [status, setStatus] = React.useState<QuoteStatus>("Draft");
   const [existingQuoteId, setExistingQuoteId] = React.useState<string | undefined>(quoteId);
   const [feedback, setFeedback] = React.useState<{ tone: Tone; message: string } | null>(null);
@@ -514,7 +558,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         setSpec(existingSpec);
         setCustomer(store.customers.find((entry) => entry.id === existing.customerId));
         const line = existing.lines[0];
-        const loadedCommercial = { lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, marginPctByCategory: line.marginPctByCategory ?? defaultMarginByCategory(line.marginPct), buildSpec: line.buildSpec };
+        const loadedCommercial = { lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, buildUp: line.buildUp ?? { ...DEFAULT_COST_BUILD_UP, conversionPct: 0, wastagePct: 0, financePct: 0, marginPct: line.marginPct }, buildSpec: line.buildSpec };
         setCommercial(loadedCommercial);
         setStatus(existing.status);
         setExistingQuoteId(existing.id);
@@ -567,6 +611,12 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     return () => window.clearTimeout(handle);
   }, [feedback]);
 
+  const setBuildUp = React.useCallback(
+    (patch: Partial<CostBuildUp>) =>
+      setCommercial((current) => ({ ...current, buildUp: { ...current.buildUp, ...patch } })),
+    [],
+  );
+
   const readOnly = !can(role, "edit", "quote");
   const canCreate = can(role, "create", "quote");
 
@@ -588,23 +638,6 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
-  /**
-   * Which margin inputs to offer.
-   *
-   * Every category used to render regardless of construction, so an unarmoured solar cable asked
-   * for an armour margin and an AB bundle asked for a sheath margin — inputs that can never
-   * change the price, on a screen where the operator is deciding what to charge. Derived from
-   * the priced components, with labour always present because it has cost but no mass.
-   */
-  const activeMarginCategories = React.useMemo(() => {
-    const active = new Set<MarginCategory>(["Labour"]);
-    if (priced && "costing" in priced) {
-      for (const component of priced.costing.components) {
-        if (component.kgPerM > 0 || component.costPerM > 0) active.add(component.category);
-      }
-    }
-    return active;
-  }, [priced]);
   const marginGate = blendedMarginPct < MARGIN_GATE_PCT;
   const permissionCtx = { record: { marginReviewRequired: marginGate } };
   const needsApproval = requiresApproval(role, "transition", "quote", permissionCtx);
@@ -813,27 +846,80 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
           <section className="space-y-4 rounded-md border bg-card p-4">
             <div>
-              <h3 className="font-medium">Margin</h3>
+              <h3 className="font-medium">Cost build-up</h3>
               <p className="text-xs text-muted-foreground">
-                Set independently per material — prices move differently, and so does your leverage on each.
+                Conversion, wastage and finance are percentages of raw material. Margin is a
+                percentage of the total cost — one number, so it stays visible and adjustable when
+                a customer pushes back on price.
               </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-3">
-              {MARGIN_CATEGORIES.filter((category) => activeMarginCategories.has(category)).map((category) => (
-                <NumberField
-                  key={category}
-                  id={`margin-${category}`}
-                  label={category === "Labour" ? "Labour & overhead" : category}
-                  suffix="%"
-                  min={0}
-                  step={0.5}
-                  value={commercial.marginPctByCategory[category]}
-                  disabled={readOnly}
-                  onChange={(value) =>
-                    setCommercial((current) => ({ ...current, marginPctByCategory: { ...current.marginPctByCategory, [category]: value } }))
-                  }
-                />
-              ))}
+              <NumberField
+                id="buildup-conversion"
+                label="Conversion"
+                suffix="%"
+                min={0}
+                step={0.5}
+                value={commercial.buildUp.conversionPct}
+                disabled={readOnly}
+                hint="Labour, power, machine time"
+                onChange={(value) => setBuildUp({ conversionPct: value })}
+              />
+              <NumberField
+                id="buildup-wastage"
+                label="Wastage"
+                suffix="%"
+                min={0}
+                step={0.5}
+                value={commercial.buildUp.wastagePct}
+                disabled={readOnly}
+                hint="Scrap and staging"
+                onChange={(value) => setBuildUp({ wastagePct: value })}
+              />
+              <NumberField
+                id="buildup-finance"
+                label="Finance"
+                suffix="%"
+                min={0}
+                step={0.5}
+                value={commercial.buildUp.financePct}
+                disabled={readOnly}
+                hint="Material bought against delivery"
+                onChange={(value) => setBuildUp({ financePct: value })}
+              />
+              <NumberField
+                id="buildup-drum"
+                label="Drum"
+                prefix="₹"
+                min={0}
+                step={100}
+                value={commercial.buildUp.drumCostInr}
+                disabled={readOnly}
+                hint="For the whole line. 0 = not yet entered"
+                onChange={(value) => setBuildUp({ drumCostInr: value })}
+              />
+              <NumberField
+                id="buildup-freight"
+                label="Freight"
+                prefix="₹"
+                min={0}
+                step={100}
+                value={commercial.buildUp.freightInr}
+                disabled={readOnly}
+                hint="To the customer. 0 = not yet entered"
+                onChange={(value) => setBuildUp({ freightInr: value })}
+              />
+              <NumberField
+                id="buildup-margin"
+                label="Margin"
+                suffix="%"
+                min={0}
+                step={0.5}
+                value={commercial.buildUp.marginPct}
+                disabled={readOnly}
+                hint="Of total cost"
+                onChange={(value) => setBuildUp({ marginPct: value })}
+              />
             </div>
             {marginGate ? (
               <p className="flex items-center gap-2 text-xs text-warning">

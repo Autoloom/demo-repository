@@ -5,7 +5,7 @@ import { deriveLtCable, type LtCableConfig } from "./derive-lt";
 import { deriveLtFields } from "./derive-lt-fields";
 import { specFromFields } from "./spec-from-fields";
 import { costCable } from "./quote-costing";
-import { defaultMarginByCategory } from "@/lib/domain/costing";
+import { DEFAULT_COST_BUILD_UP } from "@/lib/domain/costing";
 import { seedData } from "@/lib/seed/data";
 
 const config: LtCableConfig = { standard: "IS7098-1", coreCount: 3.5, csaSqMm: 240, material: "AL", armoured: true, conductorClass: "Class 2" };
@@ -19,13 +19,17 @@ function gtpCable() {
 
 test("a GTP-sourced cable prices end to end, and margin/rate edits move the total", () => {
   const spec = gtpCable();
-  const commercial = { lengthM: 1000, marginPctByCategory: defaultMarginByCategory(14), metalRatePerKg: 0, overheadPerM: 18 };
+  const commercial = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 };
   const base = costCable(spec, commercial, seedData.materials);
   assert.ok(base.lineTotalInr > 0);
   assert.ok(base.components.some((c) => c.label === "Insulation" && c.kgPerM > 0));
 
-  // A higher (flat) margin raises the total; nothing else about the cable changed.
-  const higherMargin = costCable(spec, { ...commercial, marginPctByCategory: defaultMarginByCategory(25) }, seedData.materials);
+  // A higher margin raises the total; nothing else about the cable changed.
+  const higherMargin = costCable(
+    spec,
+    { ...commercial, buildUp: { ...DEFAULT_COST_BUILD_UP, marginPct: DEFAULT_COST_BUILD_UP.marginPct + 5 } },
+    seedData.materials,
+  );
   assert.ok(higherMargin.lineTotalInr > base.lineTotalInr);
 
   // A manual metal-rate override (price fluctuation) feeds straight into conductor cost.
@@ -34,26 +38,66 @@ test("a GTP-sourced cable prices end to end, and margin/rate edits move the tota
   assert.ok(dearerMetal.lineTotalInr > base.lineTotalInr);
 });
 
-test("margin is set per material — raising only one category's margin moves only that component's total", () => {
+test("one margin over the total cost, not a margin per material", () => {
+  // Niraj, 13 Sept: "a single blended margin, not per-component — the breakdown adds complexity
+  // for nothing". What a manufacturer manages is the total, and expressing margin as a
+  // percentage over it is what lets someone drop it when a customer pushes back on price.
   const spec = gtpCable();
-  const flat = { lengthM: 1000, marginPctByCategory: defaultMarginByCategory(14), metalRatePerKg: 0, overheadPerM: 18 };
+  const flat = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 };
   const base = costCable(spec, flat, seedData.materials);
 
-  const armourOnly = costCable(spec, { ...flat, marginPctByCategory: { ...flat.marginPctByCategory, Armour: 40 } }, seedData.materials);
-  const baseArmour = base.components.find((c) => c.category === "Armour")!;
-  const raisedArmour = armourOnly.components.find((c) => c.category === "Armour")!;
-  assert.ok(raisedArmour.marginInr > baseArmour.marginInr, "raising Armour's own margin must raise its margin rupees");
-  for (const category of ["Conductor", "Insulation", "Sheath", "Labour"] as const) {
-    const baseRow = base.components.find((c) => c.category === category)!;
-    const otherRow = armourOnly.components.find((c) => c.category === category)!;
-    assert.equal(otherRow.marginInr, baseRow.marginInr, `${category}'s margin must not move when only Armour's margin changes`);
-  }
-  assert.ok(armourOnly.lineTotalInr > base.lineTotalInr);
+  // The margin reported IS the margin set — no weighted average to reconcile.
+  assert.equal(base.blendedMarginPct, DEFAULT_COST_BUILD_UP.marginPct);
+  assert.ok(Math.abs(base.lineMarginInr - base.totalCostInr * (DEFAULT_COST_BUILD_UP.marginPct / 100)) < 1);
 
-  // The 12%-gate blended margin is the weighted average across categories, not any single one.
-  assert.ok(armourOnly.blendedMarginPct > 14 && armourOnly.blendedMarginPct < 40);
+  // Raising it raises the line, and nothing else moves.
+  const richer = costCable(spec, { ...flat, buildUp: { ...DEFAULT_COST_BUILD_UP, marginPct: 20 } }, seedData.materials);
+  assert.equal(richer.materialCostInr, base.materialCostInr, "margin must not touch material cost");
+  assert.equal(richer.totalCostInr, base.totalCostInr, "margin must not touch total cost");
+  assert.ok(richer.lineTotalInr > base.lineTotalInr);
 });
 
+test("conversion, wastage and finance are percentages of RAW MATERIAL, and do not compound", () => {
+  // A factory quotes these against what the metal and compound cost, not against each other.
+  const spec = gtpCable();
+  const noUplift = { lengthM: 1000, metalRatePerKg: 0, overheadPerM: 18,
+    buildUp: { conversionPct: 0, wastagePct: 0, financePct: 0, drumCostInr: 0, freightInr: 0, marginPct: 0 } };
+  const bare = costCable(spec, noUplift, seedData.materials);
+  assert.equal(Math.round(bare.totalCostInr), Math.round(bare.materialCostInr));
+
+  const withTen = costCable(spec, { ...noUplift, buildUp: { ...noUplift.buildUp, conversionPct: 10 } }, seedData.materials);
+  assert.ok(Math.abs(withTen.totalCostInr - bare.materialCostInr * 1.1) < 1, "10% conversion = 10% of material");
+
+  // Two 10% uplifts are 20% of material, not 21% — they do not compound.
+  const withBoth = costCable(spec, { ...noUplift, buildUp: { ...noUplift.buildUp, conversionPct: 10, wastagePct: 10 } }, seedData.materials);
+  assert.ok(Math.abs(withBoth.totalCostInr - bare.materialCostInr * 1.2) < 1);
+});
+
+test("drum and freight are flat rupee amounts on the line", () => {
+  // They default to 0 meaning "not yet entered", and nobody has given a typical figure.
+  const spec = gtpCable();
+  const flat = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 };
+  assert.equal(DEFAULT_COST_BUILD_UP.drumCostInr, 0);
+  assert.equal(DEFAULT_COST_BUILD_UP.freightInr, 0);
+
+  const base = costCable(spec, flat, seedData.materials);
+  const withCosts = costCable(spec, { ...flat, buildUp: { ...DEFAULT_COST_BUILD_UP, drumCostInr: 5000, freightInr: 3000 } }, seedData.materials);
+  assert.ok(Math.abs(withCosts.totalCostInr - (base.totalCostInr + 8000)) < 1);
+});
+
+test("the build-up prints its own working, step by step", () => {
+  // This is the internal costing sheet Niraj asked for: a reviewer must be able to see where
+  // every rupee came from, and that it is never shown to a customer.
+  const spec = gtpCable();
+  const result = costCable(spec, { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 }, seedData.materials);
+  const labels = result.buildUpSteps.map((s) => s.label);
+  assert.deepEqual(labels, [
+    "Raw material", "Conversion (labour, power, machine time)", "Wastage and scrap",
+    "Cost of finance", "Drum", "Freight", "Total cost", "Margin",
+  ]);
+  const total = result.buildUpSteps.find((s) => s.label === "Total cost")!;
+  assert.ok(Math.abs(total.amountInr - result.totalCostInr) < 1);
+});
 test("a cable with an unresolved GTP gap never reaches a price", () => {
   // The ISI licence used to be the convenient example here, but it is no longer a gap: it is
   // required on the supplied cable, not at offer stage, so it must not block a quotation
