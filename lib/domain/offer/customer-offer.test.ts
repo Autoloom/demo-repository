@@ -92,6 +92,23 @@ test("the description reads as the buyer's schedule writes it, not as our vocabu
   );
 });
 
+test("an aerial bunched cable is described by its whole designation, not by its phase size", () => {
+  // "3 Core, 70 sq.mm" describes the phases only — the messenger and the street-light core are
+  // in the bundle and in the price, and a buyer comparing offers would be reading a smaller
+  // cable than the one being quoted.
+  const ab: CableSpec = {
+    ...controlSpec,
+    family: "Aerial Bunched Cable",
+    cores: "3C",
+    conductorMaterial: "Aluminium",
+    conductorSizeSqMm: 70,
+    armour: "Unarmoured",
+    flameClass: "Standard",
+    designation: "3Cx70 + 1Cx50 + 1Cx16",
+  };
+  assert.equal(offerDescription(ab), "Aluminum, 3Cx70 + 1Cx50 + 1Cx16, Unarmoured, Aerial Bunched Cable");
+});
+
 test("the offer carries all three parts, each on its own sheet", () => {
   const doc = customerOfferDocument(offer);
   const text = render(offer);

@@ -88,13 +88,13 @@ export function offerDescription(spec: CableSpec): string {
           ? "Solar DC Cable"
           : "Power Cable";
 
-  return [
-    metal,
-    `${cores} Core`,
-    `${spec.conductorSizeSqMm} sq.mm`,
-    armour,
-    [flame, kind].filter(Boolean).join(" "),
-  ].join(", ");
+  // An aerial bunched cable is not one size. Its designation — "3Cx70 + 1Cx50 + 1Cx16" — names
+  // the phases, the messenger and the street-light core, and "3 Core, 70 sq.mm" describes only
+  // the phases, quoting a bundle as though two of its conductors were not in it.
+  const size =
+    spec.family === "Aerial Bunched Cable" ? spec.designation : `${cores} Core, ${spec.conductorSizeSqMm} sq.mm`;
+
+  return [metal, size, armour, [flame, kind].filter(Boolean).join(" ")].join(", ");
 }
 
 /** dd/mm/yyyy — the format on their covering letter. */
