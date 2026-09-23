@@ -75,7 +75,7 @@ import { manualTolerance } from "@/lib/domain/gtp/tolerance";
 import { TOLERANCE_NA } from "@/lib/domain/gtp/types";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
-import { downloadPdf } from "@/lib/domain/pdf";
+import { downloadOnLetterhead } from "@/lib/domain/offer/letterhead";
 import { gtpService, specsService, type Gtp } from "@/lib/services";
 import { actorFromSession } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
@@ -1481,16 +1481,17 @@ function GtpBuilderInner() {
         updatedAt: now,
       };
       // Reopened for editing: this is the SAME document, so it keeps its id, its order link and
-      // its creation date. A version it had already sent out becomes a new version with the
-      // stamps cleared — they applied to the content that has just changed. A draft nobody has
-      // seen stays the version it was, because bumping on every keystroke-and-regenerate would
-      // make the version number mean nothing.
+      // its creation date — and it becomes a NEW VERSION, every time, drafts included. The
+      // version is what a quote records when it is priced (`gtpVersionAtQuote`), and the quote
+      // builder warns when the two disagree. Keeping a draft at v1 through an edit meant a quote
+      // priced from the 300 sq mm draft stayed silent after the draft became 240: the one warning
+      // built for exactly this case never fired. Any stamps are cleared by status "Draft" above,
+      // because they applied to content that has just changed.
       if (editing) {
-        const sentOut = editing.status !== "Draft";
         gtp.id = editing.id;
         gtp.createdAt = editing.createdAt;
         gtp.orderId = editing.orderId ?? gtp.orderId;
-        gtp.version = sentOut ? editing.version + 1 : editing.version;
+        gtp.version = editing.version + 1;
         gtp.corrections = editing.corrections;
       }
       await gtpService.save(gtp, actorFromSession());
@@ -1499,7 +1500,7 @@ function GtpBuilderInner() {
       reassignAuditEntries(draftId, gtp.id);
       // The document is the deliverable — hand it over as part of generating, not as a
       // separate step the user has to discover.
-      downloadPdf(
+      downloadOnLetterhead(
         `${gtp.id}-${profile.name.replace(/\s+/g, "-")}`,
         buildGtpPdfDocument(printedFields, {
           gtpId: gtp.id,
@@ -1617,8 +1618,8 @@ function GtpBuilderInner() {
           <p className="flex items-center gap-1.5 text-sm text-primary">
             <FileText className="h-3.5 w-3.5" aria-hidden="true" />
             {editing.status === "Draft"
-              ? `Saving replaces v${editing.version} of this draft.`
-              : `This GTP is ${editing.status.toLowerCase()} — saving reopens it as v${editing.version + 1} and clears the stamps.`}
+              ? `Saving makes this v${editing.version + 1}. Any quote priced from v${editing.version} will say it needs repricing.`
+              : `This GTP is ${editing.status.toLowerCase()} — saving reopens it as v${editing.version + 1} draft and clears the stamps.`}
           </p>
         ) : null}
         {editLoadError ? (
