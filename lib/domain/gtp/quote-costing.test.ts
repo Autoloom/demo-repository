@@ -92,7 +92,7 @@ test("the build-up prints its own working, step by step", () => {
   const result = costCable(spec, { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 }, seedData.materials);
   const labels = result.buildUpSteps.map((s) => s.label);
   assert.deepEqual(labels, [
-    "Raw material", "Conversion (labour, power, machine time)", "Wastage and scrap",
+    "Raw material", "Manufacturing & overhead (labour, power, machine time)", "Wastage and scrap",
     "Cost of finance", "Drum", "Freight", "Total cost", "Margin",
   ]);
   const total = result.buildUpSteps.find((s) => s.label === "Total cost")!;

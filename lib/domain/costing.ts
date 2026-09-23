@@ -414,7 +414,7 @@ export function computeLine(input: CostingInput): CostingResult {
 
   const buildUpSteps: CostStep[] = [
     { label: "Raw material", amountInr: materialCostInr },
-    { label: "Conversion (labour, power, machine time)", pct: buildUp.conversionPct, basis: "raw material", amountInr: conversionInr },
+    { label: "Manufacturing & overhead (labour, power, machine time)", pct: buildUp.conversionPct, basis: "raw material", amountInr: conversionInr },
     { label: "Wastage and scrap", pct: buildUp.wastagePct, basis: "raw material", amountInr: wastageInr },
     { label: "Cost of finance", pct: buildUp.financePct, basis: "raw material", amountInr: financeInr },
     { label: "Drum", amountInr: buildUp.drumCostInr },

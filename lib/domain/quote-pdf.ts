@@ -37,7 +37,9 @@ export function quotePdfDocument({
       headers: ["Component", "₹ / kg", "₹ / m"],
       widths: [280, 100, 134],
       rows: [
-        ...costing.components.map((component) => [
+        // Only rows with something in them: a ₹0 "Labour & overhead" line — which is what every
+        // new quote has, now that overhead is a percentage of material — reads as a costing error.
+        ...costing.components.filter((component) => component.costPerM > 0).map((component) => [
           component.label,
           component.ratePerKg > 0 ? formatINR(component.ratePerKg) : "-",
           formatINR(Math.round(component.costPerM)),
@@ -51,7 +53,7 @@ export function quotePdfDocument({
 
   return {
     title: `Quotation ${quoteId ?? "Draft"}`,
-    subtitle: "Daksha Cables - commercial quotation",
+    subtitle: "Internal costing sheet - not for the customer",
     meta: [
       `Customer: ${customer}`,
       selectedCustomer?.gstin ? `GSTIN: ${selectedCustomer.gstin}` : undefined,

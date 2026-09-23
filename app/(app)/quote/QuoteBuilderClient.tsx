@@ -44,6 +44,7 @@ import { customerOfferDocument, offerDescription } from "@/lib/domain/offer/cust
 import {
   consumeOfferSerial,
   DEFAULT_LETTERHEAD,
+  downloadOnLetterhead,
   loadLetterhead,
   offerNumber,
   peekOfferSerial,
@@ -320,6 +321,40 @@ function getSerialSnapshot(version: number): number {
   return peekOfferSerial();
 }
 
+/**
+ * Turn whatever image someone uploads into the JPEG the PDF writer embeds.
+ *
+ * Any format the browser can draw — PNG, JPEG, WebP, SVG — goes through a canvas, is flattened
+ * onto white (a JPEG has no transparency, and a transparent PNG logo would otherwise print on
+ * black), and is scaled so its longer side is at most 360 px. That is ample for a 62-point logo
+ * at print resolution and keeps the stored letterhead small enough for browser storage.
+ */
+async function imageFileToJpegDataUrl(file: File): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("That file could not be read as an image."));
+      img.src = url;
+    });
+    const scale = Math.min(1, 360 / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const width = Math.max(1, Math.round((image.naturalWidth || 360) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || 360) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser cannot process images.");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function ratePerMetre(lineTotalInr: number, lengthM: number): string {
   if (lengthM <= 0) return "—";
   return `₹${(lineTotalInr / lengthM).toLocaleString("en-IN", {
@@ -346,7 +381,7 @@ function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult;
           // those rows were rendering as "Sheath +14% margin — ₹0", which reads like a costing
           // error rather than a fact about the cable. Labour is always shown: it has no mass but
           // it does have a cost.
-          .filter((component) => component.category === "Labour" || component.kgPerM > 0 || component.costPerM > 0)
+          .filter((component) => component.kgPerM > 0 || component.costPerM > 0)
           .map((component) => (
           <CostingRow
             key={component.label}
@@ -589,7 +624,11 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [customer, setCustomer] = React.useState<Customer | undefined>(undefined);
   const [gtp, setGtp] = React.useState<Gtp | null>(null);
   const [spec, setSpec] = React.useState<CableSpec | null>(null);
-  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 18, buildUp: { ...DEFAULT_COST_BUILD_UP } });
+  // No flat per-metre overhead on a new quote. Labour and overhead are a PERCENTAGE of raw
+  // material in every costing discussion on record — 6–7% (Niraj, 13 Sept), ~8% (21 Sept),
+  // 2–10% (Navya, 22 Sept) — and that percentage is the "Manufacturing & overhead" line of the
+  // build-up. The ₹18/m default charged the same labour twice: once flat, once as a percentage.
+  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 0, buildUp: { ...DEFAULT_COST_BUILD_UP } });
   const [status, setStatus] = React.useState<QuoteStatus>("Draft");
   const [existingQuoteId, setExistingQuoteId] = React.useState<string | undefined>(quoteId);
   const [feedback, setFeedback] = React.useState<{ tone: Tone; message: string } | null>(null);
@@ -907,7 +946,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
   function downloadQuotePdf() {
     if (!spec || !priced || "error" in priced) return;
-    downloadPdf(
+    downloadOnLetterhead(
       `${existingQuoteId ?? "quote-draft"}.pdf`,
       quotePdfDocument({
         quoteId: existingQuoteId,
@@ -1051,15 +1090,22 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                   This cable&apos;s conductor is {spec.conductorMaterial.toLowerCase()} — the price per kg for that metal, seeded from the Materials table.
                 </p>
               </div>
-              <NumberField
-                id="overheadPerM"
-                label="Overhead"
-                suffix="₹/m"
-                min={0}
-                value={commercial.overheadPerM}
-                disabled={readOnly}
-                onChange={(value) => setCommercial((current) => ({ ...current, overheadPerM: value }))}
-              />
+              {/* Only on a line that was already priced with a flat per-metre overhead. Removing
+                  it outright would silently re-price a quote someone has already sent; showing
+                  it on every new quote is how labour ended up charged twice. Set it to 0 to move
+                  an old line onto the percentage. */}
+              {commercial.overheadPerM > 0 ? (
+                <NumberField
+                  id="overheadPerM"
+                  label="Flat overhead (older quote)"
+                  suffix="₹/m"
+                  min={0}
+                  value={commercial.overheadPerM}
+                  disabled={readOnly}
+                  hint="This quote was priced before overhead became a percentage. Set to 0 to use Manufacturing & overhead below instead."
+                  onChange={(value) => setCommercial((current) => ({ ...current, overheadPerM: value }))}
+                />
+              ) : null}
             </div>
           </section>
 
@@ -1079,7 +1125,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               <div>
                 <h3 className="font-medium">Cost build-up</h3>
                 <p className="text-xs text-muted-foreground">
-                  Conversion, wastage and finance are each a percentage of the raw material — they
+                  Manufacturing &amp; overhead, wastage and finance are each a percentage of the raw material — they
                   do not compound. Drum and freight are flat rupees. Margin is one percentage of
                   everything above it.
                 </p>
@@ -1098,10 +1144,12 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             {buildUpSummary ? (
               <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-foreground">
                 Raw material <span className="font-mono">{buildUpSummary.material}</span>, plus{" "}
-                <span className="font-mono">{buildUpSummary.upliftPct}%</span> for conversion, wastage
+                <span className="font-mono">{buildUpSummary.upliftPct}%</span>{" "}
+                for manufacturing &amp; overhead, wastage
                 and finance{buildUpSummary.flat ? <> and <span className="font-mono">{buildUpSummary.flat}</span> for drum and freight</> : null}, comes to{" "}
                 <span className="font-mono">{buildUpSummary.totalCost}</span>. Margin of{" "}
-                <span className="font-mono">{buildUpSummary.marginPct}%</span> on that makes the price{" "}
+                <span className="font-mono">{buildUpSummary.marginPct}%</span>{" "}
+                on that makes the price{" "}
                 <span className="font-mono font-medium">{buildUpSummary.lineTotal}</span> — that is{" "}
                 <span className="font-mono font-medium">{buildUpSummary.ratePerM}</span>{" "}
                 per metre, which is
@@ -1113,14 +1161,14 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               <div className="grid gap-4 sm:grid-cols-3">
                 <NumberField
                   id="buildup-conversion"
-                  label="Conversion"
+                  label="Manufacturing & overhead"
                   suffix="%"
                   min={0}
                   step={0.5}
                   value={commercial.buildUp.conversionPct}
                   disabled={readOnly}
-                  figure={stepFigure("Conversion (labour, power, machine time)")}
-                  hint="Labour, power, machine time — of raw material"
+                  figure={stepFigure("Manufacturing & overhead (labour, power, machine time)")}
+                  hint="Labour, power, machine time, factory overhead — of raw material"
                   onChange={(value) => setBuildUp({ conversionPct: value })}
                 />
                 <NumberField
@@ -1211,7 +1259,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                 </p>
               </div>
               <Button type="button" variant="ghost" size="sm" onClick={() => setOfferOpen((open) => !open)} aria-expanded={offerOpen}>
-                {offerOpen ? "Done" : "Letterhead & terms"}
+                {offerOpen ? "Done" : "Branding, letterhead & terms"}
               </Button>
             </div>
 
@@ -1262,6 +1310,67 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                   Saved once and reused on every offer. Change it here when the works&rsquo; own
                   details change, not per quote.
                 </p>
+                {/* Branding: the works' own logo and colours, printed at the head and foot of
+                    every page of every document the works exports — the offer, the costing
+                    sheet and the GTP. */}
+                <div className="flex flex-wrap items-center gap-4 rounded-md border border-border bg-background p-3">
+                  <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-white">
+                    {activeLetterhead.logoDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- a data URL the user just uploaded; next/image cannot optimise it
+                      <img src={activeLetterhead.logoDataUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground">No logo</span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-logo">Logo</Label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        id="lh-logo"
+                        type="file"
+                        accept="image/*"
+                        className="max-w-60 text-xs"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            editLetterhead({ ...activeLetterhead, logoDataUrl: await imageFileToJpegDataUrl(file) });
+                          } catch (error) {
+                            setFeedback({ tone: "danger", message: error instanceof Error ? error.message : "Could not read that image." });
+                          }
+                        }}
+                      />
+                      {activeLetterhead.logoDataUrl ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => editLetterhead({ ...activeLetterhead, logoDataUrl: "" })}>
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground">PNG or JPEG. Printed top-left on every page.</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="lh-name-color">Name colour</Label>
+                      <input
+                        id="lh-name-color"
+                        type="color"
+                        className="h-9 w-14 cursor-pointer rounded border border-input bg-background"
+                        value={activeLetterhead.nameColor ?? "#000000"}
+                        onChange={(e) => editLetterhead({ ...activeLetterhead, nameColor: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="lh-footer-color">Footer colour</Label>
+                      <input
+                        id="lh-footer-color"
+                        type="color"
+                        className="h-9 w-14 cursor-pointer rounded border border-input bg-background"
+                        value={activeLetterhead.footerColor ?? "#000000"}
+                        onChange={(e) => editLetterhead({ ...activeLetterhead, footerColor: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="lh-company">Company</Label>
@@ -1353,10 +1462,13 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                   variant="secondary"
                   size="sm"
                   onClick={() => {
-                    saveLetterhead(activeLetterhead);
+                    if (!saveLetterhead(activeLetterhead)) {
+                      setFeedback({ tone: "danger", message: "The browser would not store the letterhead — try a smaller logo. This offer still uses what is on screen." });
+                      return;
+                    }
                     setLetterheadEdited(false);
                     setStoredVersion((v) => v + 1);
-                    setFeedback({ tone: "success", message: "Letterhead and terms saved — every offer from now uses them." });
+                    setFeedback({ tone: "success", message: "Branding saved — the offer, the costing sheet and every GTP PDF now use it." });
                   }}
                 >
                   <SaveIcon className="mr-2 size-4" />
