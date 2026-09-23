@@ -62,6 +62,7 @@ import {
   saveTemplate,
   templatesForProfile,
   type CustomParameter,
+  type GtpSheetInputs,
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
 import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
@@ -686,6 +687,27 @@ function GtpBuilderInner() {
   // production gate can see it.
   const searchParams = useSearchParams();
   const orderId = searchParams.get("orderId") ?? "";
+  /**
+   * Reopening a saved GTP: `?editGtpId=GTP-…` loads that record's inputs into these pickers, so
+   * every value re-derives as it is changed and Generate writes back to the same document.
+   *
+   * This is the answer to the review screen's free-text editing. A stored GTP used to be editable
+   * only as text over its own printed rows, which moved one row and left the rest describing the
+   * previous cable. There is no second recalculating engine here — it is this builder, which is
+   * the only place the build-up runs.
+   */
+  const editGtpId = searchParams.get("editGtpId") ?? "";
+  const [editing, setEditing] = useState<{
+    id: string;
+    version: number;
+    status: Gtp["status"];
+    createdAt: string;
+    orderId?: string;
+    corrections?: Gtp["corrections"];
+  } | null>(null);
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
+  /** One load per arrival — the restore writes the very state this would re-read. */
+  const editLoadStarted = useRef(false);
   const [cableSpecId] = useState(() => `SPEC-GTP-${crypto.randomUUID()}`);
   const [persistedCable, setPersistedCable] = useState<{ signature: string; id: string } | null>(null);
   const [cableSaveError, setCableSaveError] = useState<string | null>(null);
@@ -1019,6 +1041,81 @@ function GtpBuilderInner() {
   const readySpecId = cableSignature && persistedCable?.signature === cableSignature ? persistedCable.id : null;
 
   /**
+   * Load a saved GTP's inputs when arriving at `?editGtpId=…`.
+   *
+   * Restores the pickers only — nothing derived. Everything on the sheet below is then computed
+   * afresh from the live IS tables, which is exactly what happens for a new GTP, so an edit to
+   * the conductor area moves the insulation, the sheaths, the armour, the diameters and the mass
+   * with it. That is the behaviour the review screen's free-text fields could not have.
+   *
+   * A record with no stored inputs cannot be reopened this way and says so rather than opening a
+   * blank builder that looks like the GTP but is a different cable.
+   */
+  useEffect(() => {
+    if (!editGtpId || editLoadStarted.current) return;
+    editLoadStarted.current = true;
+    void gtpService
+      .get(editGtpId)
+      .then((record) => {
+        if (!record) {
+          setEditLoadError(`${editGtpId} could not be found.`);
+          return;
+        }
+        if (!record.builderInputs) {
+          setEditLoadError(
+            `${editGtpId} was not built here, so its build-up cannot be re-run. ` +
+              "Edit its rows on the review screen, or start a new GTP for this cable.",
+          );
+          return;
+        }
+        const p = record.customerId ? findProfile(record.customerId) : undefined;
+        if (!p) {
+          setEditLoadError(
+            `${editGtpId} names a customer this build no longer has a profile for, so its ` +
+              "customer-specific rows cannot be re-derived.",
+          );
+          return;
+        }
+        applySheetInputs(record.builderInputs, p);
+        if (record.orderQuantities) {
+          setOrderDetails({
+            totalLengthM: record.orderQuantities.totalLengthM,
+            drumLengthM: record.orderQuantities.drumLengthM,
+            poReference: record.tenderNo ?? "",
+          });
+        } else if (record.tenderNo) {
+          setOrderDetails((current) => ({ ...current, poReference: record.tenderNo ?? "" }));
+        }
+        setEditing({
+          id: record.id,
+          version: record.version,
+          status: record.status,
+          createdAt: record.createdAt,
+          orderId: record.orderId,
+          corrections: record.corrections,
+        });
+        setFieldsOpen(true);
+        setSavedNotice(
+          `Editing ${record.id} (v${record.version}). Every value below has been re-derived from ` +
+            "the current IS tables — change the construction and the whole build-up follows.",
+        );
+      })
+      .catch((error: unknown) => {
+        setEditLoadError(error instanceof Error ? error.message : "Could not open that GTP.");
+      });
+    // No cancellation flag, deliberately. Pairing one with the one-shot ref guard is a trap in
+    // development: StrictMode mounts, runs this, unmounts — cancelling the in-flight load — then
+    // remounts and finds the ref already set, so the record silently never arrived and the
+    // builder sat there looking like a new GTP. The ref alone gives the same "load once" and a
+    // late setState on an unmounted component is a no-op.
+    //
+    // applySheetInputs is a stable function declaration in this component; the guard makes this
+    // a one-shot load, so re-running on identity changes would be wrong rather than merely
+    // wasteful — it would discard whatever the operator has since changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editGtpId]);
+
+  /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
    * the builder keeps showing it and the audit trail keeps recording it.
    */
@@ -1222,41 +1319,89 @@ function GtpBuilderInner() {
     setSelection((current) => ({ ...current, ...patch }));
   }
 
+  /**
+   * Restore the INPUTS of a sheet, so everything below re-derives from the live IS tables.
+   *
+   * One function for the two things that need it — starting from a saved template, and reopening
+   * a saved GTP to edit it. They restore identically on purpose: a stored GTP is the same kind of
+   * object as a template (`GtpSheetInputs`), and an edit that restored a different subset would
+   * silently drop whichever inputs it forgot. Armour method is the standing example: it was
+   * missing from the template type while the builder wrote it anyway.
+   *
+   * Nothing derived is restored. That is the whole mechanism behind "editing recalculates".
+   */
+  function applySheetInputs(inputs: GtpSheetInputs, p: CustomerProfile) {
+    setProfile(p);
+    // Restore the cable type FIRST — it decides which engine runs and which inputs are shown.
+    // Records saved before cable types existed have none, and were AB.
+    const line = inputs.productLine ?? "AB_CABLE";
+    setProductLine(line);
+    // Recover the picker state. Only AB round-trips through a designation string; LT and solar
+    // keep their own config, so a sheet for those restores the type and the customer and
+    // leaves the current construction rather than forcing a wrong one.
+    if (line === "AB_CABLE") {
+      setSelection(selectionFromSizeString(inputs.sizeInput) ?? defaultSelection());
+    }
+    // LT and solar keep their own config — a designation string cannot express armour, ambient
+    // or conductor class, so those round-trip as objects.
+    if (inputs.ltConfig) setLtConfig(inputs.ltConfig);
+    if (inputs.solarConfig) setSolarConfig(inputs.solarConfig);
+    // Material and messenger construction are choices in their own right, not implied by the
+    // size. Restoring the size without them reopened a copper control cable as aluminium.
+    if (inputs.conductorMaterial) {
+      setConductorMaterial(inputs.conductorMaterial);
+      setMaterialTouched(true);
+    }
+    setMessengerConstruction(inputs.messengerConstruction);
+
+    // Restore the SHAPE of the sheet, which is the point of saving one.
+    setHiddenFields(inputs.hiddenFields ?? []);
+    setCustomParameters(inputs.customParameters ?? []);
+    const savedOverrides = inputs.overrides ?? {};
+    setOverrides(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.value])));
+    setOverrideReasons(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.reason])));
+    // Overrides restored here are already justified; unlock them so they are visible as edits
+    // rather than appearing to be derived values.
+    setUnlockedFields(Object.keys(savedOverrides));
+    const savedTolerances = inputs.toleranceOverrides ?? {};
+    setToleranceOverrides(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.value])));
+    setToleranceReasons(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.reason])));
+    setUnlockedTolerances(Object.keys(savedTolerances));
+    setAckWarnings(false);
+  }
+
+  /** The inputs currently in the pickers, in the shape a template or a GTP record stores. */
+  function currentSheetInputs(): GtpSheetInputs {
+    return {
+      productLine,
+      sizeInput: designation,
+      // The armour form and method as they were RESOLVED, not as they were left unset. Both are
+      // conventions applied at render when nobody chooses (strip/method A for XLPE power, round
+      // wire for control), so storing the blanks would make a reopened record depend on what the
+      // convention happens to be that day rather than on what this cable actually was.
+      ltConfig: { ...ltConfig, armourForm: effectiveArmourForm, armourMethod: effectiveArmourMethod },
+      solarConfig,
+      conductorMaterial: effectiveMaterial,
+      messengerConstruction,
+      hiddenFields: [...hiddenFields],
+      customParameters,
+      overrides: Object.fromEntries(
+        Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
+      ),
+      // A tolerance a customer demands is a decision about this buyer, so it travels with the
+      // sheet exactly as a value override does — otherwise it has to be retyped every order.
+      toleranceOverrides: Object.fromEntries(
+        Object.entries(toleranceOverrides).map(([k, v]) => [k, { value: v, reason: toleranceReasons[k] ?? "" }]),
+      ),
+    };
+  }
+
   /** Start from a saved template: restore its inputs, then re-derive from live IS tables. */
   function startFromTemplate(template: GtpTemplate) {
     const p = findProfile(template.profileId);
     if (!p) return;
-    setProfile(p);
-    // Restore the cable type FIRST — it decides which engine runs and which inputs are shown.
-    // Templates saved before cable types existed have none, and were AB.
-    const line = template.productLine ?? "AB_CABLE";
-    setProductLine(line);
-    // Recover the picker state. Only AB round-trips through a designation string; LT and solar
-    // keep their own config, so a template for those restores the type and the customer and
-    // leaves the current construction rather than forcing a wrong one.
-    if (line === "AB_CABLE") {
-      setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
-    }
-    // LT and solar keep their own config — a designation string cannot express armour, ambient
-    // or conductor class, so those round-trip as objects.
-    if (template.ltConfig) setLtConfig(template.ltConfig);
-    if (template.solarConfig) setSolarConfig(template.solarConfig);
-
-    // Restore the SHAPE of the sheet, which is the point of a template.
-    setHiddenFields(template.hiddenFields ?? []);
-    setCustomParameters(template.customParameters ?? []);
-    const savedOverrides = template.overrides ?? {};
-    setOverrides(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.value])));
-    setOverrideReasons(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.reason])));
-    // Overrides restored from a template are already justified; unlock them so they are visible
-    // as edits rather than appearing to be derived values.
-    setUnlockedFields(Object.keys(savedOverrides));
-    const savedTolerances = template.toleranceOverrides ?? {};
-    setToleranceOverrides(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.value])));
-    setToleranceReasons(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.reason])));
-    setUnlockedTolerances(Object.keys(savedTolerances));
+    applySheetInputs(template, p);
     setChoices(template.choices ?? null);
-    setAckWarnings(false);
     recordTemplateUse(template.id);
     setVersion((v) => v + 1);
     setSavedNotice(`Started from "${template.name}". Every value below was re-derived from the current IS tables.`);
@@ -1326,12 +1471,29 @@ function GtpBuilderInner() {
         // What actually printed, so the stored record knows its own shape without recomputing
         // it from a template that may since have changed.
         hiddenFields: [...hiddenFields],
+        // The inputs, so this record can be reopened here and re-derived rather than edited as
+        // free text over its own results. This is what makes "change the size and everything
+        // recalculates" true of a SAVED GTP and not only of an unsaved one.
+        builderInputs: currentSheetInputs(),
         status: "Draft",
         signOffs: [],
         version: 1,
         createdAt: now,
         updatedAt: now,
       };
+      // Reopened for editing: this is the SAME document, so it keeps its id, its order link and
+      // its creation date. A version it had already sent out becomes a new version with the
+      // stamps cleared — they applied to the content that has just changed. A draft nobody has
+      // seen stays the version it was, because bumping on every keystroke-and-regenerate would
+      // make the version number mean nothing.
+      if (editing) {
+        const sentOut = editing.status !== "Draft";
+        gtp.id = editing.id;
+        gtp.createdAt = editing.createdAt;
+        gtp.orderId = editing.orderId ?? gtp.orderId;
+        gtp.version = sentOut ? editing.version + 1 : editing.version;
+        gtp.corrections = editing.corrections;
+      }
       await gtpService.save(gtp, actorFromSession());
       // The trail was recorded against the draft id because the GTP did not exist yet. Point it
       // at the real one, or the history detaches from the document it describes.
@@ -1372,24 +1534,7 @@ function GtpBuilderInner() {
     // A template is the SHEET, not just the size: which fields print, what was added by hand,
     // and what was overridden and why. Saving only the designation gave you a differently-shaped
     // document when you reloaded it.
-    saveTemplate({
-      name,
-      profileId: profile.id,
-      productLine,
-      sizeInput: designation,
-      ltConfig,
-      solarConfig,
-      hiddenFields,
-      customParameters,
-      overrides: Object.fromEntries(
-        Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
-      ),
-      // A tolerance a customer demands is a decision about this buyer, so it belongs in their
-      // template exactly as a value override does — otherwise it has to be retyped every order.
-      toleranceOverrides: Object.fromEntries(
-        Object.entries(toleranceOverrides).map(([k, v]) => [k, { value: v, reason: toleranceReasons[k] ?? "" }]),
-      ),
-    });
+    saveTemplate({ ...currentSheetInputs(), name, profileId: profile.id });
     setVersion((v) => v + 1);
     setTemplateName("");
     setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
@@ -1454,15 +1599,34 @@ function GtpBuilderInner() {
     <main className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6">
       <header className="space-y-1">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">New GTP</h1>
-          <Link href="/gtp" className="text-sm text-muted-foreground underline-offset-4 hover:underline">
-            All GTPs
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {editing ? `Edit ${editing.id}` : "New GTP"}
+          </h1>
+          <Link
+            href={editing ? `/gtp/review?gtpId=${editing.id}` : "/gtp"}
+            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            {editing ? "Back to the record" : "All GTPs"}
           </Link>
         </div>
         <p className="text-sm text-muted-foreground">
-          Answer a few questions — the rest fills itself in from the IS standards and this
-          customer&rsquo;s profile, and shows its working.
+          {editing
+            ? "Change anything here and the whole build-up recalculates — insulation, sheaths, armour, diameters and mass follow the construction, from the current IS tables."
+            : "Answer a few questions — the rest fills itself in from the IS standards and this customer\u2019s profile, and shows its working."}
         </p>
+        {editing ? (
+          <p className="flex items-center gap-1.5 text-sm text-primary">
+            <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+            {editing.status === "Draft"
+              ? `Saving replaces v${editing.version} of this draft.`
+              : `This GTP is ${editing.status.toLowerCase()} — saving reopens it as v${editing.version + 1} and clears the stamps.`}
+          </p>
+        ) : null}
+        {editLoadError ? (
+          <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-3 text-sm text-danger">
+            {editLoadError}
+          </p>
+        ) : null}
         {orderId ? (
           <p className="flex items-center gap-1.5 text-sm text-primary">
             <LinkIcon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2373,7 +2537,7 @@ function GtpBuilderInner() {
             </span>
             <Button type="button" disabled={!canGenerate || generating} onClick={() => void handleGenerate()}>
               <FileText className="mr-2 h-4 w-4" aria-hidden="true" />
-              {generating ? "Saving…" : "Generate GTP"}
+              {generating ? "Saving…" : editing ? `Save ${editing.id}` : "Generate GTP"}
             </Button>
           </div>
           {!canGenerate && validation.errorCount > 0 ? (

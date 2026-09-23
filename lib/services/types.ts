@@ -479,6 +479,21 @@ export interface Gtp {
    * would be wrong: the template is mutable and may have been reshaped since.
    */
   hiddenFields?: string[];
+  /**
+   * The builder inputs this GTP was generated from — what a person CHOSE, not what was derived.
+   *
+   * Stored so a saved GTP can be reopened in the builder and re-derived. Without it the only
+   * editing a stored record supported was free text over `sections`, which changed the printed
+   * row and nothing else: setting the conductor area to 260 on a 300 sq mm sheet left the
+   * insulation, the diameter under the outer sheath, the armour and the mass all describing the
+   * 300, on a document that now named a different cable and said nothing about the contradiction.
+   *
+   * Deliberately the same shape as a template (`GtpSheetInputs`), because it is the same
+   * contract: inputs only, re-derived against the live IS tables at edit time. Absent on records
+   * created before this existed and on the order-driven path, which builds sections directly and
+   * has no build-up behind them — those keep free-text editing, which is all they can support.
+   */
+  builderInputs?: import("@/lib/domain/gtp/templates").GtpSheetInputs;
   /** The cable designation the engine parsed, e.g. "3Cx70 + 1Cx50 + 1Cx16". */
   designation?: string;
   /** Which standard editions produced `derivedFields`. */

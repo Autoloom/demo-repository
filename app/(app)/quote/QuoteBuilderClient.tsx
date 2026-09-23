@@ -167,6 +167,7 @@ function NumberField({
   suffix,
   prefix,
   hint,
+  figure,
   disabled,
   onChange,
 }: {
@@ -179,6 +180,15 @@ function NumberField({
   prefix?: string;
   /** One line under the field. Carries meaning here: "0 = not yet entered" is not decoration. */
   hint?: string;
+  /**
+   * What this input comes to in rupees, right now.
+   *
+   * A percentage on its own is abstract, and the people pricing these cables think in rupees per
+   * metre, not in percentages of a subtotal they cannot see. Printing "6.5%" next to "= ₹15,791
+   * of raw material" turns the whole panel into arithmetic anyone can check by eye, which is the
+   * difference between a costing sheet someone trusts and one they work around on paper.
+   */
+  figure?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
@@ -207,6 +217,7 @@ function NumberField({
           </span>
         ) : null}
       </div>
+      {figure ? <p className="font-mono text-xs text-foreground">{figure}</p> : null}
       {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
@@ -265,6 +276,21 @@ function CostingRow({ label, detail, amount, emphasis }: { label: string; detail
 /** Percentages print as people write them: 12.5, not 12.500000000000002. */
 function formatPct(value: number): string {
   return Number(value.toFixed(2)).toString();
+}
+
+/**
+ * Rate per running metre, in the grouping the rest of the sheet uses.
+ *
+ * Two decimals because the customer's copy quotes to the paisa — the Avadh offer prices a
+ * control cable at 561.90/RMT, not 562 — and rounding here would put our sheet and their sheet
+ * a few hundred rupees apart on a 5,600 m line.
+ */
+function ratePerMetre(lineTotalInr: number, lengthM: number): string {
+  if (lengthM <= 0) return "—";
+  return `₹${(lineTotalInr / lengthM).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult; line: QuoteLine; gstSplit: ReturnType<typeof computeGst> }) {
@@ -326,6 +352,15 @@ function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult;
         />
         <div className="border-t border-border pt-1.5">
           <CostingRow label="Line total" amount={line.lineTotalInr} emphasis />
+        </div>
+        {/* The figure the customer's copy actually quotes. Everything above it is ours. */}
+        <div className="flex items-baseline justify-between gap-4 text-sm">
+          <span className="text-muted-foreground">
+            Rate per metre <span className="text-xs">— what the customer sees</span>
+          </span>
+          <span className="font-mono font-medium text-foreground">
+            {ratePerMetre(line.lineTotalInr, line.lengthM)}
+          </span>
         </div>
       </div>
 
@@ -637,6 +672,52 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const isDirty = savedSignature !== null && savedSignature !== currentSignature;
 
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
+  /**
+   * Whether the six percentage inputs are on screen.
+   *
+   * Open by default, because this is the pricing structure the business asked for and hiding it
+   * would put the quote back to a single unexplained margin. Closable, because once the defaults
+   * are right most quotes only change the length and the metal rate, and someone who prices by
+   * feel should be able to put the machinery away without losing the summary.
+   */
+  const [buildUpOpen, setBuildUpOpen] = React.useState(true);
+
+  /** What one build-up step comes to, for printing beside the input that drives it. */
+  const stepFigure = React.useCallback(
+    (label: string): string | undefined => {
+      if (!priced || !("costing" in priced)) return undefined;
+      const step = priced.costing.buildUpSteps.find((entry) => entry.label === label);
+      if (!step) return undefined;
+      return `= ${formatINR(Math.round(step.amountInr))}`;
+    },
+    [priced],
+  );
+
+  /**
+   * The whole build-up as one sentence, in rupees.
+   *
+   * The rate per metre is the point of it. That is what the customer's copy quotes, what a buyer
+   * compares against another offer, and the number people here have in their head before the
+   * costing sheet opens — so a panel that can only be read as line totals is asking them to do
+   * the division themselves on every quote.
+   */
+  const buildUpSummary = React.useMemo(() => {
+    if (!priced || !("costing" in priced) || !("line" in priced)) return null;
+    const { costing, line } = priced;
+    const flatInr = commercial.buildUp.drumCostInr + commercial.buildUp.freightInr;
+    return {
+      material: formatINR(Math.round(costing.materialCostInr)),
+      upliftPct: formatPct(
+        commercial.buildUp.conversionPct + commercial.buildUp.wastagePct + commercial.buildUp.financePct,
+      ),
+      flat: flatInr > 0 ? formatINR(Math.round(flatInr)) : null,
+      totalCost: formatINR(Math.round(costing.totalCostInr)),
+      marginPct: formatPct(costing.blendedMarginPct),
+      lineTotal: formatINR(line.lineTotalInr),
+      ratePerM: ratePerMetre(line.lineTotalInr, line.lengthM),
+    };
+  }, [priced, commercial.buildUp]);
+
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
   const marginGate = blendedMarginPct < MARGIN_GATE_PCT;
   const permissionCtx = { record: { marginReviewRequired: marginGate } };
@@ -844,83 +925,126 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             </div>
           </section>
 
+          {/* The build-up, with every percentage priced out beside it.
+              ── Why it reads the way it does ───────────────────────────────────────────────────
+              This panel asks for six numbers and then a price appears, which is a lot to take on
+              trust — the client's own question on 23 Sept was whether someone who has priced
+              cable by hand for thirty years would follow it or quietly go back to a calculator.
+              The fix is not fewer inputs: this IS the structure Niraj described on 13 Sept, and
+              dropping it would lose the thing that makes the quote defensible. The fix is that
+              nothing here is abstract. Each percentage prints what it comes to in rupees, each
+              says what it is a percentage OF, the running arithmetic is spelled out in one
+              sentence above, and the rate per metre — the only figure the customer document
+              carries — is stated rather than left to be divided out. */}
           <section className="space-y-4 rounded-md border bg-card p-4">
-            <div>
-              <h3 className="font-medium">Cost build-up</h3>
-              <p className="text-xs text-muted-foreground">
-                Conversion, wastage and finance are percentages of raw material. Margin is a
-                percentage of the total cost — one number, so it stays visible and adjustable when
-                a customer pushes back on price.
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-medium">Cost build-up</h3>
+                <p className="text-xs text-muted-foreground">
+                  Conversion, wastage and finance are each a percentage of the raw material — they
+                  do not compound. Drum and freight are flat rupees. Margin is one percentage of
+                  everything above it.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setBuildUpOpen((open) => !open)}
+                aria-expanded={buildUpOpen}
+              >
+                {buildUpOpen ? "Hide the percentages" : "Show the percentages"}
+              </Button>
+            </div>
+
+            {buildUpSummary ? (
+              <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-foreground">
+                Raw material <span className="font-mono">{buildUpSummary.material}</span>, plus{" "}
+                <span className="font-mono">{buildUpSummary.upliftPct}%</span> for conversion, wastage
+                and finance{buildUpSummary.flat ? <> and <span className="font-mono">{buildUpSummary.flat}</span> for drum and freight</> : null}, comes to{" "}
+                <span className="font-mono">{buildUpSummary.totalCost}</span>. Margin of{" "}
+                <span className="font-mono">{buildUpSummary.marginPct}%</span> on that makes the price{" "}
+                <span className="font-mono font-medium">{buildUpSummary.lineTotal}</span> — that is{" "}
+                <span className="font-mono font-medium">{buildUpSummary.ratePerM}</span>{" "}
+                per metre, which is
+                the one figure the customer&apos;s copy carries. GST is added on top.
               </p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <NumberField
-                id="buildup-conversion"
-                label="Conversion"
-                suffix="%"
-                min={0}
-                step={0.5}
-                value={commercial.buildUp.conversionPct}
-                disabled={readOnly}
-                hint="Labour, power, machine time"
-                onChange={(value) => setBuildUp({ conversionPct: value })}
-              />
-              <NumberField
-                id="buildup-wastage"
-                label="Wastage"
-                suffix="%"
-                min={0}
-                step={0.5}
-                value={commercial.buildUp.wastagePct}
-                disabled={readOnly}
-                hint="Scrap and staging"
-                onChange={(value) => setBuildUp({ wastagePct: value })}
-              />
-              <NumberField
-                id="buildup-finance"
-                label="Finance"
-                suffix="%"
-                min={0}
-                step={0.5}
-                value={commercial.buildUp.financePct}
-                disabled={readOnly}
-                hint="Material bought against delivery"
-                onChange={(value) => setBuildUp({ financePct: value })}
-              />
-              <NumberField
-                id="buildup-drum"
-                label="Drum"
-                prefix="₹"
-                min={0}
-                step={100}
-                value={commercial.buildUp.drumCostInr}
-                disabled={readOnly}
-                hint="For the whole line. 0 = not yet entered"
-                onChange={(value) => setBuildUp({ drumCostInr: value })}
-              />
-              <NumberField
-                id="buildup-freight"
-                label="Freight"
-                prefix="₹"
-                min={0}
-                step={100}
-                value={commercial.buildUp.freightInr}
-                disabled={readOnly}
-                hint="To the customer. 0 = not yet entered"
-                onChange={(value) => setBuildUp({ freightInr: value })}
-              />
-              <NumberField
-                id="buildup-margin"
-                label="Margin"
-                suffix="%"
-                min={0}
-                step={0.5}
-                value={commercial.buildUp.marginPct}
-                disabled={readOnly}
-                hint="Of total cost"
-                onChange={(value) => setBuildUp({ marginPct: value })}
-              />
-            </div>
+            ) : null}
+
+            {buildUpOpen ? (
+              <div className="grid gap-4 sm:grid-cols-3">
+                <NumberField
+                  id="buildup-conversion"
+                  label="Conversion"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.conversionPct}
+                  disabled={readOnly}
+                  figure={stepFigure("Conversion (labour, power, machine time)")}
+                  hint="Labour, power, machine time — of raw material"
+                  onChange={(value) => setBuildUp({ conversionPct: value })}
+                />
+                <NumberField
+                  id="buildup-wastage"
+                  label="Wastage"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.wastagePct}
+                  disabled={readOnly}
+                  figure={stepFigure("Wastage and scrap")}
+                  hint="Scrap and staging — of raw material"
+                  onChange={(value) => setBuildUp({ wastagePct: value })}
+                />
+                <NumberField
+                  id="buildup-finance"
+                  label="Finance"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.financePct}
+                  disabled={readOnly}
+                  figure={stepFigure("Cost of finance")}
+                  hint="Material bought against delivery — of raw material"
+                  onChange={(value) => setBuildUp({ financePct: value })}
+                />
+                <NumberField
+                  id="buildup-drum"
+                  label="Drum"
+                  prefix="₹"
+                  min={0}
+                  step={100}
+                  value={commercial.buildUp.drumCostInr}
+                  disabled={readOnly}
+                  hint="Flat, for the whole line. 0 = not yet entered"
+                  onChange={(value) => setBuildUp({ drumCostInr: value })}
+                />
+                <NumberField
+                  id="buildup-freight"
+                  label="Freight"
+                  prefix="₹"
+                  min={0}
+                  step={100}
+                  value={commercial.buildUp.freightInr}
+                  disabled={readOnly}
+                  hint="Flat, to the customer. 0 = not yet entered"
+                  onChange={(value) => setBuildUp({ freightInr: value })}
+                />
+                <NumberField
+                  id="buildup-margin"
+                  label="Margin"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.marginPct}
+                  disabled={readOnly}
+                  figure={stepFigure("Margin")}
+                  hint="Of the total cost, not of the material"
+                  onChange={(value) => setBuildUp({ marginPct: value })}
+                />
+              </div>
+            ) : null}
             {marginGate ? (
               <p className="flex items-center gap-2 text-xs text-warning">
                 <ShieldAlertIcon className="size-3.5 shrink-0" />
