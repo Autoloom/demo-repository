@@ -20,6 +20,9 @@
  * moving it behind the service layer later touches only load/save here.
  */
 
+import { downloadPdf, type PdfColor, type PdfDocument, type PdfImage, type PdfLetterhead } from "../pdf";
+import { DEFAULT_LOGO_DATA_URL } from "./default-logo";
+
 /** One line of the standing terms table. Free text on both sides — these are commercial words. */
 export interface OfferTerm {
   label: string;
@@ -47,6 +50,18 @@ export interface Letterhead {
   offerPrefix: string;
   /** Standing terms of supply, in the order they print. */
   terms: OfferTerm[];
+  /**
+   * The logo, as a JPEG data URL. Absent or empty means no logo — the letterhead still prints
+   * the name, which is how a works without one would send it.
+   *
+   * JPEG because that is what the PDF writer embeds; an uploaded PNG is flattened onto white on
+   * the way in (see `imageFileToJpegDataUrl`), since a JPEG has no transparency.
+   */
+  logoDataUrl?: string;
+  /** The company name's colour on the letterhead, as #rrggbb. */
+  nameColor?: string;
+  /** The footer's colour, as #rrggbb. */
+  footerColor?: string;
 }
 
 /**
@@ -68,6 +83,10 @@ export const DEFAULT_LETTERHEAD: Letterhead = {
     "Leading Manufacturers of ACSR & AAC Conductors, LT Aerial Bunched Cables,",
     "Service Cable, XLPE/PVC Control & Power Armoured / Unarmoured Cables",
   ],
+  logoDataUrl: DEFAULT_LOGO_DATA_URL,
+  // Sampled from their own offer: the orange of the name and the navy of the footer.
+  nameColor: "#EC7C30",
+  footerColor: "#1F4E79",
   signatoryName: "Laxmikant Shete",
   signatoryPhone: "9619918554",
   offerPrefix: "DCIPL",
@@ -142,12 +161,18 @@ export function loadLetterhead(): Letterhead {
   }
 }
 
-export function saveLetterhead(letterhead: Letterhead): void {
-  if (typeof window === "undefined") return;
+/**
+ * Returns false when the browser refused to store it — usually a logo too large for its storage
+ * quota. The caller says so, because "Saved" followed by the old letterhead on the next offer
+ * is exactly the silent failure a branding setting cannot have.
+ */
+export function saveLetterhead(letterhead: Letterhead): boolean {
+  if (typeof window === "undefined") return false;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(letterhead));
+    return true;
   } catch {
-    // Storage full or blocked. The caller's in-memory copy still prints this offer correctly.
+    return false;
   }
 }
 
@@ -190,4 +215,89 @@ export function setNextOfferSerial(serial: number): void {
   } catch {
     // Non-fatal; the counter simply stays where it was.
   }
+}
+
+/** "#EC7C30" → [0.93, 0.49, 0.19]. Anything unparseable falls back to black. */
+export function hexToPdfColor(hex: string | undefined): PdfColor | undefined {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex?.trim() ?? "");
+  if (!match) return undefined;
+  const n = parseInt(match[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Pixel size of a JPEG, read from its start-of-frame marker.
+ *
+ * The PDF image dictionary has to state width and height, and they have to be the JPEG's own —
+ * a viewer that is told the wrong size draws a sheared stripe instead of a logo. Returns null
+ * for anything that is not a baseline or progressive JPEG, so a bad upload prints no logo rather
+ * than a broken file.
+ */
+export function jpegSize(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < bytes.length) {
+    if (bytes[i] !== 0xff) return null;
+    const marker = bytes[i + 1];
+    const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    // SOF0–SOF3, SOF5–SOF7, SOF9–SOF11, SOF13–SOF15 carry the frame size; C4, C8, CC do not.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8] };
+    }
+    i += 2 + length;
+  }
+  return null;
+}
+
+/** The logo as the PDF writer takes it, or undefined when there is none or it will not decode. */
+export function logoImage(dataUrl: string | undefined): PdfImage | undefined {
+  const match = /^data:image\/jpe?g;base64,(.+)$/i.exec(dataUrl ?? "");
+  if (!match) return undefined;
+  try {
+    const jpeg = base64ToBytes(match[1]);
+    const size = jpegSize(jpeg);
+    return size ? { jpeg, ...size } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The letterhead as drawn at the head and foot of every page of every exported document —
+ * customer offer, costing sheet and GTP alike, so that everything the works sends looks like it
+ * came from the same place.
+ */
+export function pdfLetterhead(letterhead: Letterhead): PdfLetterhead {
+  return {
+    name: letterhead.companyName,
+    nameColor: hexToPdfColor(letterhead.nameColor),
+    lines: [
+      letterhead.addressLines.filter(Boolean).join(" "),
+      [letterhead.phone && `Tel: ${letterhead.phone}`, letterhead.emails.filter(Boolean).length ? `E-mail: ${letterhead.emails.filter(Boolean).join(" | ")}` : ""]
+        .filter(Boolean)
+        .join("   "),
+    ].filter(Boolean),
+    footerLines: letterhead.footerLines.filter(Boolean),
+    footerColor: hexToPdfColor(letterhead.footerColor),
+    logo: logoImage(letterhead.logoDataUrl),
+  };
+}
+
+/**
+ * Download any document on the works' saved letterhead.
+ *
+ * Used by every export except the customer offer, which passes the letterhead being edited on
+ * screen. One helper so the GTP, the costing sheet and the offer cannot drift into three
+ * different looks — the thing the client asked for on 23 Sept was that everything leaving the
+ * works fits the same format.
+ */
+export function downloadOnLetterhead(filename: string, doc: PdfDocument): void {
+  downloadPdf(filename, { ...doc, letterhead: pdfLetterhead(loadLetterhead()) });
 }

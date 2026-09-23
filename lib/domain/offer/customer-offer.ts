@@ -24,7 +24,7 @@
  *   • It does not compute the tax. GST appears once, in the terms, as "Extra @ 18%".
  */
 import type { PdfDocument, PdfSection } from "../pdf";
-import type { Letterhead } from "./letterhead";
+import { pdfLetterhead, type Letterhead } from "./letterhead";
 import type { CableSpec } from "@/lib/services/types";
 
 /** One priced row on the schedule. */
@@ -132,52 +132,62 @@ function defaultSubject(offer: CustomerOffer): string {
 }
 
 /** The header block repeated above the schedule and the terms: client, project, offer no, date. */
-function headerTable(offer: CustomerOffer) {
+function headerTable(offer: CustomerOffer): PdfSection {
   return {
-    headers: ["", "", "", ""],
-    widths: [58, 217, 58, 178],
-    rows: [
-      ["Client", offer.buyer.name, "Offer No", offer.offerNo],
-      ["Project", offer.projectName, "Date", dmy(offer.date, "-")],
+    table: {
+      headers: ["", "", "", ""],
+      widths: [58, 227, 64, 162],
+      grid: true,
+      rows: [
+        ["Client", offer.buyer.name, "Offer No", offer.offerNo],
+        ["Project", offer.projectName, "Date", dmy(offer.date, "-")],
+      ],
+    },
+  };
+}
+
+/** The signature block, on the letter and the terms page. */
+function signatureSection(letterhead: Letterhead): PdfSection {
+  return {
+    lines: [
+      "",
+      { text: `For ${letterhead.companyName}`, bold: true },
+      "",
+      "",
+      "",
+      letterhead.signatoryName,
+      letterhead.signatoryPhone,
     ],
   };
 }
 
 /**
- * The footer their every page carries — as its own section.
+ * The offer, laid out as the works' own offers are.
  *
- * A section renders title, then lines, then table. Putting the footer in the same section as a
- * table therefore printed it ABOVE the table: the schedule's footer landed where its column
- * headings should be. Sections are cheap; pages are what matter here.
+ * The letterhead — logo, name, address, contact, and the product-list footer — is drawn by the
+ * PDF writer on every page, so a schedule separated from its letter still says whose it is.
+ * Everything below follows DCIPL/71/2026-27: the offer number left and the date right, the
+ * subject centred, bold and underlined, the section headings the same, and every table boxed
+ * with centred headings and right-aligned rates.
  */
-function footerSection(letterhead: Letterhead): PdfSection {
-  return { lines: ["", ...letterhead.footerLines] };
-}
-
-/** The signature block, above the footer on the letter and the terms page. */
-function signatureSection(letterhead: Letterhead): PdfSection {
-  return {
-    lines: ["", `For ${letterhead.companyName}`, "", "", letterhead.signatoryName, letterhead.signatoryPhone],
-  };
-}
-
 export function customerOfferDocument(offer: CustomerOffer): PdfDocument {
   const { letterhead } = offer;
+  const subject = offer.subject?.trim() || defaultSubject(offer);
 
   return {
-    title: letterhead.companyName,
-    subtitle: letterhead.addressLines.join(" "),
-    meta: [`Tel: ${letterhead.phone}`, `E-mail: ${letterhead.emails.join("  |  ")}`],
+    title: "",
+    letterhead: pdfLetterhead(letterhead),
     sections: [
       // ── 1. Covering letter ───────────────────────────────────────────────────
       {
-        // Offer number left, date right, on one line — as theirs is. A table rather than padded
-        // text because `wrapText` normalises runs of spaces to one, so alignment by padding
-        // collapses to a single space in the rendered stream.
+        // Offer number left, date right, on one line. A rule-less table rather than padded
+        // text, because runs of spaces collapse when the line is wrapped.
         table: {
           headers: ["", ""],
-          widths: [300, 211],
-          rows: [[offer.offerNo, `Date - ${dmy(offer.date)}`]],
+          widths: [255, 256],
+          align: ["left", "right"],
+          plain: true,
+          rows: [[offer.offerNo, `Date- ${dmy(offer.date)}`]],
         },
       },
       {
@@ -190,34 +200,40 @@ export function customerOfferDocument(offer: CustomerOffer): PdfDocument {
           ...(offer.buyer.attentionName
             ? [
                 `Kind Attn: - ${offer.buyer.attentionName}`,
-                ...(offer.buyer.attentionPhone ? [`Contact No - ${offer.buyer.attentionPhone}`] : []),
+                { text: `Contact No- ${offer.buyer.attentionPhone ?? ""}`, indent: 58 },
                 "",
               ]
             : []),
-          `Sub.: ${offer.subject?.trim() || defaultSubject(offer)}`,
+          { text: `Sub.:  ${subject}`, bold: true, underline: true, align: "center", size: 10 },
           "",
           "Dear Sir,",
           "",
           "With reference to your subject enquiry, we are pleased to give our offer as per following annexure:",
           "",
-          "     1) This Covering Letter",
-          "     2) Price Schedule",
-          "     3) Terms & Conditions of Supply",
+          { text: "1)   This Covering Letter", indent: 40 },
+          "",
+          { text: "2)   Price Schedule", indent: 40 },
+          "",
+          { text: "3)   Terms & Conditions of Supply", indent: 40 },
+          "",
           "",
           "We hope that the above is in line with your requirements.",
+          "",
           "",
           "Thanking you.",
         ],
       },
       signatureSection(letterhead),
-      footerSection(letterhead),
       // ── 2. Priced schedule ───────────────────────────────────────────────────
-      { pageBreak: true, table: headerTable(offer) },
-      { title: "Priced Schedule" },
+      { pageBreak: true, ...headerTable(offer) },
+      { title: "Priced Schedule", titleAlign: "center", titleUnderline: true },
       {
         table: {
           headers: ["S.No.", "Description", "Unit", "Quantity", "Rate/mtr"],
-          widths: [40, 266, 45, 70, 90],
+          widths: [40, 256, 50, 70, 95],
+          grid: true,
+          headerAlign: "center",
+          align: ["center", "left", "center", "center", "right"],
           rows: offer.lines.map((line, index) => [
             `${index + 1}.`,
             line.description,
@@ -229,19 +245,18 @@ export function customerOfferDocument(offer: CustomerOffer): PdfDocument {
       },
       // No amount column and no total, exactly as their schedule prints. See the note at the
       // head of this file — the buyer is being quoted a rate, not billed.
-      footerSection(letterhead),
       // ── 3. Terms & conditions of supply ──────────────────────────────────────
-      { pageBreak: true, table: headerTable(offer) },
-      { title: "Terms & Conditions of Supply" },
+      { pageBreak: true, ...headerTable(offer) },
+      { title: "TERMS & CONDITIONS OF SUPPLY", titleAlign: "center", titleUnderline: true },
       {
         table: {
           headers: ["", ""],
-          widths: [180, 331],
+          widths: [170, 341],
+          grid: true,
           rows: letterhead.terms.map((term) => [term.label, term.value]),
         },
       },
       signatureSection(letterhead),
-      footerSection(letterhead),
     ],
   };
 }

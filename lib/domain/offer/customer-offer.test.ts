@@ -61,7 +61,7 @@ const offer: CustomerOffer = {
  * never matches, which would have made the leak assertions below pass for the wrong reason.
  */
 function render(input: CustomerOffer): string {
-  const raw = new TextDecoder().decode(createPdfBytes(customerOfferDocument(input)));
+  const raw = new TextDecoder("latin1").decode(createPdfBytes(customerOfferDocument(input)));
   return raw.replace(/\\([()])/g, "$1");
 }
 
@@ -182,26 +182,45 @@ test("all fifteen standing terms print, in their order", () => {
   assert.deepEqual(terms.at(-1)?.[0], "Jurisdiction");
 });
 
-test("a tolerance band survives into the PDF — +/- is not dropped", () => {
-  // The renderer strips everything outside printable ASCII, which turned "1000 meters ± 10%"
-  // into "1000 meters 10%" and "length variation ± 5%" into "variation 5%". A buyer reading the
-  // terms page would have taken a band as an absolute, and both of those are terms we are held
-  // to on delivery: a drum short by 8% would have been a breach of the sheet as printed.
+test("a tolerance band survives into the PDF as a band", () => {
+  // The renderer used to strip everything outside printable ASCII, which turned "1000 meters
+  // ± 10%" into "1000 meters 10%" and "length variation ± 5%" into "variation 5%". A buyer
+  // reading the terms page would have taken a band as an absolute, and both are terms we are
+  // held to on delivery. The fonts now carry the Windows character set, so ± prints as itself.
   const text = render(offer);
-  assert.ok(text.includes("1000 meters +/- 10%"), "the drum tolerance must print as a band");
-  assert.ok(text.includes("+/- 5%"), "the length variation must print as a band");
+  assert.ok(text.includes("1000 meters ± 10%"), "the drum tolerance must print as a band");
+  assert.ok(text.includes("± 5%"), "the length variation must print as a band");
   assert.ok(!/meters 10%/.test(text), "a bare 10% would read as an absolute");
 });
 
-test("the footer sits below the schedule, not above its column headings", () => {
-  // Sections render title, then lines, then table. A footer in the same section as a table
-  // therefore printed where the column headings belong.
-  const doc = customerOfferDocument(offer);
-  const scheduleIndex = doc.sections.findIndex((s) => s.table?.headers.includes("Rate/mtr"));
-  const footerAfter = doc.sections
-    .slice(scheduleIndex + 1)
-    .findIndex((s) => (s.lines ?? []).some((line) => String(line).startsWith("Leading Manufacturers")));
-  assert.equal(footerAfter, 0, "the schedule's footer must be the section straight after it");
+test("every page carries the letterhead and the footer, not just the first", () => {
+  // A schedule or a terms sheet that becomes separated from its covering letter must still say
+  // whose it is. The writer draws the letterhead per page, so each of the three sheets carries
+  // the name and the product-list footer exactly once.
+  const text = render(offer);
+  const pages = Number(/\/Count (\d+)/.exec(text)?.[1]);
+  assert.equal(pages, 3);
+  assert.equal((text.match(/\(Daksha Cable Industries Pvt Ltd\.\) Tj/g) ?? []).length, pages, "the name heads every page");
+  assert.equal((text.match(/\(Leading Manufacturers of ACSR/g) ?? []).length, pages, "the footer foots every page");
+});
+
+test("the works' logo is embedded as an image, once, and drawn on every page", () => {
+  const text = render(offer);
+  assert.equal((text.match(/\/Subtype \/Image/g) ?? []).length, 1, "one image object, shared by the pages");
+  assert.match(text, /\/Filter \/DCTDecode/);
+  assert.equal((text.match(/\/Im1 Do/g) ?? []).length, 3, "the logo is placed on each sheet");
+});
+
+test("an offer with no logo still prints — the letterhead is the name, not the picture", () => {
+  const text = render({ ...offer, letterhead: { ...DEFAULT_LETTERHEAD, logoDataUrl: "" } });
+  assert.ok(!/\/Subtype \/Image/.test(text));
+  assert.ok(text.includes("(Daksha Cable Industries Pvt Ltd.) Tj"));
+});
+
+test("an upload that is not a JPEG prints no logo rather than a broken file", () => {
+  const text = render({ ...offer, letterhead: { ...DEFAULT_LETTERHEAD, logoDataUrl: "data:image/jpeg;base64,bm90IGEganBlZw==" } });
+  assert.ok(!/\/Subtype \/Image/.test(text));
+  assert.match(text, /%%EOF$/);
 });
 
 test("the subject line names the cable kinds actually on the schedule", () => {

@@ -26,7 +26,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDate } from "@/lib/domain/format";
 import { buildGtpTable } from "@/lib/domain/gtp-table";
-import { downloadPdf, type PdfDocument } from "@/lib/domain/pdf";
+import type { PdfDocument } from "@/lib/domain/pdf";
+import { downloadOnLetterhead } from "@/lib/domain/offer/letterhead";
 import { CHAIN_INPUT_FIELD_KEYS, chainInputOverrideMessage } from "@/lib/domain/gtp/types";
 import type { GtpDerivedField, GtpSection, GtpSectionSource } from "@/lib/services/types";
 
@@ -366,7 +367,7 @@ function GtpRecordsInner() {
       setFeedback({ tone: "danger", text: "Select a GTP with a linked cable spec before downloading the PDF." });
       return;
     }
-    downloadPdf(`${selected.id}.pdf`, gtpPdfDocument(selected, selectedSpec));
+    downloadOnLetterhead(`${selected.id}.pdf`, gtpPdfDocument(selected, selectedSpec));
   }
 
   if (!canView) {
