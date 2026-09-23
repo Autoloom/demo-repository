@@ -177,3 +177,46 @@ export interface ValidationResult {
 export type ParseResult =
   | { ok: true; construction: CableConstruction; playback: string }
   | { ok: false; reason: string; suggestions: string[] };
+
+/**
+ * Field keys that are INPUTS to a derivation chain rather than outputs of it.
+ *
+ * Overriding one of these is not an edit — it is a different cable. The override mechanism
+ * replaces a field's printed value without re-running the chain, so changing "Nominal conductor
+ * area" from 120 to 260 here left the insulation at 1.20 mm, the diameter under the outer sheath
+ * at 36.30 mm and the mass at 2421 kg/km: every dimension still describing the 120 sq mm cable,
+ * on a sheet that now says 260. The document contradicted itself and nothing said so.
+ *
+ * Re-deriving from the overridden value is not the fix either: 260 sq mm has no row in
+ * IS 10462 Table 1 or IS 8130 Table 2, so the chain cannot produce dimensions for it at all.
+ * That is what the construction picker's closed option set exists to prevent.
+ *
+ * So an override on one of these blocks generation and says to use the picker instead.
+ */
+export const CHAIN_INPUT_FIELD_KEYS: readonly string[] = [
+  "cable.size",
+  "cable.cores",
+  "cable.material",
+  "cable.standard",
+];
+
+/** Operator-facing reason an input field must not be overridden on the sheet. */
+export function chainInputOverrideMessage(label: string): string {
+  return (
+    `"${label}" is an input to the dimensional build-up, not a result of it. Change it in the ` +
+    "construction picker above so the insulation, sheath, armour and mass recalculate — " +
+    "overriding it here would leave every dimension describing the previous cable."
+  );
+}
+
+/**
+ * Fields derived and stored, but off the printed sheet unless an operator turns them back on.
+ *
+ * Armour thickness and width are each a traced chain step, and the spec bridge checks both
+ * against the chain — so they must stay in `fields`. They should not each be a ROW on the
+ * document though: the client asked for one "armour wire size" field, because that is how a
+ * buyer writes it ("4 × 0.8 mm"), not a thickness and a width on separate lines. `lt.armourSize`
+ * prints the pair with its provenance; these two stay available behind the show/hide control for
+ * anyone who wants the full build-up.
+ */
+export const DEFAULT_HIDDEN_FIELD_KEYS: readonly string[] = ["lt.armour", "lt.armour.width"];

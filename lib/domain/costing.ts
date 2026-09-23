@@ -72,20 +72,13 @@ function conductorRateMaterial(material: ConductorMaterial): ConductorMaterial {
 
 /** How many "full" cores a core-config represents for conductor weight (3.5C = 3 full + 1 half). */
 function coreCount(spec: Pick<CableSpec, "cores">): number {
-  switch (spec.cores) {
-    case "1C": return 1;
-    case "2C": return 2;
-    case "3C": return 3;
-    case "3.5C": return 3; // the 0.5 neutral is added separately from neutralSizeSqMm
-    case "4C": return 4;
-    case "5C": return 5;
-    case "7C": return 7;
-    case "12C": return 12;
-    case "19C": return 19;
-    case "27C": return 27;
-    case "37C": return 37;
-    default: return 1;
-  }
+  // Parsed, not hand-listed. The old switch enumerated each config and fell through to `1` for
+  // anything unlisted, so every core count added to CoreConfig was silently priced as a SINGLE
+  // core — a 16-core control cable at one core's metal. Control cable runs to 61 cores, so that
+  // trap was going to fire. 3.5C returns 3; its reduced neutral is added from neutralSizeSqMm.
+  if (spec.cores === "3.5C") return 3;
+  const n = Number.parseInt(spec.cores, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
 /**
@@ -179,6 +172,63 @@ export function ratesForSpec(
   };
 }
 
+/**
+ * The cost build-up between raw material and selling price.
+ *
+ * Agreed with Niraj (13 Sept 2026) and confirmed in the 21 and 22 Sept reviews: a SINGLE blended
+ * margin over the whole cost, not a margin per material. His words: per-component margins add
+ * complexity for nothing, because the thing a manufacturer actually manages is the total.
+ *
+ *   raw material  (conductor + insulation + armour + sheath, priced by weight)
+ *   + conversion  (labour, electricity, machine time — % of material)
+ *   + wastage     (scrap, and the staging/misc the 21 Sept notes list alongside it)
+ *   + finance     (materials are bought against delivery, no credit — % of material)
+ *   + drum + freight (rupee amounts for the line)
+ *   = total cost
+ *   + margin      (% of TOTAL cost, so it stays transparent and adjustable)
+ *
+ * Defaults are Niraj's figures at the midpoint of each range he gave. They are defaults, not
+ * constants: every one is editable per quote, which is the point of expressing margin as a
+ * percentage over cost rather than burying it.
+ *
+ * Drum and freight default to ZERO and mean "not yet entered", never "free" — the same posture
+ * the repo takes on scrap elsewhere. Nobody has given a typical figure for either.
+ */
+export interface CostBuildUp {
+  /** Factory conversion — labour, electricity, machine time. % of material cost. */
+  conversionPct: number;
+  /** Wastage and scrap, including the staging/misc listed with it on 21 Sept. % of material. */
+  wastagePct: number;
+  /** Cost of finance: raw material is bought against delivery, on roughly a two-month cycle. */
+  financePct: number;
+  /** Drum cost for the whole line, rupees. 0 = not yet entered. */
+  drumCostInr: number;
+  /** Freight to the customer for the whole line, rupees. 0 = not yet entered. */
+  freightInr: number;
+  /** Net margin, as a percentage of TOTAL cost. */
+  marginPct: number;
+}
+
+/** Niraj's 13 Sept figures, each at the midpoint of the range he gave. */
+export const DEFAULT_COST_BUILD_UP: CostBuildUp = {
+  conversionPct: 6.5, // "6-7%"
+  wastagePct: 2, // "1.5-2%", merged with the 21 Sept staging/misc line
+  financePct: 2.5, // "2-3%"
+  drumCostInr: 0,
+  freightInr: 0,
+  marginPct: 12.5, // "10-15%"
+};
+
+/** One step of the build-up, so the internal sheet shows where every rupee came from. */
+export interface CostStep {
+  label: string;
+  /** The percentage applied, where the step is a percentage. */
+  pct?: number;
+  /** What the percentage was taken of — named so a reviewer can check the arithmetic. */
+  basis?: string;
+  amountInr: number;
+}
+
 export interface CostingInput {
   spec: Pick<
     CableSpec,
@@ -194,8 +244,8 @@ export interface CostingInput {
     | "coveredConductor"
   >;
   lengthM: number;
-  /** Margin %, set independently per cost category — see `MarginCategory`. */
-  marginPctByCategory: Record<MarginCategory, number>;
+  /** The cost build-up applied between material cost and selling price. */
+  buildUp: CostBuildUp;
   rates: MaterialRates;
   /**
    * Per-layer mass derived from the IS build-up chain, in kg/m.
@@ -229,20 +279,24 @@ export interface CostComponent {
   category: MarginCategory;
   kgPerM: number; // weight contribution (0 for labour)
   ratePerKg: number; // ₹/kg (0 for labour)
-  costPerM: number; // ₹/m for this component, before margin
-  marginPct: number; // this component's own margin %
-  marginInr: number; // this component's margin, scaled to lengthM
-  totalInr: number; // (costPerM × lengthM) + marginInr — what this component adds to the line total
+  costPerM: number; // ₹/m for this component
+  subtotalInr: number; // costPerM × lengthM — this component's share of raw material cost
 }
 
 export interface CostingResult {
   components: CostComponent[];
+  /** The build-up, step by step — the internal costing sheet, never a buyer document. */
+  buildUpSteps: CostStep[];
+  /** Raw material only: the sum of the component rows, scaled to the line. */
+  materialCostInr: number;
+  /** Everything before margin. */
+  totalCostInr: number;
   conductorCostPerM: number;
   baseCostPerM: number; // sum of all components' costPerM, before margin
-  lineSubtotalInr: number; // baseCostPerM × lengthM, before margin
-  lineMarginInr: number; // sum of every component's margin
+  lineSubtotalInr: number; // total cost before margin (= totalCostInr)
+  lineMarginInr: number; // margin on the total cost
   lineTotalInr: number;
-  /** Blended margin % across the whole line (total margin ÷ total cost) — what the 12% gate checks. */
+  /** The margin %, which is now a single figure over the total. The 12% gate checks this. */
   blendedMarginPct: number;
   totalConductorKgPerM: number; // handy for drum/logistics later
 }
@@ -298,7 +352,7 @@ function effectiveConductorWeight(spec: CostingInput["spec"]): {
 
 /** Costing for a single quote line, broken down by physical component. Pure. */
 export function computeLine(input: CostingInput): CostingResult {
-  const { spec, lengthM, marginPctByCategory, rates } = input;
+  const { spec, lengthM, buildUp, rates } = input;
   const { totalConductorKgPerM: bareConductorKgPerM, label } = effectiveConductorWeight(spec);
 
   // Stranding: a core laid up helically travels further than the cable is long, so a metre of
@@ -321,13 +375,15 @@ export function computeLine(input: CostingInput): CostingResult {
   const sheathKgPerM = input.derivedMass?.sheathKgPerM ?? 0;
   const labourPerM = rates.labourPerM ?? DEFAULT_LABOUR_PER_M;
 
-  /** Build one row, applying that category's own margin — scaled to the full line length. */
-  const row = (rowLabel: string, category: MarginCategory, kgPerM: number, ratePerKg: number, costPerM: number): CostComponent => {
-    const marginPct = marginPctByCategory[category];
-    const subtotalInr = costPerM * lengthM;
-    const marginInr = subtotalInr * (marginPct / 100);
-    return { label: rowLabel, category, kgPerM, ratePerKg, costPerM, marginPct, marginInr, totalInr: subtotalInr + marginInr };
-  };
+  /** One material row. Margin is no longer applied here — it goes on the total, once. */
+  const row = (rowLabel: string, category: MarginCategory, kgPerM: number, ratePerKg: number, costPerM: number): CostComponent => ({
+    label: rowLabel,
+    category,
+    kgPerM,
+    ratePerKg,
+    costPerM,
+    subtotalInr: costPerM * lengthM,
+  });
 
   const components: CostComponent[] = [
     row(label, "Conductor", totalConductorKgPerM, rates.conductorPerKg, conductorCostPerM),
@@ -337,20 +393,49 @@ export function computeLine(input: CostingInput): CostingResult {
     row("Labour & overhead", "Labour", 0, 0, labourPerM),
   ];
 
+  // ── The build-up: material, then each uplift, then margin on the total ──
+  //
+  // Order matters and is Niraj's. Conversion, wastage and finance are all percentages OF RAW
+  // MATERIAL, not compounding on each other — a factory quotes them against what the metal and
+  // compound cost. Drum and freight are flat rupee amounts for the line. Margin alone is taken
+  // on the total, which is what makes it the one number a person adjusts when a customer pushes
+  // back on price.
   const baseCostPerM = components.reduce((sum, c) => sum + c.costPerM, 0);
-  const lineSubtotalInr = baseCostPerM * lengthM;
-  const lineMarginInr = components.reduce((sum, c) => sum + c.marginInr, 0);
-  // Blended, not per-component: what the 12% owner-approval gate checks (see file header).
-  const blendedMarginPct = lineSubtotalInr > 0 ? (lineMarginInr / lineSubtotalInr) * 100 : 0;
+  const materialCostInr = baseCostPerM * lengthM;
+
+  const pctOfMaterial = (pct: number) => materialCostInr * (pct / 100);
+  const conversionInr = pctOfMaterial(buildUp.conversionPct);
+  const wastageInr = pctOfMaterial(buildUp.wastagePct);
+  const financeInr = pctOfMaterial(buildUp.financePct);
+
+  const totalCostInr =
+    materialCostInr + conversionInr + wastageInr + financeInr + buildUp.drumCostInr + buildUp.freightInr;
+  const lineMarginInr = totalCostInr * (buildUp.marginPct / 100);
+
+  const buildUpSteps: CostStep[] = [
+    { label: "Raw material", amountInr: materialCostInr },
+    { label: "Manufacturing & overhead (labour, power, machine time)", pct: buildUp.conversionPct, basis: "raw material", amountInr: conversionInr },
+    { label: "Wastage and scrap", pct: buildUp.wastagePct, basis: "raw material", amountInr: wastageInr },
+    { label: "Cost of finance", pct: buildUp.financePct, basis: "raw material", amountInr: financeInr },
+    { label: "Drum", amountInr: buildUp.drumCostInr },
+    { label: "Freight", amountInr: buildUp.freightInr },
+    { label: "Total cost", amountInr: totalCostInr },
+    { label: "Margin", pct: buildUp.marginPct, basis: "total cost", amountInr: lineMarginInr },
+  ];
 
   return {
     components,
+    buildUpSteps,
+    materialCostInr,
+    totalCostInr,
     conductorCostPerM,
     baseCostPerM,
-    lineSubtotalInr,
+    lineSubtotalInr: totalCostInr,
     lineMarginInr,
-    lineTotalInr: Math.round(lineSubtotalInr + lineMarginInr),
-    blendedMarginPct,
+    lineTotalInr: Math.round(totalCostInr + lineMarginInr),
+    // The margin IS blended now — there is only one. Kept so the owner-approval gate and every
+    // summary display keep reading the same field.
+    blendedMarginPct: buildUp.marginPct,
     totalConductorKgPerM,
   };
 }

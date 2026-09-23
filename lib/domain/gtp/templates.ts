@@ -73,13 +73,21 @@ export interface CustomParameter {
  * Storing only the size — which is what it used to do — meant reloading a template gave you a
  * differently-shaped document from the one you saved.
  */
-export interface GtpTemplate {
-  id: string;
-  /** User-given name, e.g. "WBSEDCL 3-core AB standard". */
-  name: string;
-  profileId: CustomerProfile["id"];
+/**
+ * The INPUTS that shape a GTP sheet — everything a person chose, nothing the engine derived.
+ *
+ * Extracted so the two things that need to reconstruct a sheet share one definition: a saved
+ * template, and a SAVED GTP being reopened for editing. Those were previously unrelated — a
+ * stored GTP kept only its derived values and its printed rows, so reopening it offered free-text
+ * editing of the results and nothing re-ran the build-up. Changing the conductor area on the
+ * record moved one printed row and left every dimension describing the previous cable.
+ *
+ * The contract is the same one templates always had: inputs only. Re-deriving from these against
+ * the live IS tables is what makes an edit recalculate instead of contradicting itself.
+ */
+export interface GtpSheetInputs {
   /**
-   * Which cable type this template is for.
+   * Which cable type this sheet is for.
    *
    * Optional for backward compatibility: templates saved before cable types existed have no
    * value and are treated as AB, which is what they were. Without this, loading an AB template
@@ -88,8 +96,21 @@ export interface GtpTemplate {
   productLine?: ProductLine;
   /** The designation for the type above. Only AB round-trips through the parser. */
   sizeInput: string;
-  /** Construction for LT power / control, where a designation string cannot express it. */
-  ltConfig?: { csaSqMm: number; coreCount: number; armoured: boolean };
+  /**
+   * Construction for LT power / control, where a designation string cannot express it.
+   *
+   * `armourForm` and `armourMethod` are part of it. They were absent from this type while the
+   * builder wrote them anyway, so they survived a round-trip only because JSON carried keys the
+   * type denied — and a method-B sheet reloaded as method A the moment anyone narrowed the object
+   * on the way through. Costing had the same defect against the same two fields.
+   */
+  ltConfig?: {
+    csaSqMm: number;
+    coreCount: number;
+    armoured: boolean;
+    armourForm?: "round-wire" | "formed-wire";
+    armourMethod?: "A" | "B";
+  };
   /** Construction for solar DC. */
   solarConfig?: {
     csaSqMm: number;
@@ -97,6 +118,16 @@ export interface GtpTemplate {
     installationMethod: "free-in-air" | "on-surface" | "two-touching";
     ambientC: number;
   };
+  /**
+   * Conductor material, where the cable type offers a choice.
+   *
+   * AB is aluminium by IS 14255 and needs no answer; LT power and control take either, and
+   * control is a copper line in practice. Absent means "take the cable type's own default",
+   * which is how the builder resolves it when nobody has chosen.
+   */
+  conductorMaterial?: "AL" | "CU";
+  /** Messenger construction for AB cable; absent means take the customer profile's. */
+  messengerConstruction?: "bare" | "covered";
   /** Field keys left OFF the printed document. The shape of the sheet. */
   hiddenFields?: string[];
   /** Parameters the operator added by hand. */
@@ -111,6 +142,23 @@ export interface GtpTemplate {
    * Optional so templates saved before the column existed still load.
    */
   toleranceOverrides?: Record<string, { value: string; reason: string }>;
+}
+
+/**
+ * A saved sheet: the arrangement of a GTP for one customer and cable type.
+ *
+ * This IS the template. There is no separate "customer template" concept — picking a customer
+ * seeds the sheet from their profile, and saving the arrangement is what makes it reusable.
+ * A template therefore has to carry everything that shapes the document, not just its size —
+ * storing only the size, which is what it used to do, meant reloading a template gave you a
+ * differently-shaped document from the one you saved. That list now lives on `GtpSheetInputs`,
+ * shared with the reopen-and-edit path.
+ */
+export interface GtpTemplate extends GtpSheetInputs {
+  id: string;
+  /** User-given name, e.g. "WBSEDCL 3-core AB standard". */
+  name: string;
+  profileId: CustomerProfile["id"];
   /** @deprecated see TemplateChoices. Kept optional so old records still load. */
   choices?: TemplateChoices;
   createdAt: string;

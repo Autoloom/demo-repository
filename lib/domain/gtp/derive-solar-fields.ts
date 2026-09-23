@@ -56,7 +56,7 @@ export function deriveSolarFields(
 
   const fields: ResolvedField[] = [
     { key: "mfr.name", label: "Manufacturer", value: FIXED.manufacturer, tag: "FIXED", source: "profile", trace: "Org constant", editable: false },
-    { key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant", editable: false, gap: true },
+    { key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant. Required on the supplied cable, not at offer stage — a quotation goes out before the licence is quoted against, so this does not block a GTP (client, 22 Sept 2026).", editable: true },
 
     { key: "cable.standard", label: "Applicable standard", value: REF, tag: "FIXED", source: "is-table", trace: "Indian solar cable standard", editable: false },
     { key: "cable.size", label: "Nominal conductor area", value: `${config.csaSqMm} sq mm`, tag: "CHOICE", source: "order", trace: "As ordered", editable: false },

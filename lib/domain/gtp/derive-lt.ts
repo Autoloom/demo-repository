@@ -32,9 +32,11 @@ import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
 import { IS8130_2013_TABLE2_STRANDED, findConductor } from "@/lib/domain/standards/is8130-2013";
 import type { ConductorForm } from "@/lib/domain/standards/is8130-2013";
 import {
-  armourDimensions, innerSheathThickness, outerSheathThickness,
+  armourDimensions, formedWireThickness, formedWireWidthMm, innerSheathThickness, outerSheathThickness,
+  FORMED_WIRE_WIDTH_REF,
 } from "@/lib/domain/standards/protective-coverings";
-import type { CoveringStandard } from "@/lib/domain/standards/protective-coverings";
+import type { ArmourMethod, CoveringStandard } from "@/lib/domain/standards/protective-coverings";
+import type { ConductorShape } from "./cable-types";
 
 export interface LtCableConfig {
   standard: CoveringStandard;
@@ -47,6 +49,29 @@ export interface LtCableConfig {
   armoured: boolean;
   /** Armour style. Ignored when the calculated diameter forces round wire (≤ 13 mm). */
   armourForm?: "round-wire" | "formed-wire";
+  /**
+   * Which of the standard's two armouring practices to apply to formed wire (strip).
+   * Defaults to A — the flat 0.8 mm strip, which is the size in common use and the one the
+   * manufacturer asked for ("Galvanised Steel Strip Armour size 4 × 0.8 mm ... very widely
+   * used"). Has no effect on round wire, which has only one table.
+   */
+  armourMethod?: ArmourMethod;
+  /**
+   * Conductor shape. LT power aluminium is generally sector-shaped and compacted, and the GTP
+   * has to say so — an inspector checks the conductor form against the sheet.
+   *
+   * DELIBERATELY NOT USED IN THE FICTITIOUS CHAIN. IS 10462 (Part 1) §0.3 ignores conductor
+   * shape and compactness by design, so that every manufacturer keying into the sheath and
+   * armour tables lands on the same row for the same cable. A 3-core 70 sq mm cable has a
+   * fictitious conductor diameter of 9.4 mm whether the real conductor measures 9.44 circular
+   * or is sector-shaped and not round at all. Making shape move those lookups would select a
+   * DIFFERENT sheath thickness from the one the standard prescribes. `shapeDoesNotMoveTheChain`
+   * in the tests pins this.
+   *
+   * The real overall diameter of a sector cable IS smaller, and §0.4 says that figure "should be
+   * calculated separately" — it is not this method's output and we do not hold a source for it.
+   */
+  shape?: ConductorShape;
 }
 
 /** One traced step, carrying the value AND where it came from. */
@@ -68,6 +93,10 @@ export interface LtDerivation {
   insulationThicknessMm: number;
   innerSheathThicknessMm: number | null;
   armourDiaOrThicknessMm: number | null;
+  /** Nominal strip width, printed only — it takes no part in the dimensional build-up. */
+  armourWidthMm: number | null;
+  /** Which of the standard's two armouring practices produced the formed-wire thickness. */
+  armourMethod: ArmourMethod | null;
   outerSheathThicknessMm: number;
 }
 
@@ -127,7 +156,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   const dL = fictitiousConductorDiameter(config.csaSqMm, "fixed");
   steps.push({
     id: "calc.dL",
-    label: "Fictitious conductor diameter (d_L)",
+    label: "Calculated conductor diameter (d_L)",
     value: dL,
     unit: "mm",
     ref: "IS 10462 (Part 1) : 1983, Table 1",
@@ -137,7 +166,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   const dC = fictitiousCoreDiameter({ dLMm: dL, insulationThicknessMm: insulation.nominalMm });
   steps.push({
     id: "calc.diaOverCore",
-    label: "Fictitious core diameter (D_c)",
+    label: "Calculated core diameter (D_c)",
     value: dC,
     unit: "mm",
     ref: "IS 10462 (Part 1) : 1983, §3.2",
@@ -167,7 +196,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     });
     steps.push({
       id: "calc.diaOverCore.neutral",
-      label: "Fictitious core diameter, reduced neutral (D_c2)",
+      label: "Calculated core diameter, reduced neutral (D_c2)",
       value: neutralDC,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.2",
@@ -176,7 +205,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = fictitiousLaidUpDiameter({ form: "threeAndHalf", fullCoreDMm: dC, halfCoreDMm: neutralDC });
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over laid-up cores (D_f, 3½ core)",
+      label: "Calculated diameter over laid-up cores (D_f, 3½ core)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3(b)",
@@ -187,7 +216,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = dC;
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over core (single core, no lay-up)",
+      label: "Calculated diameter over core (single core, no lay-up)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3",
@@ -197,7 +226,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dF = fictitiousLaidUpDiameter({ form: "uniform", cores: config.coreCount, dCMm: dC });
     steps.push({
       id: "calc.diaOverLaidUp",
-      label: "Fictitious diameter over laid-up cores (D_f)",
+      label: "Calculated diameter over laid-up cores (D_f)",
       value: dF,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.3(a) + Table 3",
@@ -224,7 +253,7 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     dB = fictitiousOverInnerSheath(dF, innerSheathMm);
     steps.push({
       id: "calc.diaUnderArmour",
-      label: "Fictitious diameter over inner sheath (D_B = under armour)",
+      label: "Calculated diameter over inner sheath (D_B = under armour)",
       value: dB,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.4",
@@ -235,28 +264,51 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
   // ── Armour ──────────────────────────────────────────────────────────────────────────────
   let dX = dB;
   let armourMm: number | null = null;
+  let armourWidthMm: number | null = null;
   let armourForm: LtDerivation["armourForm"] = null;
   if (config.armoured) {
     const armour = armourDimensions(config.standard, dB);
+    const method: ArmourMethod = config.armourMethod ?? "A";
     // Below 13 mm the standards permit round wire only, whatever was asked for.
-    const useRoundWire = armour.values.roundWireOnly || (config.armourForm ?? "round-wire") === "round-wire";
-    armourForm = useRoundWire ? "round-wire" : "formed-wire";
-    armourMm = useRoundWire ? armour.values.roundWireDiaMm : armour.values.formedWireThicknessMm;
-    if (armourMm === null) throw new Error(`No formed-wire armour dimension at ${dB} mm`);
+    const formed =
+      armour.values.roundWireOnly || (config.armourForm ?? "round-wire") === "round-wire"
+        ? null
+        : formedWireThickness(config.standard, dB, method);
+
+    armourForm = formed ? "formed-wire" : "round-wire";
+    armourMm = formed ? formed.values.thicknessMm : armour.values.roundWireDiaMm;
+    if (armourMm === null) throw new Error(`No armour dimension at ${dB} mm`);
 
     steps.push({
       id: "armour",
-      label: useRoundWire ? "Armour round wire diameter" : "Armour formed wire thickness",
+      label: formed ? "Armour formed wire thickness" : "Armour round wire diameter",
       value: armourMm,
       unit: "mm",
-      ref: armour.ref,
+      ref: formed ? formed.ref : armour.ref,
       keyedBy: `calculated diameter under armour = ${dB} mm`,
     });
+
+    // Width is printed, never load-bearing: the steel area of a strip layer is π(D + t)·t, in
+    // which width cancels. Emitted as its own step so the GTP can say "4.0 × 0.8 mm" with a
+    // citation, and so a reviewer can see it took no part in the build-up.
+    if (formed) {
+      armourWidthMm = formedWireWidthMm(formed.values.thicknessMm);
+      if (armourWidthMm !== null) {
+        steps.push({
+          id: "armour.width",
+          label: "Armour formed wire width (nominal)",
+          value: armourWidthMm,
+          unit: "mm",
+          ref: FORMED_WIRE_WIDTH_REF,
+          keyedBy: `paired to ${formed.values.thicknessMm} mm thickness`,
+        });
+      }
+    }
 
     dX = fictitiousOverArmour(dB, armourMm);
     steps.push({
       id: "calc.diaUnderSheath",
-      label: "Fictitious diameter over armour (D_X = under outer sheath)",
+      label: "Calculated diameter over armour (D_X = under outer sheath)",
       value: dX,
       unit: "mm",
       ref: "IS 10462 (Part 1) : 1983, §3.5",
@@ -287,6 +339,8 @@ export function deriveLtCable(config: LtCableConfig): LtDerivation {
     insulationThicknessMm: insulation.nominalMm,
     innerSheathThicknessMm: innerSheathMm,
     armourDiaOrThicknessMm: armourMm,
+    armourWidthMm,
+    armourMethod: armourForm === "formed-wire" ? (config.armourMethod ?? "A") : null,
     outerSheathThicknessMm: outerMm,
   };
 }

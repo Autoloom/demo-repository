@@ -48,6 +48,9 @@ export type CableStandard =
   | "IS 694"
   | "IS 8130"
   | "IS 14255"
+  // The Indian solar cable standard, and the right citation for a GTP produced here — the
+  // cable-type registry already pins IS 17293 as SOLAR_DC's primary standard.
+  | "IS 17293"
   | "IS 398-4"
   | "EN 50618"
   | "BS EN 60228"
@@ -94,6 +97,14 @@ export type ConductorClass =
   | "Class 5 (flexible)"
   | "Messenger conductor"
   | "Thermocouple extension";
+/**
+ * Core counts across the range.
+ *
+ * The steps above 5 are the control-cable ladder. Niraj (13 Sept 2026): control cables "go up to
+ * 61" cores and are a separate category from power. The gaps in this list were not cosmetic —
+ * `specFromFields` rejects any config it cannot represent, so a 16-core control GTP derived
+ * perfectly well and then could not be quoted at all.
+ */
 export type CoreConfig =
   | "1C"
   | "2C"
@@ -101,11 +112,28 @@ export type CoreConfig =
   | "3.5C"
   | "4C"
   | "5C"
+  | "6C"
   | "7C"
+  | "8C"
+  | "10C"
   | "12C"
+  | "14C"
+  | "16C"
   | "19C"
+  | "21C"
+  | "24C"
   | "27C"
-  | "37C";
+  | "30C"
+  | "37C"
+  | "44C"
+  | "52C"
+  | "61C";
+
+/** Every CoreConfig, for callers that need to test representability rather than hardcode a list. */
+export const CORE_CONFIGS: readonly CoreConfig[] = [
+  "1C", "2C", "3C", "3.5C", "4C", "5C", "6C", "7C", "8C", "10C", "12C",
+  "14C", "16C", "19C", "21C", "24C", "27C", "30C", "37C", "44C", "52C", "61C",
+];
 export type Insulation =
   | "XLPE"
   | "PVC (Type A)"
@@ -278,15 +306,16 @@ export interface QuoteLine {
   metalRatePerKg: number;
   overheadPerM: number;
   /**
-   * Margin %, independent per material (conductor/insulation/armour/sheath/labour). Optional
-   * only so pre-existing lines saved before per-material margin (which carried a single flat
-   * `marginPct`) still typecheck and load — a reader falls back to that flat value spread across
-   * every category. Every line the quote builder writes now sets this.
+   * The cost build-up this line was priced with: conversion, wastage, finance, drum, freight and
+   * the margin over the total.
+   *
+   * Optional so lines saved before it still load. Per-material margins were removed on Niraj's
+   * instruction (13 Sept) — "a single blended margin, not per-component" — and a line saved under
+   * the old model falls back to its flat `marginPct` with zero uplifts, which reproduces exactly
+   * what that line was quoted at rather than silently re-pricing history.
    */
-  marginPctByCategory?: import("@/lib/domain/costing").MarginCategoryMargins;
-  /** Blended margin across the whole line (total margin ÷ total cost) — what the 12% owner-review
-   *  gate checks, and what a summary display shows. Derived from `marginPctByCategory`, never
-   *  edited directly. */
+  buildUp?: import("@/lib/domain/costing").CostBuildUp;
+  /** Margin % over total cost. The 12% owner-review gate checks this. */
   marginPct: number;
   metalCostPerM: number;
   baseCostPerM: number;
@@ -450,6 +479,21 @@ export interface Gtp {
    * would be wrong: the template is mutable and may have been reshaped since.
    */
   hiddenFields?: string[];
+  /**
+   * The builder inputs this GTP was generated from — what a person CHOSE, not what was derived.
+   *
+   * Stored so a saved GTP can be reopened in the builder and re-derived. Without it the only
+   * editing a stored record supported was free text over `sections`, which changed the printed
+   * row and nothing else: setting the conductor area to 260 on a 300 sq mm sheet left the
+   * insulation, the diameter under the outer sheath, the armour and the mass all describing the
+   * 300, on a document that now named a different cable and said nothing about the contradiction.
+   *
+   * Deliberately the same shape as a template (`GtpSheetInputs`), because it is the same
+   * contract: inputs only, re-derived against the live IS tables at edit time. Absent on records
+   * created before this existed and on the order-driven path, which builds sections directly and
+   * has no build-up behind them — those keep free-text editing, which is all they can support.
+   */
+  builderInputs?: import("@/lib/domain/gtp/templates").GtpSheetInputs;
   /** The cable designation the engine parsed, e.g. "3Cx70 + 1Cx50 + 1Cx16". */
   designation?: string;
   /** Which standard editions produced `derivedFields`. */

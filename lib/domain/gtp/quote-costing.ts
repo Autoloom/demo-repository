@@ -1,11 +1,13 @@
-import { computeLine, ratesForSpec, type CostingResult, type MarginCategory } from "@/lib/domain/costing";
+import { computeLine, ratesForSpec, type CostBuildUp, type CostingResult } from "@/lib/domain/costing";
 import type { CableSpec, Material } from "@/lib/services/types";
 import { buildSpecFromFields, constructionKey, lineMassFromDerived, targetsFromBuild, type BuildSpec } from "./build-spec";
 import { derivedLineMassFromLegacySpec, isBridgeGap, ltConfigFromLegacySpec } from "./legacy-bridge";
 import { deriveLtCable } from "./derive-lt";
 import { deriveLtFields } from "./derive-lt-fields";
 import type { GtpSpecSource } from "./spec-from-fields";
+import { catalogueForArmour, findCatalogueRow } from "@/lib/domain/catalogue/daksha-2026";
 import { deriveLtMass, isMassGap } from "./mass";
+import { abDerivedMass, abGroupsFromSpec, isSpecGap, solarDerivedMass } from "./spec-from-construction";
 
 /** Re-derive quote-local construction edits; never attach the old cable's mass to new inputs. */
 export function quoteConstruction(spec: CableSpec): GtpSpecSource {
@@ -18,11 +20,19 @@ export function quoteConstruction(spec: CableSpec): GtpSpecSource {
   if (spec.insulation !== (config.standard === "IS7098-1" ? "XLPE" : "PVC (Type A)")) throw new Error("Selected insulation contradicts the standard's construction");
   if (!["Unarmoured", "GI round wire (GSW)", "GI strip (GSS)"].includes(spec.armour)) throw new Error("No encoded mass model for this armour material");
   config.armourForm = spec.armour === "GI strip (GSS)" ? "formed-wire" : "round-wire";
+  // Carry the armouring PRACTICE across from the GTP.
+  //
+  // `ltConfigFromLegacySpec` rebuilds the config from the legacy CableSpec fields, which record
+  // the armour MATERIAL ("GI strip (GSS)") but not which of IS 7098-1 Table 6's two methods
+  // produced its thickness. Left to default, a GTP approved under method B (1.4 mm strip) would
+  // be re-derived here at method A (0.8 mm) — on 3.5C x 300 that is 5971 vs 5071 kg/km, so the
+  // quote would price ~900 kg/km less metal than the cable the customer stamped.
+  config.armourMethod = spec.gtpSource.config.armourMethod;
   config.conductorClass = "Class 2";
   const chain = deriveLtCable(config);
   if (spec.cores === "3.5C" && spec.neutralSizeSqMm !== chain.steps.find((s) => s.id === "neutral.reduced")?.value) throw new Error("Reduced neutral contradicts IS Table 2 for the selected phase size");
   const original = spec.gtpSource;
-  const unchanged = config.standard === original.config.standard && config.coreCount === original.config.coreCount && config.csaSqMm === original.config.csaSqMm && config.material === original.config.material && config.armoured === original.config.armoured && chain.armourForm === original.armourForm;
+  const unchanged = config.standard === original.config.standard && config.coreCount === original.config.coreCount && config.csaSqMm === original.config.csaSqMm && config.material === original.config.material && config.armoured === original.config.armoured && chain.armourForm === original.armourForm && (config.armourMethod ?? "A") === (original.config.armourMethod ?? "A");
   if (unchanged) return original;
   const fields = deriveLtFields(config).map((field) => field.key.startsWith("mfr.") ? original.fields.find((f) => f.key === field.key) ?? field : field);
   return { productLine: config.standard === "IS7098-1" ? "XLPE_POWER" : "PVC_CONTROL", config, armourForm: chain.armourForm, fields };
@@ -36,14 +46,52 @@ export function quoteBuild(spec: CableSpec, previous?: BuildSpec): { source: Gtp
   return { source, build: buildSpecFromFields(spec.id, source, targets) };
 }
 
-export function costCable(spec: CableSpec, commercial: { lengthM: number; marginPctByCategory: Record<MarginCategory, number>; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
+export function costCable(spec: CableSpec, commercial: { lengthM: number; buildUp: CostBuildUp; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
   let mass;
-  if (spec.gtpSource) {
+  // AB and solar have their own derivation chains and no `gtpSource` — their constructions do not
+  // fit LtCableConfig. Routed by family so the shared engine keeps one branch per FAMILY rather
+  // than a product-line conditional buried in the costing.
+  if (spec.family === "Aerial Bunched Cable" && spec.aerialBunched) {
+    const derived = abDerivedMass(
+      { productLine: "AB_CABLE", groups: abGroupsFromSpec(spec.aerialBunched), raw: spec.designation },
+      spec.aerialBunched.messengerInsulated === false ? "bare" : "covered",
+    );
+    if (isSpecGap(derived)) throw new Error(derived.reason);
+    mass = derived;
+  } else if (spec.family === "Solar DC Cable") {
+    const derived = solarDerivedMass({
+      csaSqMm: spec.conductorSizeSqMm,
+      // The class the spec was built with is the class the standard's dimension table needs.
+      directlyConnectedToModules: spec.conductorClass === "Class 5 (flexible)",
+    });
+    if (isSpecGap(derived)) throw new Error(derived.reason);
+    mass = derived;
+  } else if (spec.gtpSource) {
     if ((spec.flameClass === "FRLS" || spec.flameClass === "FR") && !materials.some((m) => m.category === "Sheath" && (spec.flameClass === "FRLS" ? /FRLS/i.test(m.name) : /\bFR\b/i.test(m.name)))) {
       throw new Error(`Enter a ${spec.flameClass} sheath compound rate in Materials before pricing this buyer requirement`);
     }
     const { source, build: checked } = quoteBuild(spec, build);
-    const result = deriveLtMass(source.config, targetsFromBuild(checked));
+    // Price the kilograms the GTP states. Where the works publishes a mass the chain is
+    // reconciled to it, so the quote cannot drift from the sheet it was raised against — the
+    // derived model runs 3.5-10% light on control cable, which was that much unpriced material
+    // on every line.
+    const catalogueHit = findCatalogueRow({
+      family: source.productLine === "XLPE_POWER" ? "XLPE_POWER" : "PVC_CONTROL",
+      material: source.config.material,
+      csaSqMm: source.config.csaSqMm,
+      coreCount: source.config.coreCount,
+    });
+    const worksMass = catalogueHit
+      ? catalogueForArmour(
+          catalogueHit.row,
+          !source.config.armoured
+            ? "unarmoured"
+            : source.armourForm === "formed-wire"
+              ? "strip"
+              : "round-wire",
+        )?.massKgPerKm
+      : undefined;
+    const result = deriveLtMass(source.config, targetsFromBuild(checked), worksMass);
     if (isMassGap(result)) throw new Error(result.missing);
     mass = lineMassFromDerived(result);
   } else {
@@ -52,6 +100,6 @@ export function costCable(spec: CableSpec, commercial: { lengthM: number; margin
     mass = result;
   }
   const rates = ratesForSpec(spec, materials);
-  return computeLine({ spec, lengthM: commercial.lengthM, marginPctByCategory: commercial.marginPctByCategory, derivedMass: mass,
+  return computeLine({ spec, lengthM: commercial.lengthM, buildUp: commercial.buildUp, derivedMass: mass,
     rates: { ...rates, conductorPerKg: commercial.metalRatePerKg || rates.conductorPerKg, labourPerM: commercial.overheadPerM } });
 }

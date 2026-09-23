@@ -127,6 +127,18 @@ const AERIAL_BUNCHED: CableTypeDefinition = {
     { kind: "choice", key: "phaseSizeSqMm", label: "Phase size", options: [16, 25, 35, 50, 70, 95], defaultValue: 70, hint: "sq mm — IS 14255 covers 16 to 95" },
     { kind: "choice", key: "streetLightSizeSqMm", label: "Street-light core", options: [16], defaultValue: 16, optional: true, hint: "IS 14255 §6.4 fixes this at 16 sq mm" },
     { kind: "choice", key: "messengerSizeSqMm", label: "Messenger", options: [25, 35, 50, 70], hint: "Auto-paired from IS 14255 Table 3; editable" },
+    // Both constructions are real and materially different cables — DHBVN specifies bare
+    // Al-Mg-Si, WBSEDCL a covered messenger. Asked for by the manufacturer (Sept 2026):
+    // "option of Bare messenger shall also be provided, accordingly other parameters viz.
+    // Dimensions / Weight will also change."
+    {
+      kind: "choice",
+      key: "messengerConstruction",
+      label: "Messenger construction",
+      options: ["covered", "bare"],
+      defaultValue: "covered",
+      hint: "Bare drops the messenger's insulation wall, so the bundle gets lighter and thinner.",
+    },
   ],
   derivationChain: [
     { id: "conductor.phase", describes: "Phase conductor strands, diameter, resistance", standardId: "IS 8130" },
@@ -161,11 +173,39 @@ const LT_POWER_XLPE: CableTypeDefinition = {
     { id: "IS 5831", edition: "1984", purpose: "PVC sheath compounds (ST-2)" },
   ],
   configSchema: [
-    { kind: "choice", key: "coreCount", label: "Cores", options: [1, 2, 3, 3.5, 4, 5], defaultValue: 3.5 },
-    { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400, 500, 630, 800, 1000], defaultValue: 300, hint: "sq mm" },
+    // Power cable tops out at 3.5 or 4 core. Niraj (13 Sept 2026) flagged the previous list as an
+    // error: "current system allows core count beyond 4 for power cables; needs a constraint" —
+    // anything above 4 core is a CONTROL cable, which is a separate type with a separate standard
+    // and a copper conductor. Offering 5 here let an operator build a power GTP that the factory
+    // does not make.
+    { kind: "choice", key: "coreCount", label: "Cores", options: [1, 2, 3, 3.5, 4], defaultValue: 3.5 },
+    // 4 sq mm to 400-500, with 630 a single-core edge case (Niraj, same call). The tables run
+    // further, but 800 and 1000 sq mm are not cable this manufacturer makes, and 1.5 / 2.5 sq mm
+    // are control and house-wiring sizes rather than power.
+    { kind: "choice", key: "csa", label: "Conductor size", options: [4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185, 240, 300, 400, 500, 630], defaultValue: 300, hint: "sq mm — 630 is single-core only" },
     { kind: "choice", key: "material", label: "Conductor material", options: ["Aluminium", "Copper"], defaultValue: "Aluminium" },
     { kind: "choice", key: "shape", label: "Conductor shape", options: [...CONDUCTOR_SHAPES], defaultValue: "circular", hint: "Sector cores pack tighter, reducing overall diameter" },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },
+    // Strip by default on this line. The manufacturer's own correction (Sept 2026): "Instead of
+    // Wire Armour used for 3.5 Core Cables the Galvanised Steel Strip Armour size 4 × 0.8 mm
+    // shall be placed, which is very widely used." Round wire stays selectable — and is forced
+    // anyway below 13 mm calculated diameter, where the standard permits nothing else.
+    {
+      kind: "choice",
+      key: "armourForm",
+      label: "Armour form",
+      options: ["formed-wire", "round-wire"],
+      defaultValue: "formed-wire",
+      hint: "Formed wire is galvanised steel strip. Round wire is forced below 13 mm calculated diameter (§14.2).",
+    },
+    {
+      kind: "choice",
+      key: "armourMethod",
+      label: "Armouring practice",
+      options: ["A", "B"],
+      defaultValue: "A",
+      hint: "Both are printed in Table 6. A = 4.0 × 0.8 mm strip at every diameter above 13 mm. B = the banded table, stepping to 6.1 × 1.4 mm above 40 mm.",
+    },
     { kind: "choice", key: "sheath", label: "Outer sheath", options: ["PVC ST-2", "PE", "LSHF"], defaultValue: "PVC ST-2" },
   ],
   // The build-up chain. Each `keyedBy` step needs the PREVIOUS step's output as its lookup key.
@@ -174,13 +214,13 @@ const LT_POWER_XLPE: CableTypeDefinition = {
     { id: "conductor", describes: "Max DC resistance and minimum wire count", standardId: "IS 8130" },
     { id: "neutral.reduced", describes: "Reduced-neutral CSA", standardId: "IS 7098-1" },
     { id: "insulation", describes: "Insulation thickness", standardId: "IS 7098-1" },
-    { id: "calc.diaOverCore", describes: "Fictitious diameter over insulation (D_c)", standardId: "IS 10462-1" },
+    { id: "calc.diaOverCore", describes: "Calculated diameter over insulation (D_c)", standardId: "IS 10462-1" },
     { id: "layup", describes: "Lay-up pattern by core count", standardId: "IS 7098-1" },
-    { id: "calc.diaOverLaidUp", describes: "Fictitious diameter over laid-up cores (D_f)", standardId: "IS 10462-1", keyedBy: "calc.diaOverCore" },
+    { id: "calc.diaOverLaidUp", describes: "Calculated diameter over laid-up cores (D_f)", standardId: "IS 10462-1", keyedBy: "calc.diaOverCore" },
     { id: "innerSheath", describes: "Inner sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaOverLaidUp" },
-    { id: "calc.diaUnderArmour", describes: "Fictitious diameter over inner sheath = under armour (D_B)", standardId: "IS 10462-1", keyedBy: "innerSheath" },
+    { id: "calc.diaUnderArmour", describes: "Calculated diameter over inner sheath = under armour (D_B)", standardId: "IS 10462-1", keyedBy: "innerSheath" },
     { id: "armour", describes: "Armour wire diameter or strip thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderArmour" },
-    { id: "calc.diaUnderSheath", describes: "Fictitious diameter over armour = under outer sheath (D_X)", standardId: "IS 10462-1", keyedBy: "armour" },
+    { id: "calc.diaUnderSheath", describes: "Calculated diameter over armour = under outer sheath (D_X)", standardId: "IS 10462-1", keyedBy: "armour" },
     { id: "outerSheath", describes: "Outer sheath thickness", standardId: "IS 7098-1", keyedBy: "calc.diaUnderSheath" },
     { id: "calc.overall", describes: "Overall diameter and mass by component" },
   ],
@@ -204,6 +244,25 @@ const PVC_CONTROL: CableTypeDefinition = {
     { kind: "choice", key: "csa", label: "Conductor size", options: [1.5, 2.5, 4, 6], defaultValue: 2.5, hint: "sq mm" },
     { kind: "choice", key: "material", label: "Conductor material", options: ["Copper", "Aluminium"], defaultValue: "Copper", hint: "Both are supported. Copper is the corpus norm for control; the manufacturer also runs aluminium. IS 8130 specifies both, and the minimum wire counts differ." },
     { kind: "boolean", key: "armoured", label: "Armoured", defaultValue: true },
+    // Control cable is conventionally round-wire armoured, and at these sizes the calculated
+    // diameter often falls at or below 13 mm, where the standard permits nothing else. Strip is
+    // offered rather than assumed.
+    {
+      kind: "choice",
+      key: "armourForm",
+      label: "Armour form",
+      options: ["round-wire", "formed-wire"],
+      defaultValue: "round-wire",
+      hint: "Round wire is forced below 13 mm calculated diameter (§13.2), whatever is selected here.",
+    },
+    {
+      kind: "choice",
+      key: "armourMethod",
+      label: "Armouring practice",
+      options: ["A", "B"],
+      defaultValue: "A",
+      hint: "Applies only to formed wire. A = 4.0 × 0.8 mm strip above 13 mm; B = the banded table.",
+    },
   ],
   derivationChain: LT_POWER_XLPE.derivationChain, // structurally identical (build-plan-v1 §0.3)
   validationRules: ["buildup.dia-mismatch", "band.coverage", "field.missing-source"],

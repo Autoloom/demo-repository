@@ -10,6 +10,7 @@
  * being fussy.
  */
 import assert from "node:assert/strict";
+import { DEFAULT_COST_BUILD_UP } from "@/lib/domain/costing";
 import { test } from "node:test";
 
 import { computeLine, defaultMarginByCategory } from "@/lib/domain/costing";
@@ -86,8 +87,8 @@ test("a derived mass beats no mass: the coefficients are gone", () => {
   assert.ok(!isBridgeGap(mass));
 
   const rates = { conductorPerKg: 250, insulationPerKg: 150, armourPerKg: 80, sheathPerKg: 140, labourPerM: 18 };
-  const withMass = computeLine({ spec, lengthM: 1000, marginPctByCategory: defaultMarginByCategory(15), rates, derivedMass: mass as never });
-  const without = computeLine({ spec, lengthM: 1000, marginPctByCategory: defaultMarginByCategory(15), rates });
+  const withMass = computeLine({ spec, lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, rates, derivedMass: mass as never });
+  const without = computeLine({ spec, lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, rates });
 
   const nonConductor = (r: typeof withMass) =>
     r.components.filter((c) => ["Insulation", "Armour", "Sheath"].includes(c.label)).reduce((s, c) => s + c.kgPerM, 0);
@@ -104,7 +105,7 @@ test("conductor mass carries the lay-up factor, explicitly", () => {
   const r = computeLine({
     spec: legacy({ armour: "Unarmoured" }),
     lengthM: 1000,
-    marginPctByCategory: defaultMarginByCategory(0),
+    buildUp: { ...DEFAULT_COST_BUILD_UP },
     rates: { conductorPerKg: 250, insulationPerKg: 150, armourPerKg: 80, sheathPerKg: 140, labourPerM: 0 },
   });
   assert.ok(Math.abs(r.totalConductorKgPerM - 0.1728 * 1.03) < 1e-6, `got ${r.totalConductorKgPerM}`);
