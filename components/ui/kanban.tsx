@@ -3,9 +3,13 @@
 import {
   DragOverlay,
   DndContext,
+  KeyboardSensor,
+  PointerSensor,
   rectIntersection,
   useDraggable,
   useDroppable,
+  useSensor,
+  useSensors,
 } from "@dnd-kit/core";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import {
@@ -163,8 +167,18 @@ export function KanbanProvider({
     setActiveId(null);
   }
 
+  // A card must be CLICKABLE and hold buttons, as well as draggable. With no activation
+  // constraint dnd-kit treats the first pointer-down as a drag, so a plain click never reached
+  // the card's own handler and every button inside it had to fight the drag to be pressed.
+  // Requiring a few pixels of movement makes a click a click; a touch scroll stays a scroll.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  );
+
   return (
     <DndContext
+      sensors={sensors}
       collisionDetection={rectIntersection}
       onDragCancel={() => setActiveId(null)}
       onDragEnd={handleDragEnd}
