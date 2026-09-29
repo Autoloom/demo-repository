@@ -14,10 +14,15 @@ export function formatINR(value: number): string {
   return inr.format(value);
 }
 
+// Pinned to India, not left to the viewer's machine. A date-only string is anchored to IST
+// midnight below; printing that instant in the viewer's own zone made every such date read a day
+// EARLY for anyone west of India — a promised delivery of 7 July showed as 6 July in London.
+// The works and its customers keep one calendar, and it is IST.
 const dateFmt = new Intl.DateTimeFormat("en-IN", {
   day: "2-digit",
   month: "short",
   year: "numeric",
+  timeZone: "Asia/Kolkata",
 });
 
 /**
