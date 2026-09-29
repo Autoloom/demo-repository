@@ -6,7 +6,7 @@ import { adapter } from "@/lib/adapters/mock-adapter";
 import { now } from "@/lib/domain/clock";
 import { defaultPromisedDate, gtpToAdopt, orderTitleFor, transitionBlockers } from "@/lib/domain/board";
 import { buildGtpSections, findReusableGtp, gtpForOrder } from "@/lib/domain/gtp";
-import { inspectorEtaFrom } from "@/lib/domain/inspection";
+import { inspectionCallBlockers, inspectorEtaFrom } from "@/lib/domain/inspection";
 import { COMPUTED_SIGNAL_TYPES, computeSalesSignals } from "@/lib/domain/signals";
 import { cablePresets, type CablePreset } from "@/lib/seed/cable-presets";
 import type {
@@ -1041,14 +1041,8 @@ export const inspectionService = {
     mutateStore((store) => {
       const order = store.orders.find((entry) => entry.id === orderId);
       if (!order) throw new Error("Order not found");
-      const openDrumQc = store.finishedCableQc.filter(
-        (entry) => entry.orderId === orderId && entry.result !== "Pass",
-      );
-      if (openDrumQc.length > 0) {
-        throw new Error(
-          `Finished cable QC incomplete for ${openDrumQc.map((entry) => entry.drumNo).join(", ")} — all drums must pass before the inspection call.`,
-        );
-      }
+      const blockers = inspectionCallBlockers(store.finishedCableQc, orderId);
+      if (blockers.length > 0) throw new Error(blockers.join(" "));
       const callDate = isoNow().slice(0, 10);
       order.inspectionCallDate = callDate;
       order.inspectorEtaDate = inspectorEtaFrom(callDate);

@@ -26,6 +26,7 @@
  */
 import { PENDING_CUSTOMER_ID } from "./customer";
 import { gtpForOrder } from "./gtp";
+import { addDaysIso, INSPECTION_CALL_LEAD_DAYS, inspectionCallBlockers } from "./inspection";
 import { dispatchGateBlockers, documentTray, productionGateBlockers } from "./pipeline";
 import type {
   CableSpec,
@@ -229,6 +230,34 @@ export interface BoardCable {
   lengthM: number;
 }
 
+/**
+ * Where an order stands on calling the inspector.
+ *
+ * The call has to go in about ten days before the cable is ready — the inspector then takes ten or
+ * eleven days to arrive — and a late call leaves finished cable sitting on the floor, which the
+ * project brief names as the most expensive mistake the platform can prevent. So the board says so
+ * on the card, in the column where it matters, rather than leaving it in a service nobody opens.
+ */
+export interface InspectionCallInfo {
+  state: "none" | "scheduled" | "due" | "overdue" | "called";
+  /** Days until the call-by date; negative when it has passed. */
+  days?: number;
+  callBy?: string;
+  /** Inspector's expected arrival, once the call is placed. */
+  eta?: string;
+}
+
+export function inspectionCallInfo(order: Order, now: Date): InspectionCallInfo {
+  if (order.inspectionStatus && order.inspectionStatus !== "Not called") {
+    return order.inspectionStatus === "Called" ? { state: "called", eta: order.inspectorEtaDate } : { state: "none" };
+  }
+  if (!order.estimatedCompletionDate) return { state: "none" };
+  const callBy = addDaysIso(order.estimatedCompletionDate, -INSPECTION_CALL_LEAD_DAYS);
+  const days = daysUntilPromised(now, callBy);
+  // Within three days of the call-by date is "due"; past it is "overdue".
+  return { state: days < 0 ? "overdue" : days <= 3 ? "due" : "scheduled", days, callBy };
+}
+
 export interface BoardCard {
   orderId: string;
   stage: OrderStage;
@@ -248,6 +277,10 @@ export interface BoardCard {
   nextGate: GateName | null;
   /** Won, and the production gate is still shut — "waiting to start". */
   waitingToStart: boolean;
+  /** Only meaningful while the cable is being made. */
+  inspectionCall: InspectionCallInfo;
+  /** Why the inspector cannot be called yet. Empty means the call can go in. */
+  inspectionCallBlockers: string[];
 }
 
 function metalAbbreviation(spec: CableSpec): string {
@@ -294,6 +327,8 @@ export function buildCard(store: CableStore, order: Order, now: Date): BoardCard
     nextBlockers: next.blockers,
     nextGate: next.gate,
     waitingToStart: order.stage === "Won" && next.blockers.length > 0,
+    inspectionCall: order.stage === "In Production" ? inspectionCallInfo(order, now) : { state: "none" },
+    inspectionCallBlockers: inspectionCallBlockers(store.finishedCableQc, order.id),
   };
 }
 

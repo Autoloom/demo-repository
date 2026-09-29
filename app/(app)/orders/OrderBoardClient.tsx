@@ -43,6 +43,7 @@ import {
   type TrayState,
 } from "@/lib/domain/board";
 import { now } from "@/lib/domain/clock";
+import { InspectionSection } from "./InspectionSection";
 import { formatDate, formatINR } from "@/lib/domain/format";
 import { can } from "@/lib/rbac";
 import { dataService, ordersService, rawMaterialQcService, type CableStore } from "@/lib/services";
@@ -494,6 +495,19 @@ function OrderCard({
           <Pill className={DUE_TONE[card.due.bucket]} title={`Promised ${formatDate(card.promisedDate)}`}>
             {card.due.label}
           </Pill>
+          {/* The call to the inspector has to go in ten days before the cable is ready; a late one
+              leaves finished cable idle. Said on the card, in the column where it matters. */}
+          {card.inspectionCall.state === "overdue" ? (
+            <Pill className={DUE_TONE.overdue}>
+              Call inspector — {-(card.inspectionCall.days ?? 0)} day{card.inspectionCall.days === -1 ? "" : "s"} late
+            </Pill>
+          ) : card.inspectionCall.state === "due" ? (
+            <Pill className={DUE_TONE.today}>Call inspector by {formatDate(card.inspectionCall.callBy!)}</Pill>
+          ) : card.inspectionCall.state === "called" ? (
+            <Pill className={DUE_TONE.soon}>
+              Inspector expected {card.inspectionCall.eta ? formatDate(card.inspectionCall.eta) : "soon"}
+            </Pill>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-1" aria-label="Documents">
@@ -511,6 +525,7 @@ function OrderCard({
               </span>{" "}
               {card.nextBlockers[0]}
               {card.nextBlockers.length > 1 ? ` (+${card.nextBlockers.length - 1} more)` : ""}
+              {card.stage === "In Production" && card.nextGate === "Dispatch" ? " Open the card to record it." : ""}
             </p>
           </div>
         ) : null}
@@ -702,6 +717,10 @@ function OrderPanel({
               </p>
             )}
           </section>
+        ) : null}
+
+        {card.stage === "In Production" || card.stage === "Ready for Dispatch" || card.stage === "Invoiced" ? (
+          <InspectionSection store={store} card={card} canEdit={canEdit} onChanged={onChanged} onError={onError} />
         ) : null}
 
         {card.stage === "Won" || card.stage === "In Production" ? (

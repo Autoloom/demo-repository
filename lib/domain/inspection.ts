@@ -8,7 +8,7 @@
  * clock so pages and the signal engine agree on the same "call by" date.
  */
 import { daysUntil } from "@/lib/domain/clock";
-import type { Order } from "@/lib/services/types";
+import type { FinishedCableQc, Order } from "@/lib/services/types";
 
 /** Call the inspection this many days before estimated completion. */
 export const INSPECTION_CALL_LEAD_DAYS = 10;
@@ -18,9 +18,12 @@ export const INSPECTOR_ARRIVAL_DAYS = 11;
 
 /** ISO date (yyyy-mm-dd) shifted by `days`. */
 export function addDaysIso(iso: string, days: number): string {
-  const date = new Date(`${iso}T00:00:00+05:30`);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  // Plain calendar arithmetic, in UTC, so the machine's timezone cannot enter into it. This used
+  // to anchor to IST midnight and then call `setDate` — which works in the LOCAL zone — so on any
+  // machine west of India the result was a day early: "ready 28 June" gave a call-by date of 17
+  // June, and every inspector arrival estimate was a day short.
+  const [year, month, day] = iso.slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 /** The date the inspection call must be placed by, or null when no ECD is set. */
@@ -54,4 +57,19 @@ export function inspectionCallUrgency(
   if (daysLeft < 0) return { state: "overdue", callBy, overdueBy: -daysLeft };
   if (daysLeft <= 3) return { state: "due", callBy, daysLeft };
   return { state: "scheduled", callBy, daysLeft };
+}
+
+/**
+ * What stands between an order and the inspection call: every drum's finished-cable test has to
+ * have passed first, because the inspector's time is scarce and a drum that then fails wastes the
+ * visit. Empty means the call can be placed.
+ *
+ * One definition: `inspectionService.placeCall` enforces it and the order board shows it before
+ * anyone presses the button — the same arrangement as the production gate.
+ */
+export function inspectionCallBlockers(finishedQc: FinishedCableQc[], orderId: string): string[] {
+  const open = finishedQc.filter((entry) => entry.orderId === orderId && entry.result !== "Pass");
+  return open.length === 0
+    ? []
+    : [`Finished cable QC incomplete for ${open.map((entry) => entry.drumNo).join(", ")} — all drums must pass before the inspection call.`];
 }

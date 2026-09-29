@@ -607,6 +607,30 @@ export interface InspectionReport {
   nonConformances?: string[];
   clearanceIssued: boolean;
   diRef?: string;
+  /**
+   * The GTP this inspection was carried out against, and its version.
+   *
+   * The inspector tests against the customer-stamped GTP and nothing else — not the IS value if
+   * the GTP says otherwise (Niraj, 13 Sept). A GTP can be edited after the fact and becomes a new
+   * version, so a report has to say which one it was measured against or "passed" means nothing.
+   * Optional so reports logged before the checklist existed still load.
+   */
+  gtpId?: string;
+  gtpVersion?: number;
+  /** What was checked, row by row, exactly as the GTP stated it at the time. */
+  checklist?: InspectionChecklistEntry[];
+}
+
+export interface InspectionChecklistEntry {
+  key: string;
+  label: string;
+  /** The value the stamped GTP states. */
+  gtpValue: string;
+  tolerance: string;
+  /** What the inspector measured or observed. Free text — units and forms vary by row. */
+  measured?: string;
+  /** "N/A" is a decision, recorded: not checked at this visit (e.g. covered by a type-test certificate). */
+  result: "Pass" | "Fail" | "N/A";
 }
 
 export interface QualityCheck {

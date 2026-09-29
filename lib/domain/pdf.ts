@@ -23,6 +23,11 @@ export interface PdfTable {
    */
   grid?: boolean;
   /**
+   * Minimum height of a body row, in points. A form someone fills in by hand needs rows tall
+   * enough to write in; rows otherwise size to their text, which for a blank cell is one line.
+   */
+  minRowHeight?: number;
+  /**
    * No rules at all — a layout block, for text that has to sit in columns without looking like
    * a table: the offer number on the left and the date on the right of a covering letter.
    */
@@ -392,11 +397,14 @@ class PdfBuilder {
       ? MARGIN + widths.reduce((sum, w) => sum + w, 0)
       : PAGE_WIDTH - MARGIN;
 
-    const renderRow = (cells: PdfCell[], bold = false, rowAlign?: PdfAlign) => {
+    const renderRow = (cells: PdfCell[], bold = false, rowAlign?: PdfAlign, minHeight = 0) => {
       const wrapped = cells.map((cell, index) =>
         wrapToWidth(cell, Math.max(12, columnWidth(index, cells.length) - CELL_PAD * 2), TABLE_SIZE, bold),
       );
-      const rowHeight = Math.max(...wrapped.map((lines) => lines.length)) * SMALL_LINE_HEIGHT + 8;
+      const rowHeight = Math.max(
+        Math.max(...wrapped.map((lines) => lines.length)) * SMALL_LINE_HEIGHT + 8,
+        minHeight,
+      );
       this.ensure(rowHeight + 2);
       const rowTop = this.y + 4;
       if (!table.plain) this.add(`${MARGIN} ${fmt(rowTop)} m ${fmt(tableRight)} ${fmt(rowTop)} l S`);
@@ -428,7 +436,7 @@ class PdfBuilder {
     if (table.headers.some((header) => header.trim().length > 0)) {
       renderRow(table.headers, true, table.headerAlign);
     }
-    table.rows.forEach((row) => renderRow(row));
+    table.rows.forEach((row) => renderRow(row, false, undefined, table.minRowHeight));
     if (!table.plain) this.add(`${MARGIN} ${fmt(this.y + 4)} m ${fmt(tableRight)} ${fmt(this.y + 4)} l S`);
     this.y -= 8;
   }
