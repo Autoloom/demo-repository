@@ -10,8 +10,9 @@
  * size) are read-only: they are the standard's answer, not a choice to relitigate on the
  * commercial screen. Only length, metal rate, overhead and margin are editable.
  *
- * This does not create Orders/Dispatches/Invoices — Cable OS 3 has no pages for them. A quote
- * saves as Draft or, if the margin is below policy, Review. That is the whole lifecycle here.
+ * A quote saves as Draft or, if the margin is below policy, Review. From a saved quote,
+ * "Send to order board" creates the order the board tracks, and locks the quote: the order's
+ * value is the price at that moment, and re-saving would unlink the two.
  */
 import {
   AlertTriangleIcon,
@@ -19,6 +20,7 @@ import {
   CheckCircle2Icon,
   DownloadIcon,
   FileCheckIcon,
+  KanbanSquareIcon,
   RefreshCwIcon,
   SaveIcon,
   ShieldAlertIcon,
@@ -41,6 +43,7 @@ import { formatINR } from "@/lib/domain/format";
 import { downloadPdf } from "@/lib/domain/pdf";
 import { quotePdfDocument } from "@/lib/domain/quote-pdf";
 import { customerOfferDocument, offerDescription } from "@/lib/domain/offer/customer-offer";
+import { buildCustomer, CUSTOMER_SEGMENTS, GST_STATES, PENDING_CUSTOMER_ID, type NewCustomerInput } from "@/lib/domain/customer";
 import {
   consumeOfferSerial,
   DEFAULT_LETTERHEAD,
@@ -54,6 +57,7 @@ import {
 } from "@/lib/domain/offer/letterhead";
 import { can, requiresApproval } from "@/lib/rbac";
 import {
+  contactsService,
   dataService,
   materialsService,
   quotesService,
@@ -622,6 +626,19 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [error, setError] = React.useState<string | null>(null);
   const [materials, setMaterials] = React.useState<Material[]>([]);
   const [customer, setCustomer] = React.useState<Customer | undefined>(undefined);
+  const [customers, setCustomers] = React.useState<Customer[]>([]);
+  const [addingCustomer, setAddingCustomer] = React.useState(false);
+  const [customerProblem, setCustomerProblem] = React.useState<string | null>(null);
+  const [customerDraft, setCustomerDraft] = React.useState<NewCustomerInput>({
+    name: "",
+    segment: "EPC contractor",
+    contactName: "",
+    phone: "",
+    city: "",
+    state: "",
+    billingAddress: "",
+    gstin: "",
+  });
   const [gtp, setGtp] = React.useState<Gtp | null>(null);
   const [spec, setSpec] = React.useState<CableSpec | null>(null);
   // No flat per-metre overhead on a new quote. Labour and overhead are a PERCENTAGE of raw
@@ -631,6 +648,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 0, buildUp: { ...DEFAULT_COST_BUILD_UP } });
   const [status, setStatus] = React.useState<QuoteStatus>("Draft");
   const [existingQuoteId, setExistingQuoteId] = React.useState<string | undefined>(quoteId);
+  /** The order this quote became, once it has been sent to the order board. */
+  const [convertedOrderId, setConvertedOrderId] = React.useState<string | undefined>(undefined);
+  const [sending, setSending] = React.useState(false);
   const [feedback, setFeedback] = React.useState<{ tone: Tone; message: string } | null>(null);
   /**
    * Persistent saved / unsaved indicator.
@@ -665,18 +685,25 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
           Boolean(linkedGtp && existing.gtpVersionAtQuote !== undefined && linkedGtp.version !== existing.gtpVersionAtQuote),
         );
         setSpec(existingSpec);
-        setCustomer(store.customers.find((entry) => entry.id === existing.customerId));
+        setCustomers(store.customers);
+        const loadedCustomer = store.customers.find((entry) => entry.id === existing.customerId);
+        setCustomer(loadedCustomer);
         const line = existing.lines[0];
         const loadedCommercial = { lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, buildUp: line.buildUp ?? { ...DEFAULT_COST_BUILD_UP, conversionPct: 0, wastagePct: 0, financePct: 0, marginPct: line.marginPct }, buildSpec: line.buildSpec };
         setCommercial(loadedCommercial);
         setStatus(existing.status);
+        setConvertedOrderId(existing.convertedOrderId);
         setExistingQuoteId(existing.id);
         // Seed the saved indicator from the record. Saving navigates to /quote/<id>, which
         // remounts this component — without this the chip vanished the instant it was earned.
         // Built from the loaded values here rather than adopted in an effect: setState inside an
         // effect cascades renders, which this codebase rules out.
         setSavedAt(existing.createdAt ? new Date(existing.createdAt) : new Date());
-        setSavedSignature(signatureOf(loadedCommercial, existing.customerId, existing.lines[0]?.specId));
+        // The RESOLVED customer's id, not the record's. A quote saved with no customer carries the
+        // placeholder id "CUS-PENDING", which resolves to nobody — so the record said one thing and
+        // the page, comparing against `customer?.id`, said another, and every such quote read
+        // "Unsaved changes" from the moment it was reopened.
+        setSavedSignature(signatureOf(loadedCommercial, loadedCustomer?.id, existing.lines[0]?.specId));
         return;
       }
 
@@ -697,6 +724,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setGtp(foundGtp);
       setGtpChangedSinceQuote(false);
       setSpec(foundSpec);
+      setCustomers(store.customers);
       setCustomer(foundGtp.customerId ? store.customers.find((entry) => entry.id === foundGtp.customerId) : undefined);
       const rates = ratesForSpec(foundSpec, loadedMaterials);
       const totalLengthM = foundGtp.orderQuantities?.totalLengthM;
@@ -726,7 +754,14 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     [],
   );
 
-  const readOnly = !can(role, "edit", "quote");
+  /**
+   * Once a quote is an order it is locked. `save()` rebuilds the whole record and does not carry
+   * `convertedOrderId`, so re-saving a quote that is on the board would quietly unlink it from
+   * its order and put it back to Draft — while the order kept the old price. The order's value is
+   * the price at the moment it was sent; a change of price is a new quote.
+   */
+  const onBoard = status === "On board" || Boolean(convertedOrderId);
+  const readOnly = !can(role, "edit", "quote") || onBoard;
   const canCreate = can(role, "create", "quote");
 
   const priced = React.useMemo(() => {
@@ -863,6 +898,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   }
 
   async function save(nextStatus: QuoteStatus) {
+    if (onBoard) return;
     if (!spec || !priced || "error" in priced) return;
     if (!canCreate && !existingQuoteId) return;
     setSaving(true);
@@ -872,7 +908,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         id: existingQuoteId ?? nextQuoteId(),
         gtpId: gtp?.id,
         gtpVersionAtQuote: gtp?.version,
-        customerId: customer?.id ?? "CUS-PENDING",
+        customerId: customer?.id ?? PENDING_CUSTOMER_ID,
         lines: [priced.line],
         subtotalInr: priced.line.lineTotalInr,
         gstInr: gstSplit.gstInr,
@@ -899,6 +935,57 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     }
   }
 
+  /** Add a buyer and select them. Nothing is saved on the quote until the quote itself is. */
+  async function addCustomer() {
+    const built = buildCustomer(
+      customerDraft,
+      `CUS-${Date.now().toString(36).toUpperCase()}`,
+      now().toISOString().slice(0, 10),
+    );
+    if (!built.ok) {
+      setCustomerProblem(built.problem);
+      return;
+    }
+    try {
+      await contactsService.create(built.customer, actor);
+      setCustomers((current) => [built.customer, ...current]);
+      setCustomer(built.customer);
+      setAddingCustomer(false);
+      setCustomerProblem(null);
+      setFeedback({ tone: "success", message: `${built.customer.name} added and chosen. Save the quote to keep it.` });
+    } catch {
+      setCustomerProblem("Could not save the customer.");
+    }
+  }
+
+  /**
+   * Turn the saved quote into an order on the board.
+   *
+   * Only from a saved, unchanged quote: what becomes the order's value is what is in the record,
+   * not what happens to be on screen. The service creates the order, its job card, dispatch and
+   * invoice, and attaches the GTP this quote was priced from; below the margin floor it asks the
+   * Owner instead of creating anything, and says so.
+   */
+  async function sendToOrderBoard() {
+    if (!existingQuoteId || onBoard || isDirty || sending) return;
+    setSending(true);
+    try {
+      const result = await quotesService.sendToOrderBoard(existingQuoteId, actor);
+      if ("approval" in result) {
+        setStatus("Review");
+        setFeedback({ tone: "info", message: `${existingQuoteId} is below the minimum margin — sent to the Owner for approval instead of the board.` });
+      } else {
+        setStatus("On board");
+        setConvertedOrderId(result.order.id);
+        setFeedback({ tone: "success", message: `${result.order.id} created and on the order board.` });
+      }
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not send the quote to the order board." });
+    } finally {
+      setSending(false);
+    }
+  }
+
   /**
    * Issue the customer's copy.
    *
@@ -921,8 +1008,11 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         date: now.toISOString(),
         buyer: {
           name: customer?.name ?? "Customer pending",
+          // One printed line per line typed. It used to split on commas as well, which broke
+          // "Flat No 502, Fifth Floor, Sarvodaya Nagar" into three lines where their own offer keeps
+          // it as one; a single-line address is wrapped by the writer if it is too long.
           addressLines: (customer?.billingAddress ?? "")
-            .split(/\r?\n|,\s*/)
+            .split(/\r?\n/)
             .map((part) => part.trim())
             .filter(Boolean),
           attentionName: attentionName.trim() || undefined,
@@ -1006,7 +1096,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         </div>
       </header>
 
-      {feedback || gtpChangedSinceQuote ? (
+      {feedback || gtpChangedSinceQuote || onBoard ? (
         <div className="space-y-3">
           {feedback ? (
             <div
@@ -1024,6 +1114,12 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               {feedback.message}
             </div>
           ) : null}
+          {onBoard ? (
+            <div role="status" className="flex items-center gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2 text-sm text-info">
+              <KanbanSquareIcon className="size-4 shrink-0" />
+              This quote is on the order board{convertedOrderId ? ` as ${convertedOrderId}` : ""}. Its price is the order&apos;s value now — to change the price, start a new quote from the GTP.
+            </div>
+          ) : null}
           {gtpChangedSinceQuote && gtp ? (
             <div role="alert" className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
               <ShieldAlertIcon className="size-4 shrink-0" />
@@ -1035,6 +1131,118 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {/* Who the quote is for. Without one the offer is addressed "Customer pending", the order
+              has nobody to be delivered to, and GST is always IGST — `computeGst` reads "no
+              customer" as "another state". */}
+          <section className="space-y-3 rounded-md border bg-card p-4">
+            <div>
+              <h3 className="font-medium">Customer</h3>
+              <p className="text-xs text-muted-foreground">
+                Addresses the customer&apos;s offer, names the order on the board, and decides whether GST is IGST or CGST + SGST.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quote-customer">Customer</Label>
+              <select
+                id="quote-customer"
+                disabled={readOnly}
+                value={addingCustomer ? "__new" : (customer?.id ?? "")}
+                onChange={(event) => {
+                  if (event.target.value === "__new") {
+                    setAddingCustomer(true);
+                    return;
+                  }
+                  setAddingCustomer(false);
+                  setCustomerProblem(null);
+                  setCustomer(customers.find((entry) => entry.id === event.target.value));
+                }}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="">Choose a customer…</option>
+                {customers.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name} — {entry.city}
+                  </option>
+                ))}
+                <option value="__new">＋ Add a new customer…</option>
+              </select>
+            </div>
+
+            {addingCustomer ? (
+              <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="nc-name">Customer name</Label>
+                    <Input id="nc-name" value={customerDraft.name} onChange={(e) => setCustomerDraft({ ...customerDraft, name: e.target.value })} placeholder="e.g. M/s. Avadh Business Services I Pvt. Ltd." />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-contact">Contact person</Label>
+                    <Input id="nc-contact" value={customerDraft.contactName} onChange={(e) => setCustomerDraft({ ...customerDraft, contactName: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-phone">Phone</Label>
+                    <Input id="nc-phone" value={customerDraft.phone} onChange={(e) => setCustomerDraft({ ...customerDraft, phone: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-city">City</Label>
+                    <Input id="nc-city" value={customerDraft.city} onChange={(e) => setCustomerDraft({ ...customerDraft, city: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-state">State</Label>
+                    <select id="nc-state" value={customerDraft.state} onChange={(e) => setCustomerDraft({ ...customerDraft, state: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                      <option value="">Choose the state…</option>
+                      {GST_STATES.map((entry) => (
+                        <option key={entry.code} value={entry.name}>
+                          {entry.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="nc-address">Address</Label>
+                    <textarea id="nc-address" rows={2} value={customerDraft.billingAddress} onChange={(e) => setCustomerDraft({ ...customerDraft, billingAddress: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+                    <p className="text-xs text-muted-foreground">One line per line of the address as it should print on the offer.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-segment">Type of customer</Label>
+                    <select id="nc-segment" value={customerDraft.segment} onChange={(e) => setCustomerDraft({ ...customerDraft, segment: e.target.value as NewCustomerInput["segment"] })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                      {CUSTOMER_SEGMENTS.map((segment) => (
+                        <option key={segment} value={segment}>
+                          {segment}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-gstin">GSTIN (optional)</Label>
+                    <Input id="nc-gstin" value={customerDraft.gstin} onChange={(e) => setCustomerDraft({ ...customerDraft, gstin: e.target.value })} className="font-mono" />
+                  </div>
+                </div>
+                {customerProblem ? (
+                  <p role="alert" className="text-sm text-danger">
+                    {customerProblem}
+                  </p>
+                ) : null}
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" onClick={() => void addCustomer()}>
+                    Add customer
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => { setAddingCustomer(false); setCustomerProblem(null); }}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : customer ? (
+              <p className="text-xs text-muted-foreground">
+                {customer.state} · {gstSplit.interstate ? "IGST 18% (another state)" : "CGST 9% + SGST 9% (same state)"}
+              </p>
+            ) : (
+              <p className="text-xs text-warning">
+                No customer chosen — this is taxed as IGST, and the offer will be addressed &ldquo;Customer pending&rdquo;.
+              </p>
+            )}
+          </section>
+
           <section className="space-y-4 rounded-md border bg-card p-4">
             <h3 className="font-medium">Cable</h3>
             <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
@@ -1263,6 +1471,11 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               </Button>
             </div>
 
+            {!customer ? (
+              <p className="text-xs text-warning">
+                No customer chosen above — the offer would be addressed &ldquo;Customer pending&rdquo;.
+              </p>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="offer-project">Project</Label>
@@ -1503,7 +1716,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               <p className="text-xs text-muted-foreground">
                 {needsApproval
                   ? `Below ${MARGIN_GATE_PCT}% margin — saves for owner review, not sent anywhere automatically.`
-                  : "Saves as a draft. No order is created — Cable OS 3 stops at the priced quote."}
+                  : onBoard
+                    ? "This quote is now an order, so it can no longer be changed."
+                    : "Saves as a draft. Nothing is sent to the works until you send it to the order board."}
               </p>
             </div>
             <div className="flex flex-col gap-2">
@@ -1536,12 +1751,58 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                   )}
                 </span>
               ) : null}
-              {status !== "Approved" && !needsApproval && role === "Owner" && existingQuoteId ? (
+              {status !== "Approved" && !needsApproval && !onBoard && role === "Owner" && existingQuoteId ? (
                 <Button type="button" variant="outline" disabled={saving || !priced || "error" in priced} onClick={() => void save("Approved")}>
                   Mark approved
                 </Button>
               ) : null}
             </div>
+          </section>
+
+          <section className="space-y-3 rounded-md border bg-card p-4">
+            <div>
+              <h3 className="font-medium">Order board</h3>
+              <p className="text-xs text-muted-foreground">
+                {onBoard
+                  ? "The order is being tracked on the board."
+                  : "When the customer confirms, send the quote to the order board. It becomes an order the works can track through to dispatch."}
+              </p>
+            </div>
+            {onBoard ? (
+              <Button asChild variant="outline">
+                <Link href={`/orders${convertedOrderId ? `?order=${convertedOrderId}` : ""}`}>
+                  <KanbanSquareIcon className="mr-2 size-4" />
+                  View {convertedOrderId ?? "the order"} on the board
+                </Link>
+              </Button>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!existingQuoteId || isDirty || sending || !can(role, "transition", "quote", permissionCtx)}
+                  onClick={() => void sendToOrderBoard()}
+                >
+                  <KanbanSquareIcon className="mr-2 size-4" />
+                  {sending ? "Sending…" : "Send to order board"}
+                </Button>
+                {!existingQuoteId ? (
+                  <p className="text-xs text-muted-foreground">Save the quote first.</p>
+                ) : isDirty ? (
+                  <p className="text-xs text-warning">Save your changes first — the order takes the saved price.</p>
+                ) : !can(role, "transition", "quote", permissionCtx) ? (
+                  <p className="text-xs text-muted-foreground">
+                    {needsApproval
+                      ? `Below ${MARGIN_GATE_PCT}% margin — save it for owner review first.`
+                      : "Sending a quote to the board is for Sales and the Owner."}
+                  </p>
+                ) : gtp && gtp.status !== "Approved" ? (
+                  <p className="text-xs text-muted-foreground">
+                    {gtp.id} is {gtp.status.toLowerCase()}. It goes to the board with the order and must be stamped there before production can start.
+                  </p>
+                ) : null}
+              </>
+            )}
           </section>
         </div>
       </div>
