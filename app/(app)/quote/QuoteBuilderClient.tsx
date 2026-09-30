@@ -10,8 +10,9 @@
  * size) are read-only: they are the standard's answer, not a choice to relitigate on the
  * commercial screen. Only length, metal rate, overhead and margin are editable.
  *
- * This does not create Orders/Dispatches/Invoices — Cable OS 3 has no pages for them. A quote
- * saves as Draft or, if the margin is below policy, Review. That is the whole lifecycle here.
+ * A quote saves as Draft or, if the margin is below policy, Review. From a saved quote,
+ * "Send to order board" creates the order the board tracks, and locks the quote: the order's
+ * value is the price at that moment, and re-saving would unlink the two.
  */
 import {
   AlertTriangleIcon,
@@ -19,6 +20,7 @@ import {
   CheckCircle2Icon,
   DownloadIcon,
   FileCheckIcon,
+  KanbanSquareIcon,
   RefreshCwIcon,
   SaveIcon,
   ShieldAlertIcon,
@@ -32,16 +34,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { now } from "@/lib/domain/clock";
-import { computeGst, MARGIN_CATEGORIES, MARGIN_GATE_PCT, defaultMarginByCategory, ratesForSpec } from "@/lib/domain/costing";
-import type { CostingResult, MarginCategory } from "@/lib/domain/costing";
+import { computeGst, DEFAULT_COST_BUILD_UP, MARGIN_GATE_PCT, ratesForSpec } from "@/lib/domain/costing";
+import type { CostBuildUp, CostingResult } from "@/lib/domain/costing";
 import { appendAuditEntry } from "@/lib/domain/gtp/audit-log";
 import { buildSpecFromFields, targetsFromBuild, type BuildSpec } from "@/lib/domain/gtp/build-spec";
 import { costCable, quoteBuild } from "@/lib/domain/gtp/quote-costing";
 import { formatINR } from "@/lib/domain/format";
 import { downloadPdf } from "@/lib/domain/pdf";
 import { quotePdfDocument } from "@/lib/domain/quote-pdf";
+import { customerOfferDocument, offerDescription } from "@/lib/domain/offer/customer-offer";
+import { buildCustomer, CUSTOMER_SEGMENTS, GST_STATES, PENDING_CUSTOMER_ID, type NewCustomerInput } from "@/lib/domain/customer";
+import {
+  consumeOfferSerial,
+  DEFAULT_LETTERHEAD,
+  downloadOnLetterhead,
+  loadLetterhead,
+  offerNumber,
+  peekOfferSerial,
+  saveLetterhead,
+  setNextOfferSerial,
+  type Letterhead,
+} from "@/lib/domain/offer/letterhead";
 import { can, requiresApproval } from "@/lib/rbac";
 import {
+  contactsService,
   dataService,
   materialsService,
   quotesService,
@@ -85,7 +101,7 @@ interface Commercial {
   overheadPerM: number;
   /** Margin %, independent per material — conductor, insulation, armour and sheath move with
    *  different markets, and a buyer's leverage often differs by material. */
-  marginPctByCategory: Record<MarginCategory, number>;
+  buildUp: CostBuildUp;
   buildSpec?: BuildSpec;
 }
 
@@ -95,9 +111,9 @@ function validUntilIso(): string {
   return date.toISOString().slice(0, 10);
 }
 
-function nextQuoteId(): string {
-  const stamp = now().toISOString();
-  return `Q-${stamp.slice(2, 4)}${stamp.slice(5, 7)}-${Math.floor(100 + Math.random() * 900)}`;
+/** The inputs a save writes, serialised identically at load and on every render. */
+function signatureOf(commercial: Commercial, customerId?: string, specId?: string): string {
+  return JSON.stringify({ commercial, customerId: customerId ?? null, specId: specId ?? null });
 }
 
 function lineFromCommercial(spec: CableSpec, commercial: Commercial, materials: Material[], lineId: string): { line: QuoteLine; costing: CostingResult } {
@@ -111,7 +127,7 @@ function lineFromCommercial(spec: CableSpec, commercial: Commercial, materials: 
     lengthM: commercial.lengthM,
     metalRatePerKg: commercial.metalRatePerKg,
     overheadPerM: commercial.overheadPerM,
-    marginPctByCategory: commercial.marginPctByCategory,
+    buildUp: commercial.buildUp,
     marginPct: costing.blendedMarginPct,
     metalCostPerM: costing.conductorCostPerM,
     baseCostPerM: costing.baseCostPerM,
@@ -160,6 +176,9 @@ function NumberField({
   min,
   step,
   suffix,
+  prefix,
+  hint,
+  figure,
   disabled,
   onChange,
 }: {
@@ -169,6 +188,18 @@ function NumberField({
   min?: number;
   step?: number;
   suffix?: string;
+  prefix?: string;
+  /** One line under the field. Carries meaning here: "0 = not yet entered" is not decoration. */
+  hint?: string;
+  /**
+   * What this input comes to in rupees, right now.
+   *
+   * A percentage on its own is abstract, and the people pricing these cables think in rupees per
+   * metre, not in percentages of a subtotal they cannot see. Printing "6.5%" next to "= ₹15,791
+   * of raw material" turns the whole panel into arithmetic anyone can check by eye, which is the
+   * difference between a costing sheet someone trusts and one they work around on paper.
+   */
+  figure?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
 }) {
@@ -183,15 +214,22 @@ function NumberField({
           step={step ?? 1}
           value={value}
           disabled={disabled}
-          className="font-mono"
+          className={cn("font-mono", prefix && "pl-7")}
           onChange={(event) => onChange(Number(event.target.value))}
         />
+        {prefix ? (
+          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-xs text-muted-foreground">
+            {prefix}
+          </span>
+        ) : null}
         {suffix ? (
           <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
             {suffix}
           </span>
         ) : null}
       </div>
+      {figure ? <p className="font-mono text-xs text-foreground">{figure}</p> : null}
+      {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }
@@ -246,30 +284,152 @@ function CostingRow({ label, detail, amount, emphasis }: { label: string; detail
   );
 }
 
+/** Percentages print as people write them: 12.5, not 12.500000000000002. */
+function formatPct(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+/**
+ * Rate per running metre, in the grouping the rest of the sheet uses.
+ *
+ * Two decimals because the customer's copy quotes to the paisa — the Avadh offer prices a
+ * control cable at 561.90/RMT, not 562 — and rounding here would put our sheet and their sheet
+ * a few hundred rupees apart on a 5,600 m line.
+ */
+/**
+ * The offer letterhead and number, read as an external store.
+ *
+ * Nothing pushes updates — a save bumps a version and the component re-reads — so `subscribe`
+ * is a no-op and the snapshots are cached per version, which is what `useSyncExternalStore`
+ * requires for referential stability. Same shape as the GTP builder's template store.
+ */
+function subscribeToOfferStore(): () => void {
+  return () => {};
+}
+
+let letterheadCache: { version: number; value: Letterhead } | null = null;
+function getLetterheadSnapshot(version: number): Letterhead {
+  if (!letterheadCache || letterheadCache.version !== version) {
+    letterheadCache = { version, value: loadLetterhead() };
+  }
+  return letterheadCache.value;
+}
+
+function getSerialSnapshot(version: number): number {
+  void version;
+  return peekOfferSerial();
+}
+
+/**
+ * Turn whatever image someone uploads into the JPEG the PDF writer embeds.
+ *
+ * Any format the browser can draw — PNG, JPEG, WebP, SVG — goes through a canvas, is flattened
+ * onto white (a JPEG has no transparency, and a transparent PNG logo would otherwise print on
+ * black), and is scaled so its longer side is at most 360 px. That is ample for a 62-point logo
+ * at print resolution and keeps the stored letterhead small enough for browser storage.
+ */
+async function imageFileToJpegDataUrl(file: File): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("That file could not be read as an image."));
+      img.src = url;
+    });
+    const scale = Math.min(1, 360 / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const width = Math.max(1, Math.round((image.naturalWidth || 360) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || 360) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("This browser cannot process images.");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function ratePerMetre(lineTotalInr: number, lengthM: number): string {
+  if (lengthM <= 0) return "—";
+  return `₹${(lineTotalInr / lengthM).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 function CostingBreakdown({ costing, line, gstSplit }: { costing: CostingResult; line: QuoteLine; gstSplit: ReturnType<typeof computeGst> }) {
   return (
     <section className="space-y-4 rounded-md border bg-card p-4 text-sm">
       <div>
         <h3 className="font-medium">Price</h3>
-        <p className="text-xs text-muted-foreground">Each material carries its own margin, scaled to {line.lengthM} m.</p>
+        <p className="text-xs text-muted-foreground">
+          Internal costing sheet, scaled to {line.lengthM} m. Never shown to a customer — the
+          buyer document carries a rate per metre and nothing else.
+        </p>
       </div>
 
       <div className="space-y-1.5">
-        {costing.components.map((component) => (
+        {costing.components
+          // A construction that has no armour or no sheath should not print a zero row for it.
+          // An AB bundle is insulated cores laid up bare and a solar cable is unarmoured, so
+          // those rows were rendering as "Sheath +14% margin — ₹0", which reads like a costing
+          // error rather than a fact about the cable. Labour is always shown: it has no mass but
+          // it does have a cost.
+          .filter((component) => component.kgPerM > 0 || component.costPerM > 0)
+          .map((component) => (
           <CostingRow
             key={component.label}
             label={component.label}
-            detail={`${component.kgPerM > 0 ? `${component.kgPerM.toFixed(3)} kg × ${formatINR(component.ratePerKg)} · ` : ""}+${component.marginPct}% margin`}
-            amount={Math.round(component.totalInr)}
+            detail={component.kgPerM > 0 ? `${component.kgPerM.toFixed(3)} kg × ${formatINR(component.ratePerKg)}` : ""}
+            amount={Math.round(component.subtotalInr)}
           />
         ))}
+        <div className="border-t border-border pt-1.5">
+          <CostingRow label="Raw material" amount={Math.round(costing.materialCostInr)} />
+        </div>
       </div>
 
+      {/* The build-up, step by step. Without these rows the component list summed to raw
+          material while the total included the uplifts, and nothing on screen explained the
+          difference — which is exactly the "where did that come from" a costing sheet exists
+          to answer. Zero-value steps (drum, freight, before anyone enters them) are dropped so
+          the sheet does not read as though the cable ships free. */}
       <div className="space-y-1.5 border-t border-border pt-3">
-        <CostingRow label="Cost (before margin)" amount={Math.round(costing.lineSubtotalInr)} />
-        <CostingRow label={`Margin (blended ${costing.blendedMarginPct.toFixed(1)}%)`} amount={Math.round(costing.lineMarginInr)} />
+        {costing.buildUpSteps
+          .filter((step) => step.label !== "Raw material" && step.label !== "Margin" && step.label !== "Total cost")
+          .filter((step) => step.amountInr > 0)
+          .map((step) => (
+            <CostingRow
+              key={step.label}
+              label={step.label}
+              detail={step.pct !== undefined ? `${formatPct(step.pct)}% of ${step.basis}` : ""}
+              amount={Math.round(step.amountInr)}
+            />
+          ))}
+        <div className="border-t border-border pt-1.5">
+          <CostingRow label="Total cost" amount={Math.round(costing.totalCostInr)} />
+        </div>
+        <CostingRow
+          label="Margin"
+          detail={`${formatPct(costing.blendedMarginPct)}% of total cost`}
+          amount={Math.round(costing.lineMarginInr)}
+        />
         <div className="border-t border-border pt-1.5">
           <CostingRow label="Line total" amount={line.lineTotalInr} emphasis />
+        </div>
+        {/* The figure the customer's copy actually quotes. Everything above it is ours. */}
+        <div className="flex items-baseline justify-between gap-4 text-sm">
+          <span className="text-muted-foreground">
+            Rate per metre <span className="text-xs">— what the customer sees</span>
+          </span>
+          <span className="font-mono font-medium text-foreground">
+            {ratePerMetre(line.lineTotalInr, line.lengthM)}
+          </span>
         </div>
       </div>
 
@@ -461,12 +621,43 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
   const [error, setError] = React.useState<string | null>(null);
   const [materials, setMaterials] = React.useState<Material[]>([]);
   const [customer, setCustomer] = React.useState<Customer | undefined>(undefined);
+  const [customers, setCustomers] = React.useState<Customer[]>([]);
+  const [addingCustomer, setAddingCustomer] = React.useState(false);
+  const [customerProblem, setCustomerProblem] = React.useState<string | null>(null);
+  const [customerDraft, setCustomerDraft] = React.useState<NewCustomerInput>({
+    name: "",
+    segment: "EPC contractor",
+    contactName: "",
+    phone: "",
+    city: "",
+    state: "",
+    billingAddress: "",
+    gstin: "",
+  });
   const [gtp, setGtp] = React.useState<Gtp | null>(null);
   const [spec, setSpec] = React.useState<CableSpec | null>(null);
-  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 18, marginPctByCategory: defaultMarginByCategory() });
+  // No flat per-metre overhead on a new quote. Labour and overhead are a PERCENTAGE of raw
+  // material in every costing discussion on record — 6–7% (Niraj, 13 Sept), ~8% (21 Sept),
+  // 2–10% (Navya, 22 Sept) — and that percentage is the "Manufacturing & overhead" line of the
+  // build-up. The ₹18/m default charged the same labour twice: once flat, once as a percentage.
+  const [commercial, setCommercial] = React.useState<Commercial>({ lengthM: 1000, metalRatePerKg: 0, overheadPerM: 0, buildUp: { ...DEFAULT_COST_BUILD_UP } });
   const [status, setStatus] = React.useState<QuoteStatus>("Draft");
   const [existingQuoteId, setExistingQuoteId] = React.useState<string | undefined>(quoteId);
+  /** The order this quote became, once it has been sent to the order board. */
+  const [convertedOrderId, setConvertedOrderId] = React.useState<string | undefined>(undefined);
+  const [sending, setSending] = React.useState(false);
   const [feedback, setFeedback] = React.useState<{ tone: Tone; message: string } | null>(null);
+  /**
+   * Persistent saved / unsaved indicator.
+   *
+   * The success banner auto-dismisses after six seconds, so an operator who looked away had no
+   * way to tell whether a quote had been saved — the client asked for a standing indication
+   * rather than a message that disappears (22 Sept 2026). This tracks the inputs that change a
+   * price against the ones last written, so "Saved" means the figures on screen are the figures
+   * in the record, not merely that a save happened at some point.
+   */
+  const [savedAt, setSavedAt] = React.useState<Date | null>(null);
+  const [savedSignature, setSavedSignature] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [refreshingRate, setRefreshingRate] = React.useState(false);
   const [gtpChangedSinceQuote, setGtpChangedSinceQuote] = React.useState(false);
@@ -489,11 +680,25 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
           Boolean(linkedGtp && existing.gtpVersionAtQuote !== undefined && linkedGtp.version !== existing.gtpVersionAtQuote),
         );
         setSpec(existingSpec);
-        setCustomer(store.customers.find((entry) => entry.id === existing.customerId));
+        setCustomers(store.customers);
+        const loadedCustomer = store.customers.find((entry) => entry.id === existing.customerId);
+        setCustomer(loadedCustomer);
         const line = existing.lines[0];
-        setCommercial({ lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, marginPctByCategory: line.marginPctByCategory ?? defaultMarginByCategory(line.marginPct), buildSpec: line.buildSpec });
+        const loadedCommercial = { lengthM: line.lengthM, metalRatePerKg: line.metalRatePerKg, overheadPerM: line.overheadPerM, buildUp: line.buildUp ?? { ...DEFAULT_COST_BUILD_UP, conversionPct: 0, wastagePct: 0, financePct: 0, marginPct: line.marginPct }, buildSpec: line.buildSpec };
+        setCommercial(loadedCommercial);
         setStatus(existing.status);
+        setConvertedOrderId(existing.convertedOrderId);
         setExistingQuoteId(existing.id);
+        // Seed the saved indicator from the record. Saving navigates to /quote/<id>, which
+        // remounts this component — without this the chip vanished the instant it was earned.
+        // Built from the loaded values here rather than adopted in an effect: setState inside an
+        // effect cascades renders, which this codebase rules out.
+        setSavedAt(existing.createdAt ? new Date(existing.createdAt) : new Date());
+        // The RESOLVED customer's id, not the record's. A quote saved with no customer carries the
+        // placeholder id "CUS-PENDING", which resolves to nobody — so the record said one thing and
+        // the page, comparing against `customer?.id`, said another, and every such quote read
+        // "Unsaved changes" from the moment it was reopened.
+        setSavedSignature(signatureOf(loadedCommercial, loadedCustomer?.id, existing.lines[0]?.specId));
         return;
       }
 
@@ -514,6 +719,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setGtp(foundGtp);
       setGtpChangedSinceQuote(false);
       setSpec(foundSpec);
+      setCustomers(store.customers);
       setCustomer(foundGtp.customerId ? store.customers.find((entry) => entry.id === foundGtp.customerId) : undefined);
       const rates = ratesForSpec(foundSpec, loadedMaterials);
       const totalLengthM = foundGtp.orderQuantities?.totalLengthM;
@@ -537,7 +743,20 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     return () => window.clearTimeout(handle);
   }, [feedback]);
 
-  const readOnly = !can(role, "edit", "quote");
+  const setBuildUp = React.useCallback(
+    (patch: Partial<CostBuildUp>) =>
+      setCommercial((current) => ({ ...current, buildUp: { ...current.buildUp, ...patch } })),
+    [],
+  );
+
+  /**
+   * Once a quote is an order it is locked. `save()` rebuilds the whole record and does not carry
+   * `convertedOrderId`, so re-saving a quote that is on the board would quietly unlink it from
+   * its order and put it back to Draft — while the order kept the old price. The order's value is
+   * the price at the moment it was sent; a change of price is a new quote.
+   */
+  const onBoard = status === "On board" || Boolean(convertedOrderId);
+  const readOnly = !can(role, "edit", "quote") || onBoard;
   const canCreate = can(role, "create", "quote");
 
   const priced = React.useMemo(() => {
@@ -549,7 +768,109 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     }
   }, [spec, commercial, materials, existingQuoteId]);
 
+  /** What a save would write. Compared against `savedSignature` to decide saved vs unsaved. */
+  const currentSignature = React.useMemo(
+    () => signatureOf(commercial, customer?.id, spec?.id),
+    [commercial, customer, spec],
+  );
+  const isDirty = savedSignature !== null && savedSignature !== currentSignature;
+
   const gstSplit = React.useMemo(() => computeGst(priced && "line" in priced ? priced.line.lineTotalInr : 0, customer?.stateCode), [priced, customer]);
+  /**
+   * Whether the six percentage inputs are on screen.
+   *
+   * Open by default, because this is the pricing structure the business asked for and hiding it
+   * would put the quote back to a single unexplained margin. Closable, because once the defaults
+   * are right most quotes only change the length and the metal rate, and someone who prices by
+   * feel should be able to put the machinery away without losing the summary.
+   */
+  const [buildUpOpen, setBuildUpOpen] = React.useState(true);
+
+  /** What one build-up step comes to, for printing beside the input that drives it. */
+  const stepFigure = React.useCallback(
+    (label: string): string | undefined => {
+      if (!priced || !("costing" in priced)) return undefined;
+      const step = priced.costing.buildUpSteps.find((entry) => entry.label === label);
+      if (!step) return undefined;
+      return `= ${formatINR(Math.round(step.amountInr))}`;
+    },
+    [priced],
+  );
+
+  /**
+   * The whole build-up as one sentence, in rupees.
+   *
+   * The rate per metre is the point of it. That is what the customer's copy quotes, what a buyer
+   * compares against another offer, and the number people here have in their head before the
+   * costing sheet opens — so a panel that can only be read as line totals is asking them to do
+   * the division themselves on every quote.
+   */
+  const buildUpSummary = React.useMemo(() => {
+    if (!priced || !("costing" in priced) || !("line" in priced)) return null;
+    const { costing, line } = priced;
+    const flatInr = commercial.buildUp.drumCostInr + commercial.buildUp.freightInr;
+    return {
+      material: formatINR(Math.round(costing.materialCostInr)),
+      upliftPct: formatPct(
+        commercial.buildUp.conversionPct + commercial.buildUp.wastagePct + commercial.buildUp.financePct,
+      ),
+      flat: flatInr > 0 ? formatINR(Math.round(flatInr)) : null,
+      totalCost: formatINR(Math.round(costing.totalCostInr)),
+      marginPct: formatPct(costing.blendedMarginPct),
+      lineTotal: formatINR(line.lineTotalInr),
+      ratePerM: ratePerMetre(line.lineTotalInr, line.lengthM),
+    };
+  }, [priced, commercial.buildUp]);
+
+  /**
+   * The customer's copy — the offer Navya actually sends, as distinct from the costing sheet.
+   *
+   * Held here rather than on the quote record because it is presentation of a price that already
+   * exists: the same quote goes out under a different project name or to a different contact
+   * without being re-priced. The letterhead and the standing terms are the works' own and are
+   * persisted once, not per quote, which is what "save the branding" means in practice —
+   * nobody retypes fifteen terms of supply to send one offer.
+   */
+  const [letterhead, setLetterhead] = React.useState<Letterhead>(DEFAULT_LETTERHEAD);
+  const [offerOpen, setOfferOpen] = React.useState(false);
+  const [projectName, setProjectName] = React.useState("");
+  const [offerSubject, setOfferSubject] = React.useState("");
+  /**
+   * The stored letterhead and the offer counter live in localStorage, which the server does not
+   * have. Read through `useSyncExternalStore` — the same pattern the GTP builder uses for saved
+   * templates — so the server renders the seeded defaults, the client renders what is stored, and
+   * the two agree during hydration. `storedVersion` bumps after a save to re-read.
+   */
+  const [storedVersion, setStoredVersion] = React.useState(0);
+  const storedLetterhead = React.useSyncExternalStore(
+    subscribeToOfferStore,
+    () => getLetterheadSnapshot(storedVersion),
+    () => DEFAULT_LETTERHEAD,
+  );
+  const offerSerial = React.useSyncExternalStore(
+    subscribeToOfferStore,
+    () => getSerialSnapshot(storedVersion),
+    () => 1,
+  );
+  /** What the panel shows: the operator's unsaved edits if any, else what is stored. */
+  const [letterheadEdited, setLetterheadEdited] = React.useState(false);
+  const activeLetterhead = letterheadEdited ? letterhead : storedLetterhead;
+  function editLetterhead(next: Letterhead) {
+    setLetterhead(next);
+    setLetterheadEdited(true);
+  }
+
+  /**
+   * Who the offer is addressed to, defaulting to the customer's own contact.
+   *
+   * Derived rather than copied into state by an effect: the default has to follow a change of
+   * customer, and a setState in an effect body cascades renders for a value that is simply a
+   * function of two things already on screen.
+   */
+  const [attention, setAttention] = React.useState<{ name: string; phone: string } | null>(null);
+  const attentionName = attention?.name ?? customer?.contactName ?? "";
+  const attentionPhone = attention?.phone ?? customer?.phone ?? "";
+
   const blendedMarginPct = priced && "costing" in priced ? priced.costing.blendedMarginPct : 0;
   const marginGate = blendedMarginPct < MARGIN_GATE_PCT;
   const permissionCtx = { record: { marginReviewRequired: marginGate } };
@@ -563,7 +884,13 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setMaterials(updated);
       const rates = ratesForSpec(spec, updated);
       if (rates.conductorPerKg) setCommercial((current) => ({ ...current, metalRatePerKg: rates.conductorPerKg }));
-      setFeedback({ tone: "info", message: "Market metal rate refreshed from MCX." });
+      // Not "refreshed from MCX". There is no market feed: this puts back the rate held in the
+      // Materials table — two fixed demo figures — and the message used to say it had fetched
+      // the day's price. On a costing screen that is a claim someone will price a tender on.
+      setFeedback({
+        tone: "info",
+        message: `Reset to the rate in the Materials table (₹${rates.conductorPerKg}/kg). No live market feed is connected — type today's rate if it differs.`,
+      });
     } catch {
       setFeedback({ tone: "danger", message: "Could not refresh the market rate." });
     } finally {
@@ -571,17 +898,63 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     }
   }
 
+  /**
+   * Bring the quote up to the GTP as it now stands.
+   *
+   * The 22 Sept notes: when a customer pushes back on price, reduce the conductor size and the
+   * costing recalculates. Editing the GTP does recalculate the GTP — but the quote priced the cable
+   * as it was, and the warning told you to "reopen it from Quotation to reprice", which could not be
+   * done: a GTP that has been quoted is no longer offered there, and reopening the quote just loads
+   * its old cable again. So the quote showed 300 sq mm at the old price after the GTP became 240.
+   *
+   * This takes the GTP's CURRENT cable and keeps everything commercial — length, rates, cost
+   * build-up — so the only thing that moves is what the cable is. It is not saved until the person
+   * saves, so they see the new price first. The metal rate is re-seeded only if the METAL changed
+   * (aluminium ↔ copper); otherwise the rate they typed stands.
+   */
+  async function repriceFromGtp() {
+    if (!gtp || onBoard || !spec) return;
+    try {
+      const store = await dataService.read();
+      const fresh = store.gtps.find((entry) => entry.id === gtp.id);
+      const freshSpec = fresh ? store.specs.find((entry) => entry.id === fresh.specId) : undefined;
+      if (!fresh || !freshSpec) throw new Error(`${gtp.id} no longer has a cable to price.`);
+      if (freshSpec.gtpSource?.fields.some((field) => field.gap)) {
+        throw new Error(`${fresh.id} has an unresolved parameter — resolve it on the GTP before repricing.`);
+      }
+      const metalChanged = freshSpec.conductorMaterial !== spec.conductorMaterial;
+      const rates = ratesForSpec(freshSpec, materials);
+      setGtp(fresh);
+      setSpec(freshSpec);
+      setGtpChangedSinceQuote(false);
+      setCommercial((current) => ({
+        ...current,
+        metalRatePerKg: metalChanged ? rates.conductorPerKg || current.metalRatePerKg : current.metalRatePerKg,
+        // A below-nominal manufacturing target chosen for the old cable never carries to a new one.
+        buildSpec: undefined,
+      }));
+      setFeedback({
+        tone: "info",
+        message: `Repriced from ${fresh.id} v${fresh.version} — ${freshSpec.designation}. Check the price, then save the quote to keep it.`,
+      });
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not reprice from the GTP." });
+    }
+  }
+
   async function save(nextStatus: QuoteStatus) {
+    if (onBoard) return;
     if (!spec || !priced || "error" in priced) return;
     if (!canCreate && !existingQuoteId) return;
     setSaving(true);
     try {
       await specsService.upsert(spec);
+      const isNew = !existingQuoteId;
       const quoteRecord: Quote = {
-        id: existingQuoteId ?? nextQuoteId(),
+        id: existingQuoteId ?? (await quotesService.nextId()),
         gtpId: gtp?.id,
         gtpVersionAtQuote: gtp?.version,
-        customerId: customer?.id ?? "CUS-PENDING",
+        customerId: customer?.id ?? PENDING_CUSTOMER_ID,
         lines: [priced.line],
         subtotalInr: priced.line.lineTotalInr,
         gstInr: gstSplit.gstInr,
@@ -591,24 +964,125 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         marginReviewRequired: marginGate,
         createdAt: now().toISOString(),
       };
-      const saved = await quotesService.saveDraft(quoteRecord, actor);
+      const saved = await quotesService.saveDraft(quoteRecord, actor, { isNew });
       setExistingQuoteId(saved.id);
       setStatus(saved.status);
+      setSavedAt(new Date());
+      setSavedSignature(currentSignature);
       setFeedback({
         tone: "success",
         message: nextStatus === "Review" ? `${saved.id} saved and sent for owner review.` : `${saved.id} saved as a draft.`,
       });
       if (!quoteId) router.replace(`/quote/${saved.id}`);
-    } catch {
-      setFeedback({ tone: "danger", message: "Could not save the quote." });
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not save the quote." });
     } finally {
       setSaving(false);
     }
   }
 
+  /** Add a buyer and select them. Nothing is saved on the quote until the quote itself is. */
+  async function addCustomer() {
+    const built = buildCustomer(
+      customerDraft,
+      `CUS-${Date.now().toString(36).toUpperCase()}`,
+      now().toISOString().slice(0, 10),
+    );
+    if (!built.ok) {
+      setCustomerProblem(built.problem);
+      return;
+    }
+    try {
+      await contactsService.create(built.customer, actor);
+      setCustomers((current) => [built.customer, ...current]);
+      setCustomer(built.customer);
+      setAddingCustomer(false);
+      setCustomerProblem(null);
+      setFeedback({ tone: "success", message: `${built.customer.name} added and chosen. Save the quote to keep it.` });
+    } catch {
+      setCustomerProblem("Could not save the customer.");
+    }
+  }
+
+  /**
+   * Turn the saved quote into an order on the board.
+   *
+   * Only from a saved, unchanged quote: what becomes the order's value is what is in the record,
+   * not what happens to be on screen. The service creates the order, its job card, dispatch and
+   * invoice, and attaches the GTP this quote was priced from; below the margin floor it asks the
+   * Owner instead of creating anything, and says so.
+   */
+  async function sendToOrderBoard() {
+    if (!existingQuoteId || onBoard || isDirty || sending) return;
+    setSending(true);
+    try {
+      const result = await quotesService.sendToOrderBoard(existingQuoteId, actor);
+      if ("approval" in result) {
+        setStatus("Review");
+        setFeedback({ tone: "info", message: `${existingQuoteId} is below the minimum margin — sent to the Owner for approval instead of the board.` });
+      } else {
+        setStatus("On board");
+        setConvertedOrderId(result.order.id);
+        setFeedback({ tone: "success", message: `${result.order.id} created and on the order board.` });
+      }
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not send the quote to the order board." });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /**
+   * Issue the customer's copy.
+   *
+   * Consumes an offer number, because this is the point at which a document leaves the building
+   * — previewing a price must not burn a serial, and a gap in a numbered series is exactly what
+   * accounts notice. The rate per metre is the line total divided by the length, which is the
+   * only figure that crosses from the costing sheet to this document.
+   */
+  function downloadCustomerOffer() {
+    if (!spec || !priced || "error" in priced) return;
+    const serial = consumeOfferSerial();
+    setStoredVersion((v) => v + 1);
+    const now = new Date();
+    const offerNo = offerNumber(activeLetterhead.offerPrefix, serial, now);
+    downloadPdf(
+      `${offerNo.replace(/\//g, "-")}.pdf`,
+      customerOfferDocument({
+        letterhead: activeLetterhead,
+        offerNo,
+        date: now.toISOString(),
+        buyer: {
+          name: customer?.name ?? "Customer pending",
+          // One printed line per line typed. It used to split on commas as well, which broke
+          // "Flat No 502, Fifth Floor, Sarvodaya Nagar" into three lines where their own offer keeps
+          // it as one; a single-line address is wrapped by the writer if it is too long.
+          addressLines: (customer?.billingAddress ?? "")
+            .split(/\r?\n/)
+            .map((part) => part.trim())
+            .filter(Boolean),
+          attentionName: attentionName.trim() || undefined,
+          attentionPhone: attentionPhone.trim() || undefined,
+        },
+        projectName: projectName.trim() || "your enquiry",
+        subject: offerSubject.trim() || undefined,
+        lines: [
+          {
+            description: offerDescription(spec),
+            unit: "RMT",
+            quantity: priced.line.lengthM,
+            ratePerMetreInr:
+              priced.line.lengthM > 0 ? priced.line.lineTotalInr / priced.line.lengthM : 0,
+          },
+        ],
+      }),
+    );
+    setFeedback({ tone: "success", message: `Offer ${offerNo} downloaded. The next one will be ${offerSerial + 1}.` });
+  }
+
   function downloadQuotePdf() {
     if (!spec || !priced || "error" in priced) return;
-    downloadPdf(
+    downloadOnLetterhead(
       `${existingQuoteId ?? "quote-draft"}.pdf`,
       quotePdfDocument({
         quoteId: existingQuoteId,
@@ -653,13 +1127,22 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             )}
           </div>
         </div>
-        <Button type="button" variant="outline" onClick={downloadQuotePdf} disabled={!priced || "error" in priced}>
-          <DownloadIcon className="mr-2 size-4" />
-          Download quote PDF
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {/* Two documents, named for who reads them. They were one button and one PDF, which
+              printed a per-material rate per kilogram to the buyer — the metal content of the
+              cable and what we paid for it, which is the whole of the negotiation. */}
+          <Button type="button" variant="outline" onClick={downloadQuotePdf} disabled={!priced || "error" in priced}>
+            <DownloadIcon className="mr-2 size-4" />
+            Internal costing sheet
+          </Button>
+          <Button type="button" onClick={downloadCustomerOffer} disabled={!priced || "error" in priced}>
+            <DownloadIcon className="mr-2 size-4" />
+            Customer offer
+          </Button>
+        </div>
       </header>
 
-      {feedback || gtpChangedSinceQuote ? (
+      {feedback || gtpChangedSinceQuote || onBoard ? (
         <div className="space-y-3">
           {feedback ? (
             <div
@@ -677,10 +1160,25 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               {feedback.message}
             </div>
           ) : null}
+          {onBoard ? (
+            <div role="status" className="flex items-center gap-2 rounded-md border border-info/30 bg-info/10 px-3 py-2 text-sm text-info">
+              <KanbanSquareIcon className="size-4 shrink-0" />
+              This quote is on the order board{convertedOrderId ? ` as ${convertedOrderId}` : ""}. Its price is the order&apos;s value now — to change the price, start a new quote from the GTP.
+            </div>
+          ) : null}
           {gtpChangedSinceQuote && gtp ? (
-            <div role="alert" className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+            <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
               <ShieldAlertIcon className="size-4 shrink-0" />
-              {gtp.id} has changed since this quote was priced — the cable below may no longer match what the GTP now declares. Reopen it from Quotation to reprice against the current values.
+              <span className="flex-1">
+                {gtp.id} has changed since this quote was priced — the cable below is the one it was priced with, not what the GTP now
+                declares.
+              </span>
+              {!onBoard && !readOnly ? (
+                <Button type="button" size="sm" variant="outline" onClick={() => void repriceFromGtp()}>
+                  <RefreshCwIcon className="mr-2 size-4" />
+                  Reprice from the current GTP
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -688,6 +1186,118 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {/* Who the quote is for. Without one the offer is addressed "Customer pending", the order
+              has nobody to be delivered to, and GST is always IGST — `computeGst` reads "no
+              customer" as "another state". */}
+          <section className="space-y-3 rounded-md border bg-card p-4">
+            <div>
+              <h3 className="font-medium">Customer</h3>
+              <p className="text-xs text-muted-foreground">
+                Addresses the customer&apos;s offer, names the order on the board, and decides whether GST is IGST or CGST + SGST.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="quote-customer">Customer</Label>
+              <select
+                id="quote-customer"
+                disabled={readOnly}
+                value={addingCustomer ? "__new" : (customer?.id ?? "")}
+                onChange={(event) => {
+                  if (event.target.value === "__new") {
+                    setAddingCustomer(true);
+                    return;
+                  }
+                  setAddingCustomer(false);
+                  setCustomerProblem(null);
+                  setCustomer(customers.find((entry) => entry.id === event.target.value));
+                }}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="">Choose a customer…</option>
+                {customers.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name} — {entry.city}
+                  </option>
+                ))}
+                <option value="__new">＋ Add a new customer…</option>
+              </select>
+            </div>
+
+            {addingCustomer ? (
+              <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="nc-name">Customer name</Label>
+                    <Input id="nc-name" value={customerDraft.name} onChange={(e) => setCustomerDraft({ ...customerDraft, name: e.target.value })} placeholder="e.g. M/s. Avadh Business Services I Pvt. Ltd." />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-contact">Contact person</Label>
+                    <Input id="nc-contact" value={customerDraft.contactName} onChange={(e) => setCustomerDraft({ ...customerDraft, contactName: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-phone">Phone</Label>
+                    <Input id="nc-phone" value={customerDraft.phone} onChange={(e) => setCustomerDraft({ ...customerDraft, phone: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-city">City</Label>
+                    <Input id="nc-city" value={customerDraft.city} onChange={(e) => setCustomerDraft({ ...customerDraft, city: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-state">State</Label>
+                    <select id="nc-state" value={customerDraft.state} onChange={(e) => setCustomerDraft({ ...customerDraft, state: e.target.value })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                      <option value="">Choose the state…</option>
+                      {GST_STATES.map((entry) => (
+                        <option key={entry.code} value={entry.name}>
+                          {entry.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="nc-address">Address</Label>
+                    <textarea id="nc-address" rows={2} value={customerDraft.billingAddress} onChange={(e) => setCustomerDraft({ ...customerDraft, billingAddress: e.target.value })} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" />
+                    <p className="text-xs text-muted-foreground">One line per line of the address as it should print on the offer.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-segment">Type of customer</Label>
+                    <select id="nc-segment" value={customerDraft.segment} onChange={(e) => setCustomerDraft({ ...customerDraft, segment: e.target.value as NewCustomerInput["segment"] })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                      {CUSTOMER_SEGMENTS.map((segment) => (
+                        <option key={segment} value={segment}>
+                          {segment}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nc-gstin">GSTIN (optional)</Label>
+                    <Input id="nc-gstin" value={customerDraft.gstin} onChange={(e) => setCustomerDraft({ ...customerDraft, gstin: e.target.value })} className="font-mono" />
+                  </div>
+                </div>
+                {customerProblem ? (
+                  <p role="alert" className="text-sm text-danger">
+                    {customerProblem}
+                  </p>
+                ) : null}
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" onClick={() => void addCustomer()}>
+                    Add customer
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => { setAddingCustomer(false); setCustomerProblem(null); }}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : customer ? (
+              <p className="text-xs text-muted-foreground">
+                {customer.state} · {gstSplit.interstate ? "IGST 18% (another state)" : "CGST 9% + SGST 9% (same state)"}
+              </p>
+            ) : (
+              <p className="text-xs text-warning">
+                No customer chosen — this is taxed as IGST, and the offer will be addressed &ldquo;Customer pending&rdquo;.
+              </p>
+            )}
+          </section>
+
           <section className="space-y-4 rounded-md border bg-card p-4">
             <h3 className="font-medium">Cable</h3>
             <dl className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
@@ -735,55 +1345,404 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                     />
                     <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">₹/kg</span>
                   </div>
-                  <Button type="button" variant="outline" size="icon" disabled={readOnly || refreshingRate} onClick={() => void refreshMarketRate()} title={`Refresh ${spec.conductorMaterial} market rate`}>
+                  <Button type="button" variant="outline" size="icon" disabled={readOnly || refreshingRate} onClick={() => void refreshMarketRate()} title={`Reset to the ${spec.conductorMaterial.toLowerCase()} rate in the Materials table (no live feed)`}>
                     <RefreshCwIcon className={cn("size-4", refreshingRate && "animate-spin")} />
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  This cable&apos;s conductor is {spec.conductorMaterial.toLowerCase()} — the price per kg for that metal, seeded from the Materials table.
+                  This cable&apos;s conductor is {spec.conductorMaterial.toLowerCase()} — the price per kg for that metal. It starts from the Materials table, which holds a fixed rate, not today&apos;s market price: type the rate you are buying at.
                 </p>
               </div>
-              <NumberField
-                id="overheadPerM"
-                label="Overhead"
-                suffix="₹/m"
-                min={0}
-                value={commercial.overheadPerM}
-                disabled={readOnly}
-                onChange={(value) => setCommercial((current) => ({ ...current, overheadPerM: value }))}
-              />
+              {/* Only on a line that was already priced with a flat per-metre overhead. Removing
+                  it outright would silently re-price a quote someone has already sent; showing
+                  it on every new quote is how labour ended up charged twice. Set it to 0 to move
+                  an old line onto the percentage. */}
+              {commercial.overheadPerM > 0 ? (
+                <NumberField
+                  id="overheadPerM"
+                  label="Flat overhead (older quote)"
+                  suffix="₹/m"
+                  min={0}
+                  value={commercial.overheadPerM}
+                  disabled={readOnly}
+                  hint="This quote was priced before overhead became a percentage. Set to 0 to use Manufacturing & overhead below instead."
+                  onChange={(value) => setCommercial((current) => ({ ...current, overheadPerM: value }))}
+                />
+              ) : null}
             </div>
           </section>
 
+          {/* The build-up, with every percentage priced out beside it.
+              ── Why it reads the way it does ───────────────────────────────────────────────────
+              This panel asks for six numbers and then a price appears, which is a lot to take on
+              trust — the client's own question on 23 Sept was whether someone who has priced
+              cable by hand for thirty years would follow it or quietly go back to a calculator.
+              The fix is not fewer inputs: this IS the structure Niraj described on 13 Sept, and
+              dropping it would lose the thing that makes the quote defensible. The fix is that
+              nothing here is abstract. Each percentage prints what it comes to in rupees, each
+              says what it is a percentage OF, the running arithmetic is spelled out in one
+              sentence above, and the rate per metre — the only figure the customer document
+              carries — is stated rather than left to be divided out. */}
           <section className="space-y-4 rounded-md border bg-card p-4">
-            <div>
-              <h3 className="font-medium">Margin</h3>
-              <p className="text-xs text-muted-foreground">
-                Set independently per material — prices move differently, and so does your leverage on each.
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-medium">Cost build-up</h3>
+                <p className="text-xs text-muted-foreground">
+                  Manufacturing &amp; overhead, wastage and finance are each a percentage of the raw material — they
+                  do not compound. Drum and freight are flat rupees. Margin is one percentage of
+                  everything above it.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setBuildUpOpen((open) => !open)}
+                aria-expanded={buildUpOpen}
+              >
+                {buildUpOpen ? "Hide the percentages" : "Show the percentages"}
+              </Button>
             </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-              {MARGIN_CATEGORIES.map((category) => (
+
+            {buildUpSummary ? (
+              <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-foreground">
+                Raw material <span className="font-mono">{buildUpSummary.material}</span>, plus{" "}
+                <span className="font-mono">{buildUpSummary.upliftPct}%</span>{" "}
+                for manufacturing &amp; overhead, wastage
+                and finance{buildUpSummary.flat ? <> and <span className="font-mono">{buildUpSummary.flat}</span> for drum and freight</> : null}, comes to{" "}
+                <span className="font-mono">{buildUpSummary.totalCost}</span>. Margin of{" "}
+                <span className="font-mono">{buildUpSummary.marginPct}%</span>{" "}
+                on that makes the price{" "}
+                <span className="font-mono font-medium">{buildUpSummary.lineTotal}</span> — that is{" "}
+                <span className="font-mono font-medium">{buildUpSummary.ratePerM}</span>{" "}
+                per metre, which is
+                the one figure the customer&apos;s copy carries. GST is added on top.
+              </p>
+            ) : null}
+
+            {buildUpOpen ? (
+              <div className="grid gap-4 sm:grid-cols-3">
                 <NumberField
-                  key={category}
-                  id={`margin-${category}`}
-                  label={category === "Labour" ? "Labour & overhead" : category}
+                  id="buildup-conversion"
+                  label="Manufacturing & overhead"
                   suffix="%"
                   min={0}
                   step={0.5}
-                  value={commercial.marginPctByCategory[category]}
+                  value={commercial.buildUp.conversionPct}
                   disabled={readOnly}
-                  onChange={(value) =>
-                    setCommercial((current) => ({ ...current, marginPctByCategory: { ...current.marginPctByCategory, [category]: value } }))
-                  }
+                  figure={stepFigure("Manufacturing & overhead (labour, power, machine time)")}
+                  hint="Labour, power, machine time, factory overhead — of raw material"
+                  onChange={(value) => setBuildUp({ conversionPct: value })}
                 />
-              ))}
-            </div>
+                <NumberField
+                  id="buildup-wastage"
+                  label="Wastage"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.wastagePct}
+                  disabled={readOnly}
+                  figure={stepFigure("Wastage and scrap")}
+                  hint="Scrap and staging — of raw material"
+                  onChange={(value) => setBuildUp({ wastagePct: value })}
+                />
+                <NumberField
+                  id="buildup-finance"
+                  label="Finance"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.financePct}
+                  disabled={readOnly}
+                  figure={stepFigure("Cost of finance")}
+                  hint="Material bought against delivery — of raw material"
+                  onChange={(value) => setBuildUp({ financePct: value })}
+                />
+                <NumberField
+                  id="buildup-drum"
+                  label="Drum"
+                  prefix="₹"
+                  min={0}
+                  step={100}
+                  value={commercial.buildUp.drumCostInr}
+                  disabled={readOnly}
+                  hint="Flat, for the whole line. 0 = not yet entered"
+                  onChange={(value) => setBuildUp({ drumCostInr: value })}
+                />
+                <NumberField
+                  id="buildup-freight"
+                  label="Freight"
+                  prefix="₹"
+                  min={0}
+                  step={100}
+                  value={commercial.buildUp.freightInr}
+                  disabled={readOnly}
+                  hint="Flat, to the customer. 0 = not yet entered"
+                  onChange={(value) => setBuildUp({ freightInr: value })}
+                />
+                <NumberField
+                  id="buildup-margin"
+                  label="Margin"
+                  suffix="%"
+                  min={0}
+                  step={0.5}
+                  value={commercial.buildUp.marginPct}
+                  disabled={readOnly}
+                  figure={stepFigure("Margin")}
+                  hint="Of the total cost, not of the material"
+                  onChange={(value) => setBuildUp({ marginPct: value })}
+                />
+              </div>
+            ) : null}
             {marginGate ? (
               <p className="flex items-center gap-2 text-xs text-warning">
                 <ShieldAlertIcon className="size-3.5 shrink-0" />
                 Blended margin is below the company minimum ({MARGIN_GATE_PCT}%) — saving this will need owner review.
               </p>
+            ) : null}
+          </section>
+
+          {/* What the customer's copy says, over and above the price.
+              The offer is a letter, not a table: it is addressed to a person, it names the job,
+              and it carries the works' own letterhead and standing terms. None of that is
+              derivable from a cable, and all of it has to be retyped on every offer unless the
+              parts that never change are kept. So the branding and the fifteen terms persist
+              once, and only the three things that are genuinely per-offer are asked for here. */}
+          <section className="space-y-4 rounded-md border bg-card p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="font-medium">Customer offer</h3>
+                <p className="text-xs text-muted-foreground">
+                  The covering letter, priced schedule and terms of supply that go to the buyer.
+                  Next offer number{" "}
+                  <span className="font-mono">
+                    {offerNumber(activeLetterhead.offerPrefix, offerSerial, new Date())}
+                  </span>
+                  .
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOfferOpen((open) => !open)} aria-expanded={offerOpen}>
+                {offerOpen ? "Done" : "Branding, letterhead & terms"}
+              </Button>
+            </div>
+
+            {!customer ? (
+              <p className="text-xs text-warning">
+                No customer chosen above — the offer would be addressed &ldquo;Customer pending&rdquo;.
+              </p>
+            ) : null}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="offer-project">Project</Label>
+                <Input
+                  id="offer-project"
+                  value={projectName}
+                  placeholder="e.g. MSETCL Tilwani Substation Project"
+                  onChange={(event) => setProjectName(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The job, named as the end client names it — often not the buyer. Heads the
+                  schedule and the terms page.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="offer-attn">Kind attention</Label>
+                <Input
+                  id="offer-attn"
+                  value={attentionName}
+                  placeholder="Who the offer is addressed to"
+                  onChange={(event) => setAttention({ name: event.target.value, phone: attentionPhone })}
+                />
+                <Input
+                  className="mt-2"
+                  value={attentionPhone}
+                  placeholder="Contact no."
+                  aria-label="Contact number"
+                  onChange={(event) => setAttention({ name: attentionName, phone: event.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="offer-subject">Subject (optional)</Label>
+                <Input
+                  id="offer-subject"
+                  value={offerSubject}
+                  placeholder="Left blank, it reads from the cables on the schedule and the project"
+                  onChange={(event) => setOfferSubject(event.target.value)}
+                />
+              </div>
+            </div>
+
+            {offerOpen ? (
+              <div className="space-y-4 rounded-md border border-border bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">
+                  Saved once and reused on every offer. Change it here when the works&rsquo; own
+                  details change, not per quote.
+                </p>
+                {/* Branding: the works' own logo and colours, printed at the head and foot of
+                    every page of every document the works exports — the offer, the costing
+                    sheet and the GTP. */}
+                <div className="flex flex-wrap items-center gap-4 rounded-md border border-border bg-background p-3">
+                  <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-white">
+                    {activeLetterhead.logoDataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- a data URL the user just uploaded; next/image cannot optimise it
+                      <img src={activeLetterhead.logoDataUrl} alt="Logo" className="max-h-full max-w-full object-contain" />
+                    ) : (
+                      <span className="text-[10px] text-muted-foreground">No logo</span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-logo">Logo</Label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        id="lh-logo"
+                        type="file"
+                        accept="image/*"
+                        className="max-w-60 text-xs"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            editLetterhead({ ...activeLetterhead, logoDataUrl: await imageFileToJpegDataUrl(file) });
+                          } catch (error) {
+                            setFeedback({ tone: "danger", message: error instanceof Error ? error.message : "Could not read that image." });
+                          }
+                        }}
+                      />
+                      {activeLetterhead.logoDataUrl ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => editLetterhead({ ...activeLetterhead, logoDataUrl: "" })}>
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground">PNG or JPEG. Printed top-left on every page.</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="lh-name-color">Name colour</Label>
+                      <input
+                        id="lh-name-color"
+                        type="color"
+                        className="h-9 w-14 cursor-pointer rounded border border-input bg-background"
+                        value={activeLetterhead.nameColor ?? "#000000"}
+                        onChange={(e) => editLetterhead({ ...activeLetterhead, nameColor: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="lh-footer-color">Footer colour</Label>
+                      <input
+                        id="lh-footer-color"
+                        type="color"
+                        className="h-9 w-14 cursor-pointer rounded border border-input bg-background"
+                        value={activeLetterhead.footerColor ?? "#000000"}
+                        onChange={(e) => editLetterhead({ ...activeLetterhead, footerColor: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-company">Company</Label>
+                    <Input id="lh-company" value={activeLetterhead.companyName} onChange={(e) => editLetterhead({ ...activeLetterhead, companyName: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-prefix">Offer no. prefix</Label>
+                    <div className="flex gap-2">
+                      <Input id="lh-prefix" className="font-mono" value={activeLetterhead.offerPrefix} onChange={(e) => editLetterhead({ ...activeLetterhead, offerPrefix: e.target.value })} />
+                      <Input
+                        type="number"
+                        min={1}
+                        className="w-24 font-mono"
+                        aria-label="Next offer number"
+                        value={offerSerial}
+                        onChange={(e) => {
+                          setNextOfferSerial(Number(e.target.value));
+                          setStoredVersion((v) => v + 1);
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Prefix, running number, financial year — set the number to carry on from an
+                      existing series rather than restarting at 1.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-address">Address</Label>
+                    <textarea
+                      id="lh-address"
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={activeLetterhead.addressLines.join("\n")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, addressLines: e.target.value.split("\n") })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-phone">Phone</Label>
+                    <Input id="lh-phone" value={activeLetterhead.phone} onChange={(e) => editLetterhead({ ...activeLetterhead, phone: e.target.value })} />
+                    <Input
+                      className="mt-2"
+                      aria-label="E-mail addresses"
+                      value={activeLetterhead.emails.join(", ")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, emails: e.target.value.split(/,\s*/) })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-signatory">Signatory</Label>
+                    <Input id="lh-signatory" value={activeLetterhead.signatoryName} onChange={(e) => editLetterhead({ ...activeLetterhead, signatoryName: e.target.value })} />
+                    <Input className="mt-2" aria-label="Signatory phone" value={activeLetterhead.signatoryPhone} onChange={(e) => editLetterhead({ ...activeLetterhead, signatoryPhone: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lh-footer">Footer</Label>
+                    <textarea
+                      id="lh-footer"
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={activeLetterhead.footerLines.join("\n")}
+                      onChange={(e) => editLetterhead({ ...activeLetterhead, footerLines: e.target.value.split("\n") })}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Terms &amp; conditions of supply</Label>
+                  <div className="space-y-2">
+                    {activeLetterhead.terms.map((term, index) => (
+                      <div key={term.label} className="grid gap-2 sm:grid-cols-[180px_1fr]">
+                        <span className="pt-2 text-xs text-muted-foreground">{term.label}</span>
+                        <textarea
+                          rows={term.value.length > 90 ? 3 : 1}
+                          aria-label={term.label}
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={term.value}
+                          onChange={(e) =>
+                            setLetterhead({
+                              ...letterhead,
+                              terms: activeLetterhead.terms.map((t, i) => (i === index ? { ...t, value: e.target.value } : t)),
+                            })
+                          }
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    if (!saveLetterhead(activeLetterhead)) {
+                      setFeedback({ tone: "danger", message: "The browser would not store the letterhead — try a smaller logo. This offer still uses what is on screen." });
+                      return;
+                    }
+                    setLetterheadEdited(false);
+                    setStoredVersion((v) => v + 1);
+                    setFeedback({ tone: "success", message: "Branding saved — the offer, the costing sheet and every GTP PDF now use it." });
+                  }}
+                >
+                  <SaveIcon className="mr-2 size-4" />
+                  Save letterhead &amp; terms
+                </Button>
+              </div>
             ) : null}
           </section>
 
@@ -812,7 +1771,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
               <p className="text-xs text-muted-foreground">
                 {needsApproval
                   ? `Below ${MARGIN_GATE_PCT}% margin — saves for owner review, not sent anywhere automatically.`
-                  : "Saves as a draft. No order is created — Cable OS 3 stops at the priced quote."}
+                  : onBoard
+                    ? "This quote is now an order, so it can no longer be changed."
+                    : "Saves as a draft. Nothing is sent to the works until you send it to the order board."}
               </p>
             </div>
             <div className="flex flex-col gap-2">
@@ -824,12 +1785,79 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                 <SaveIcon className="mr-2 size-4" />
                 {needsApproval ? "Save for owner review" : "Save draft"}
               </Button>
-              {status !== "Approved" && !needsApproval && role === "Owner" && existingQuoteId ? (
+              {/* Standing saved/unsaved state — the success banner dismisses itself, this does not. */}
+              {savedAt ? (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                    isDirty ? "border-warning/40 text-warning" : "border-success/40 text-success",
+                  )}
+                >
+                  {isDirty ? (
+                    <>
+                      <AlertTriangleIcon className="size-3.5" />
+                      Unsaved changes
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2Icon className="size-3.5" />
+                      Saved {savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </>
+                  )}
+                </span>
+              ) : null}
+              {status !== "Approved" && !needsApproval && !onBoard && role === "Owner" && existingQuoteId ? (
                 <Button type="button" variant="outline" disabled={saving || !priced || "error" in priced} onClick={() => void save("Approved")}>
                   Mark approved
                 </Button>
               ) : null}
             </div>
+          </section>
+
+          <section className="space-y-3 rounded-md border bg-card p-4">
+            <div>
+              <h3 className="font-medium">Order board</h3>
+              <p className="text-xs text-muted-foreground">
+                {onBoard
+                  ? "The order is being tracked on the board."
+                  : "When the customer confirms, send the quote to the order board. It becomes an order the works can track through to dispatch."}
+              </p>
+            </div>
+            {onBoard ? (
+              <Button asChild variant="outline">
+                <Link href={`/orders${convertedOrderId ? `?order=${convertedOrderId}` : ""}`}>
+                  <KanbanSquareIcon className="mr-2 size-4" />
+                  View {convertedOrderId ?? "the order"} on the board
+                </Link>
+              </Button>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!existingQuoteId || isDirty || sending || !can(role, "transition", "quote", permissionCtx)}
+                  onClick={() => void sendToOrderBoard()}
+                >
+                  <KanbanSquareIcon className="mr-2 size-4" />
+                  {sending ? "Sending…" : "Send to order board"}
+                </Button>
+                {!existingQuoteId ? (
+                  <p className="text-xs text-muted-foreground">Save the quote first.</p>
+                ) : isDirty ? (
+                  <p className="text-xs text-warning">Save your changes first — the order takes the saved price.</p>
+                ) : !can(role, "transition", "quote", permissionCtx) ? (
+                  <p className="text-xs text-muted-foreground">
+                    {needsApproval
+                      ? `Below ${MARGIN_GATE_PCT}% margin — save it for owner review first.`
+                      : "Sending a quote to the board is for Sales and the Owner."}
+                  </p>
+                ) : gtp && gtp.status !== "Approved" ? (
+                  <p className="text-xs text-muted-foreground">
+                    {gtp.id} is {gtp.status.toLowerCase()}. It goes to the board with the order and must be stamped there before production can start.
+                  </p>
+                ) : null}
+              </>
+            )}
           </section>
         </div>
       </div>

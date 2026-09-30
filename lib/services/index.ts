@@ -4,8 +4,10 @@ import { productionGateBlockers, dispatchGateBlockers, latestInspection, normali
 import { can } from "@/lib/rbac";
 import { adapter } from "@/lib/adapters/mock-adapter";
 import { now } from "@/lib/domain/clock";
+import { defaultPromisedDate, gtpToAdopt, orderTitleFor, transitionBlockers } from "@/lib/domain/board";
+import { nextQuoteId } from "@/lib/domain/quote-number";
 import { buildGtpSections, findReusableGtp, gtpForOrder } from "@/lib/domain/gtp";
-import { inspectorEtaFrom } from "@/lib/domain/inspection";
+import { inspectionCallBlockers, inspectorEtaFrom } from "@/lib/domain/inspection";
 import { COMPUTED_SIGNAL_TYPES, computeSalesSignals } from "@/lib/domain/signals";
 import { cablePresets, type CablePreset } from "@/lib/seed/cable-presets";
 import type {
@@ -316,9 +318,26 @@ export const quotesService = {
   get: (quoteId: string) => get("quotes", quoteId),
   /** Ready-made common cables for the wizard's "pick a cable" step (page plan §2a/§3). */
   listPresets: async (): Promise<CablePreset[]> => cablePresets,
-  saveDraft: (quote: Quote, actor: Actor) =>
+  /**
+   * The next free quote number, read from what is actually stored.
+   *
+   * The page used to invent one at random, which could land on a number already in use and — since
+   * a save replaces whatever has its id — silently overwrite that quote. See lib/domain/quote-number.ts.
+   */
+  nextId: async () => {
+    const store = await readStore();
+    return nextQuoteId(store.quotes.map((item) => item.id), now());
+  },
+  /**
+   * `isNew` says the caller believes this is a NEW quote. If the id is already taken, that belief is
+   * wrong and saving would destroy someone else's quote, so it refuses rather than replace it.
+   */
+  saveDraft: (quote: Quote, actor: Actor, options: { isNew?: boolean } = {}) =>
     mutateStore((store) => {
       const existing = store.quotes.findIndex((item) => item.id === quote.id);
+      if (existing >= 0 && options.isNew) {
+        throw new Error(`${quote.id} already exists — a new quote cannot replace it. Nothing was saved.`);
+      }
       if (existing >= 0) store.quotes[existing] = quote;
       else store.quotes.unshift(quote);
       addActivity(store, {
@@ -368,14 +387,18 @@ export const quotesService = {
         quoteId,
         inquiryId: quote.inquiryId,
         customerId: quote.customerId,
-        title: firstSpec?.designation ?? "Cable order",
+        // Every cable on the quote, not just the first: an order of three cables used to be named
+        // after one of them, which is what the board would then have printed on the card.
+        title: orderTitleFor(store, quote),
         specSummary: firstSpec?.designation ?? "Cable order",
         // Orders land in "Won": production is gated until the GTP is approved
         // and incoming raw material QC passes (see productionGateBlockers).
         stage: "Won",
         priority: quote.marginReviewRequired ? "High" : "Medium",
         amountInr: quote.totalInr,
-        promisedDate: "2026-07-08",
+        // Was the literal "2026-07-08" for every order ever created, so nothing new could be due
+        // today or overdue on the board. The works' own standing lead time, editable per order.
+        promisedDate: defaultPromisedDate(now()),
         completionPct: 20,
         ownerRole: "Operations",
         dispatchId,
@@ -440,7 +463,22 @@ export const quotesService = {
       store.dispatches.unshift(dispatch);
       store.invoices.unshift(invoice);
       store.jobCards.unshift(jobCard);
-      const gtp = createGtpForOrder(store, order, jobCard.specId, actor);
+      // The order takes the GTP the quote was priced from. Drafting a fresh one from the spec
+      // meant the engineer stamped a different document from the one the price came from.
+      const adopted = gtpToAdopt(store, quote, order);
+      if (adopted) {
+        adopted.orderId = order.id;
+        order.gtpId = adopted.id;
+        addActivity(store, {
+          actorRole: actor.role,
+          actorName: actor.name,
+          type: "gtp.adopted",
+          recordType: "gtp",
+          recordId: adopted.id,
+          text: `${adopted.id} (${adopted.status}) attached to ${order.id} — the GTP ${quoteId} was priced from.`,
+        });
+      }
+      const gtp = adopted ?? createGtpForOrder(store, order, jobCard.specId, actor);
       addActivity(store, {
         actorRole: actor.role,
         actorName: actor.name,
@@ -471,19 +509,33 @@ export const ordersService = {
       });
       return order;
     }),
+  setPromisedDate: (orderId: string, promisedDate: string, actor: Actor) =>
+    mutateStore((store) => {
+      const order = store.orders.find((item) => item.id === orderId);
+      if (!order) throw new Error("Order not found");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(promisedDate) || Number.isNaN(Date.parse(promisedDate))) {
+        throw new Error("Enter the delivery date as a calendar date.");
+      }
+      const previous = order.promisedDate;
+      order.promisedDate = promisedDate;
+      addActivity(store, {
+        actorRole: actor.role,
+        actorName: actor.name,
+        type: "order.promised_date_changed",
+        recordType: "order",
+        recordId: orderId,
+        text: `${orderId} delivery date changed from ${previous} to ${promisedDate}.`,
+      });
+      return order;
+    }),
   transition: (orderId: string, stage: Order["stage"], actor: Actor) =>
     mutateStore((store) => {
       const order = store.orders.find((item) => item.id === orderId);
       if (!order) throw new Error("Order not found");
-      if (stage === "In Production" && order.stage !== "In Production") {
-        const blockers = productionGateBlockers(store, order);
-        if (blockers.length > 0) {
-          throw new Error(`Production is gated for ${orderId}: ${blockers.join(" ")}`);
-        }
-      }
-      if (stage === "Ready for Dispatch" || stage === "Invoiced") {
-        const blockers = dispatchGateBlockers(store, order);
-        if (blockers.length) throw new Error(`Dispatch is gated for ${orderId}: ${blockers.join(" ")}`);
+      // The same definition the board draws on the card, so what it shows is what is enforced.
+      const check = transitionBlockers(store, order, stage);
+      if (check.blockers.length > 0) {
+        throw new Error(`${check.gate} is gated for ${orderId}: ${check.blockers.join(" ")}`);
       }
       order.stage = stage;
       order.completionPct =
@@ -1007,14 +1059,8 @@ export const inspectionService = {
     mutateStore((store) => {
       const order = store.orders.find((entry) => entry.id === orderId);
       if (!order) throw new Error("Order not found");
-      const openDrumQc = store.finishedCableQc.filter(
-        (entry) => entry.orderId === orderId && entry.result !== "Pass",
-      );
-      if (openDrumQc.length > 0) {
-        throw new Error(
-          `Finished cable QC incomplete for ${openDrumQc.map((entry) => entry.drumNo).join(", ")} — all drums must pass before the inspection call.`,
-        );
-      }
+      const blockers = inspectionCallBlockers(store.finishedCableQc, orderId);
+      if (blockers.length > 0) throw new Error(blockers.join(" "));
       const callDate = isoNow().slice(0, 10);
       order.inspectionCallDate = callDate;
       order.inspectorEtaDate = inspectorEtaFrom(callDate);

@@ -33,19 +33,13 @@ export interface GtpTable {
   groups: GtpTableGroup[];
 }
 
-const coreCount: Record<CoreConfig, string> = {
-  "1C": "1 Core",
-  "2C": "2 Core",
-  "3C": "3 Core",
-  "3.5C": "3.5 Core",
-  "4C": "4 Core",
-  "5C": "5 Core",
-  "7C": "7 Core",
-  "12C": "12 Core",
-  "19C": "19 Core",
-  "27C": "27 Core",
-  "37C": "37 Core",
-};
+/**
+ * "3.5C" -> "3.5 Core". Derived rather than a hand-maintained map: the map had to be extended
+ * every time CoreConfig grew, and a missing entry printed `undefined` on a GTP.
+ */
+function coreCountLabel(cores: CoreConfig): string {
+  return `${cores.replace(/C$/, "")} Core`;
+}
 
 /** "650/1100 V (1.1 kV)" → "1.1 kV"; multi-part HT grades keep the full pair. */
 function ratedVoltage(spec: CableSpec): string {
@@ -134,7 +128,7 @@ export function buildGtpTable(
     title: `Guaranteed Technical Particulars for ${gtp.cableType}`,
     manufacturerName: gtp.manufacturerName ?? "",
     tenderNo: gtp.tenderNo ?? "",
-    cableSizeLabel: `${coreCount[spec.cores]} ${spec.conductorSizeSqMm} sq. mm.`,
+    cableSizeLabel: `${coreCountLabel(spec.cores)} ${spec.conductorSizeSqMm} sq. mm.`,
     groups: [
       { no: 1, label: "Rated Voltage", items: [{ label: "", value: kv }] },
       {

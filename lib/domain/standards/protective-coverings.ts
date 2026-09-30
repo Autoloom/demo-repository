@@ -95,6 +95,76 @@ export const ROUND_WIRE_ONLY_MAX_DIA_MM = 13;
 export const ARMOUR_METHOD_A = { formedWireThicknessMm: 0.8, appliesOverDiaMm: 13 } as const;
 
 /**
+ * Which of the two printed practices to apply when the armour is formed wire (strip).
+ *
+ *   "A" — the flat 0.8 mm strip, valid at every diameter above 13 mm
+ *   "B" — the banded table above, which steps to 1.4 mm past 40 mm
+ *
+ * The note under the table in both standards says these are "two methods of practice in the
+ * application of armouring" — neither is a fallback for the other, and a GTP should say which
+ * one it was built to.
+ */
+export type ArmourMethod = "A" | "B";
+
+/**
+ * Nominal WIDTH of formed wire (strip), paired to its thickness.
+ *
+ * The banded table fixes thickness and is silent on width — deliberately, because the steel
+ * area of a strip layer is π(D + t)·t, in which width cancels. Width is therefore a commercial
+ * choice, not a dimensional one, and it does not move the mass.
+ *
+ * It still has to be PRINTED: a buyer writes "Galvanised Steel Strip Armour size 4 × 0.8 mm",
+ * not "0.8 mm". The pairing below is the one the standard itself uses — IS 7098 (Part 1) : 1988
+ * Table 7 tabulates armour resistance in exactly two formed-wire columns, "4.0 × 0.8 mm" and
+ * "6.1 × 1.4 mm", which is as close to an official size list as the standard gets.
+ *
+ * ⚠️ Encoding note: that pairing is read from the 1988 edition, which we hold. IS 7098-1:2025 is
+ * the edition this module otherwise cites and its Table 7 has NOT been checked for the same two
+ * columns. Width is printed as a nominal with that provenance stated, and an operator can
+ * override it; nothing dimensional depends on it.
+ */
+export const FORMED_WIRE_WIDTH_BY_THICKNESS_MM: Record<number, number> = {
+  0.8: 4.0,
+  1.4: 6.1,
+};
+
+export const FORMED_WIRE_WIDTH_REF =
+  "IS 7098 (Part 1) : 1988, Table 7 (armour resistance columns 4.0 × 0.8 mm and 6.1 × 1.4 mm)";
+
+/** Nominal strip width for a thickness, or null when the pairing is not one the standard names. */
+export function formedWireWidthMm(thicknessMm: number): number | null {
+  return FORMED_WIRE_WIDTH_BY_THICKNESS_MM[thicknessMm] ?? null;
+}
+
+/**
+ * Formed-wire (strip) thickness for a calculated diameter under armour, under either method.
+ *
+ * Returns null below 13 mm, where §14.2 / §13.2 permits round wire only — the caller must fall
+ * back to round wire rather than treat this as a missing value.
+ */
+export function formedWireThickness(
+  standard: CoveringStandard,
+  calculatedDiaUnderArmourMm: number,
+  method: ArmourMethod,
+): CoveringValue<{ thicknessMm: number }> | null {
+  if (calculatedDiaUnderArmourMm <= ROUND_WIRE_ONLY_MAX_DIA_MM) return null;
+
+  if (method === "A") {
+    return {
+      values: { thicknessMm: ARMOUR_METHOD_A.formedWireThicknessMm },
+      ref: `${ref(standard, "armour")} (method A — ${ARMOUR_METHOD_A.formedWireThicknessMm} mm formed wire for all diameters in excess of ${ARMOUR_METHOD_A.appliesOverDiaMm} mm)`,
+    };
+  }
+
+  const hit = lookupBand(standard, ref(standard, "armour"), ARMOUR_TABLE, calculatedDiaUnderArmourMm);
+  if (hit.values.formedWireThicknessMm === null) return null;
+  return {
+    values: { thicknessMm: hit.values.formedWireThicknessMm },
+    ref: `${ref(standard, "armour")} (method B — ${hit.ref})`,
+  };
+}
+
+/**
  * OUTER SHEATH — keyed by calculated diameter under the outer sheath.
  *
  * Three columns: nominal and minimum for UNARMOURED cables, and a single minimum for ARMOURED

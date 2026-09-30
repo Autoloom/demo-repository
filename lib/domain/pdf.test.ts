@@ -112,3 +112,36 @@ test("an empty tolerance cell prints nothing rather than the word undefined", ()
   assert.ok(!text.includes("undefined"), "a blank cell rendered as the string undefined");
   assert.ok(text.includes("(0.868 ohm/km) Tj"), "the populated cells still render");
 });
+
+test("what a GTP says outside ASCII still says it in the PDF", () => {
+  // Each of these printed wrong on every GTP before the fonts declared a character set: the
+  // core count lost its half, the insulation tolerance its minus sign, the drum length its band,
+  // the expansion coefficient its exponent and multiplication sign, the resistance its unit.
+  const text = decode(
+    createPdfBytes({
+      title: "Characters",
+      sections: [
+        {
+          table: {
+            headers: ["Particular", "Value"],
+            widths: [200, 311],
+            rows: [
+              ["No. of cores", "3½"],
+              ["Insulation tolerance", "−15.9%"],
+              ["Drum length", "±5%"],
+              ["Armour size", "4 × 0.8 mm"],
+              ["Max conductor temp", "90 °C"],
+              ["Tensile strength", "90 N/mm²"],
+              ["Expansion", "23.0×10⁻⁶/°C"],
+              ["Insulation resistance", "709 MΩ·km"],
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  for (const printed of ["(3½)", "(-15.9%)", "(±5%)", "(4 × 0.8 mm)", "(90 °C)", "(90 N/mm²)", "(23.0×10^-6/°C)", "(709 Mohm·km)"]) {
+    assert.ok(text.includes(printed), `expected ${printed} in the content stream`);
+  }
+  assert.match(text, /\/BaseFont \/Helvetica \/Encoding \/WinAnsiEncoding/);
+});

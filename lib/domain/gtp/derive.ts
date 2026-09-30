@@ -115,7 +115,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   if (!conductor) {
     fields.push({
       key: "power.strands",
-      label: "No. of strands (power)",
+      label: "No. of strands (phase conductor)",
       value: "—",
       tag: "LOOKUP",
       source: "is-table",
@@ -128,7 +128,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
 
   fields.push({
     key: "power.strands",
-    label: "No. of strands (power)",
+    label: "No. of strands (phase conductor)",
     value: conductor.wires,
     tag: "LOOKUP",
     // The COUNT is our construction; the MINIMUM it must meet is the standard's. The trace
@@ -139,7 +139,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   });
   fields.push({
     key: "power.strandDia",
-    label: "Min strand diameter (power)",
+    label: "Min strand diameter (phase conductor)",
     value: `${conductor.wireDiaMm.toFixed(2)} mm`,
     tag: "LOOKUP",
     source: "works-data",
@@ -149,7 +149,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   // Buyer schedules (DHBVN Appendix-I 3.iii) ask for "No. & size of strands" as ONE cell.
   fields.push({
     key: "power.strandsAndSize",
-    label: "No. & size of strands (power)",
+    label: "No. & size of strands (phase conductor)",
     value: `${conductor.wires} / ${conductor.wireDiaMm.toFixed(2)} mm`,
     tag: "CALC",
     source: "calc",
@@ -167,7 +167,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   });
   fields.push({
     key: "power.compactedDia",
-    label: "Compacted conductor dia (power)",
+    label: "Compacted conductor dia (phase conductor)",
     value: `${conductor.conductorDiaMm.toFixed(2)} mm`,
     tag: "LOOKUP",
     source: "works-data",
@@ -178,7 +178,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   });
   fields.push({
     key: "power.maxDcResistance",
-    label: "Max DC resistance @20°C (power)",
+    label: "Max DC resistance @20°C (phase conductor)",
     // The one conductor property IS 8130 actually specifies — and the property a conductor is
     // judged conformant by (§3.2 / §7.3.1). This is a genuine standards lookup.
     value: `${isSpec.maxDcResistanceOhmPerKm} ohm/km`,
@@ -194,7 +194,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   if (phase) {
     fields.push({
       key: "power.insulationThickness",
-      label: "Insulation thickness (power)",
+      label: "Insulation thickness (phase conductor)",
       value: `${phase.insulationThicknessMinMm.toFixed(2)} mm`,
       // The customer's phrasing used to flip these to QUIRK/profile. It no longer does: the
       // value is read straight from the IS 14255 table in every case, so calling it a customer
@@ -214,7 +214,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     const diaOverInsulation = conductor.conductorDiaMm + 2 * phase.insulationThicknessMinMm;
     fields.push({
       key: "power.diaOverInsulation",
-      label: "Dia over insulation (power)",
+      label: "Dia over insulation (phase conductor)",
       value: `${diaOverInsulation.toFixed(2)} mm`,
       tag: "CALC",
       source: "calc",
@@ -223,7 +223,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
     });
     fields.push({
       key: "power.currentRating",
-      label: "Current rating (power)",
+      label: "Current rating (phase conductor)",
       value: `${phase.currentRatingA} A @ ${phase.currentRatingRefTempC}°C`,
       tag: "LOOKUP",
       source: "is-table",
@@ -235,7 +235,7 @@ function powerFields(group: ConductorGroup, quirks: DerivationQuirks): ResolvedF
   if (conductor.massKgPerKm != null) {
     fields.push({
       key: "power.massPerKm",
-      label: "Approx mass (power core)",
+      label: "Approx mass (phase conductor)",
       value: `${conductor.massKgPerKm} kg/km`,
       tag: "LOOKUP",
       source: "works-data",
@@ -317,9 +317,27 @@ const PHYSICAL = {
  * exactly as the schedules do; they are marked CALC with their working in the trace so an engineer
  * can check them.
  */
-function finishedBundle(
+export interface AbBundle {
+  overallDiaMm: number;
+  massKgPerKm: number;
+  /** Conductor metal only — phases, messenger and street light. */
+  conductorMassKgPerKm: number;
+  /** Everything that is not metal. AB has no armour and no overall sheath. */
+  insulationMassKgPerKm: number;
+  workings: string;
+}
+
+/**
+ * Overall diameter and mass of a finished AB bundle.
+ *
+ * Exported because a quote needs the same numbers the GTP prints: pricing an AB cable off a
+ * second model is the divergence the LT path already refuses to allow. The split is returned
+ * as well as the total so costing can price metal and insulation at their own rates.
+ */
+export function deriveAbBundle(
   groups: ConductorGroup[],
-): { overallDiaMm: number; massKgPerKm: number; workings: string } | undefined {
+  messengerConstruction: "bare" | "covered" = "covered",
+): AbBundle | undefined {
   let conductorMassKgPerKm = 0;
   let insulationMassKgPerKm = 0;
   let largestInsulatedDiaMm = 0;
@@ -329,8 +347,14 @@ function finishedBundle(
     const isMessenger = g.role === "messenger";
     const conductor = isMessenger ? findMessengerRow(g.sizeSqMm) : findWorksConductor(g.sizeSqMm);
     if (!conductor) return undefined; // an unsourced size means we must not invent a number
-    const phase = isMessenger ? undefined : findPhaseRow(g.sizeSqMm);
-    if (!isMessenger && !phase) return undefined;
+    // A COVERED messenger carries an insulation wall like any other core; a BARE one does not.
+    // IS 14255 Table 4 is keyed by size, and every messenger size (25/35/50/70) is also a phase
+    // size, so the covered messenger's wall is a real lookup rather than an assumption. Until
+    // this was modelled the bundle was computed as if the messenger were always bare, which
+    // under-stated a covered cable's mass and diameter.
+    const covered = !isMessenger || messengerConstruction === "covered";
+    const phase = covered ? findPhaseRow(g.sizeSqMm) : undefined;
+    if (covered && !phase) return undefined;
 
     const density = isMessenger ? PHYSICAL.alloyDensity : PHYSICAL.aluminiumDensity;
     // area (mm²) × density (g/cm³) = kg/km, since 1 mm²·1 km = 1000 cm³ → g/cm³ ≡ kg/km per mm².
@@ -354,10 +378,14 @@ function finishedBundle(
   const bundleFactor = PHYSICAL.bundleDiaFactor * Math.sqrt(Math.max(coreCount, 1) / 4);
   const overallDiaMm = largestInsulatedDiaMm * bundleFactor;
   const massKgPerKm = (conductorMassKgPerKm + insulationMassKgPerKm) * PHYSICAL.layUpFactor;
+  const conductorScaledKgPerKm = conductorMassKgPerKm * PHYSICAL.layUpFactor;
 
   return {
     overallDiaMm,
     massKgPerKm,
+    conductorMassKgPerKm: conductorScaledKgPerKm,
+    // Scaled by the same lay-up factor as the total, so the parts sum to the whole.
+    insulationMassKgPerKm: insulationMassKgPerKm * PHYSICAL.layUpFactor,
     workings:
       `largest insulated core ${largestInsulatedDiaMm.toFixed(2)} mm × bundle factor ` +
       `${bundleFactor.toFixed(2)} (${coreCount} cores); mass = conductor ` +
@@ -369,7 +397,7 @@ function finishedBundle(
 function finishedAndComplianceFields(quirks: DerivationQuirks, groups: ConductorGroup[]): ResolvedField[] {
   const drumLength = quirks.drumLengthM ?? 1000;
   const drumTol = quirks.drumLengthTolerance ?? "±5%";
-  const bundle = finishedBundle(groups);
+  const bundle = deriveAbBundle(groups, quirks.messengerConstruction ?? "covered");
   return [
     { key: "cable.ratedVoltage", label: "Rated voltage", value: FIXED.ratedVoltage, tag: "FIXED", source: "profile", trace: "IS 14255:1995 scope (up to and including 1100 V)", editable: false },
     bundle
@@ -457,7 +485,7 @@ export function deriveFields(construction: CableConstruction, quirks: Derivation
 
   // FIXED org constants.
   fields.push({ key: "mfr.name", label: "Manufacturer", value: FIXED.manufacturer, tag: "FIXED", source: "profile", trace: "Org constant", editable: false });
-  fields.push({ key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant", editable: false, gap: true });
+  fields.push({ key: "mfr.isiLicence", label: "ISI licence no.", value: FIXED.isiLicence, tag: "FIXED", source: "profile", trace: "Org constant. Required on the supplied cable, not at offer stage — a quotation goes out before the licence is quoted against, so this does not block a GTP (client, 22 Sept 2026).", editable: true });
 
   // Appendix-I 3.i — buyers ask for the phase-conductor count explicitly.
   const powerGroup = construction.groups.find((g) => g.role === "power");

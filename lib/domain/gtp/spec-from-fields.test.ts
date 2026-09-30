@@ -33,8 +33,9 @@ test("no spec for 3.5C x 16 even if supplied fields claim to be clean", () => {
   const result = specFromFields({ ...fixture(), config: { ...config, csaSqMm: 16 } });
   assert.ok("gap" in result); assert.match(result.reason, /Table 2/);
 });
-test("any gap blocks the spec, including the placeholder manufacturer licence", () => {
-  assert.ok("gap" in specFromFields({ ...fixture(), fields: deriveLtFields(config) }));
+test("any gap blocks the spec", () => {
+  // The manufacturer licence was the example here and is no longer a gap — it is required on the
+  // supplied cable, not at offer stage (client, 22 Sept 2026). The rule itself is unchanged.
   const input = fixture(); input.fields[0].gap = true;
   assert.ok("gap" in specFromFields(input));
 });

@@ -167,7 +167,62 @@ function polymerFor(standard: LtCableConfig["standard"]): { insulation: number; 
  * they are computed from one source. Every diameter used here is read from the chain, never
  * recomputed, for the same reason.
  */
-export function deriveLtMass(config: LtCableConfig, walls: Record<string, number> = {}): MassResult {
+/**
+ * Reconcile a derived layer split to a mass the works actually publishes.
+ *
+ * The derived model runs consistently LIGHT against the Daksha catalogue — between 3.5% and 10%
+ * across the whole control range, never heavy. That direction is not noise: the build-up models
+ * conductor, insulation, inner sheath, armour and outer sheath, and a real cable also carries
+ * fillers, binder tape, a ripcord, and armour laid helically rather than straight. None of those
+ * are in any standard, so the chain cannot derive them.
+ *
+ * Where the catalogue publishes a mass, it is the truth and the split has to meet it. The
+ * conductor is the one layer that is NOT adjusted: its mass follows from the nominal area the
+ * standard specifies and the metal's density, and it is what the metal rate is charged against.
+ * The shortfall is distributed proportionally across the remaining layers, which is where the
+ * unmodelled material actually sits.
+ *
+ * Stated in the workings rather than applied silently, because a scaled figure and a derived one
+ * are not the same kind of number.
+ */
+function reconcileToWorksMass(
+  components: MassComponent[],
+  layUpFactor: number,
+  worksTotalKgPerKm: number,
+): { components: MassComponent[]; note: string } | null {
+  const conductorLayers = new Set(["Conductor", "Reduced neutral"]);
+  const conductor = components.filter((c) => conductorLayers.has(c.layer));
+  const rest = components.filter((c) => !conductorLayers.has(c.layer));
+
+  const conductorScaled = conductor.reduce((sum, c) => sum + c.massKgPerKm, 0) * layUpFactor;
+  const restScaled = rest.reduce((sum, c) => sum + c.massKgPerKm, 0) * layUpFactor;
+  const targetRest = worksTotalKgPerKm - conductorScaled;
+
+  // If the conductor alone already exceeds the published mass, something is wrong with one of
+  // the two figures. Refuse rather than produce a negative layer.
+  if (targetRest <= 0 || restScaled <= 0) return null;
+
+  const factor = targetRest / restScaled;
+  return {
+    components: [
+      ...conductor,
+      ...rest.map((c) => ({
+        ...c,
+        massKgPerKm: c.massKgPerKm * factor,
+        workings: `${c.workings}; scaled x${factor.toFixed(3)} to the works mass`,
+      })),
+    ],
+    note:
+      `non-conductor layers scaled x${factor.toFixed(3)} to meet the works mass of ` +
+      `${worksTotalKgPerKm} kg/km (fillers, binder and lay take-up are not in the build-up)`,
+  };
+}
+
+export function deriveLtMass(
+  config: LtCableConfig,
+  walls: Record<string, number> = {},
+  worksTotalKgPerKm?: number,
+): MassResult {
   const chain = deriveLtCable(config);
   const byId = new Map(chain.steps.map((s) => [s.id, s.value]));
   const polymer = polymerFor(config.standard);
@@ -278,15 +333,23 @@ export function deriveLtMass(config: LtCableConfig, walls: Record<string, number
     workings: `${chain.outerSheathThicknessMm} mm over ${diaUnderSheath.toFixed(2)} mm @ ${polymer.sheath} g/cm³`,
   });
 
-  const rawTotal = components.reduce((sum, c) => sum + c.massKgPerKm, 0);
+  // Reconcile to the works figure where one was supplied — see reconcileToWorksMass.
+  const reconciled =
+    worksTotalKgPerKm !== undefined
+      ? reconcileToWorksMass(components, LAY_UP_FACTOR, worksTotalKgPerKm)
+      : null;
+  const finalComponents = reconciled?.components ?? components;
+
+  const rawTotal = finalComponents.reduce((sum, c) => sum + c.massKgPerKm, 0);
   const totalKgPerKm = rawTotal * LAY_UP_FACTOR;
 
   return {
     totalKgPerKm,
-    components,
+    components: finalComponents,
     workings:
-      components.map((c) => `${c.layer} ${c.massKgPerKm.toFixed(0)}`).join(" + ") +
-      ` kg/km × lay-up ${LAY_UP_FACTOR} = ${totalKgPerKm.toFixed(0)} kg/km`,
+      finalComponents.map((c) => `${c.layer} ${c.massKgPerKm.toFixed(0)}`).join(" + ") +
+      ` kg/km × lay-up ${LAY_UP_FACTOR} = ${totalKgPerKm.toFixed(0)} kg/km` +
+      (reconciled ? ` — ${reconciled.note}` : ""),
   };
 }
 

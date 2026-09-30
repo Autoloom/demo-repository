@@ -2,12 +2,14 @@
 
 import {
   AlertTriangleIcon,
+  CalculatorIcon,
   CheckCircle2Icon,
   CopyIcon,
   FileCheckIcon,
   InboxIcon,
   ListIcon,
   LockKeyholeIcon,
+  PencilIcon,
   ReceiptIcon,
   RefreshCwIcon,
   SaveIcon,
@@ -16,6 +18,7 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -23,8 +26,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatDate } from "@/lib/domain/format";
 import { buildGtpTable } from "@/lib/domain/gtp-table";
-import { downloadPdf, type PdfDocument } from "@/lib/domain/pdf";
-import type { GtpSectionSource } from "@/lib/services/types";
+import type { PdfDocument } from "@/lib/domain/pdf";
+import { downloadOnLetterhead } from "@/lib/domain/offer/letterhead";
+import { CHAIN_INPUT_FIELD_KEYS, chainInputOverrideMessage } from "@/lib/domain/gtp/types";
+import type { GtpDerivedField, GtpSection, GtpSectionSource } from "@/lib/services/types";
 
 /**
  * How each provenance reads to a reviewer.
@@ -120,13 +125,39 @@ function gtpPdfDocument(gtp: Gtp, spec: CableSpec): PdfDocument {
   };
 }
 
+/**
+ * Wrapped because `useSearchParams` suspends during prerender; without the boundary the whole
+ * route opts out of static rendering and Next fails the build.
+ */
 export function GtpRecordsClient() {
+  return (
+    <React.Suspense fallback={<div className="h-72 animate-pulse rounded-md border bg-muted" />}>
+      <GtpRecordsInner />
+    </React.Suspense>
+  );
+}
+
+function GtpRecordsInner() {
+  const searchParams = useSearchParams();
   const role = useSessionStore((state) => state.role);
   const [data, setData] = React.useState<LoadState>({ store: null });
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [selectedId, setSelectedId] = React.useState(() => initialParam("gtpId"));
+  /**
+   * Which record is open: whatever was clicked in this session, else whatever the URL names.
+   *
+   * Both halves are load-bearing. The initial value comes from `window.location` so a pasted
+   * link works on first paint; the router's own value is consulted because on a CLIENT-SIDE
+   * navigation — which is how the builder lands here the moment you press Generate — the search
+   * string has not been written by the time this state initialiser runs, so the GTP you had just
+   * created opened on "Select a GTP" and the only way to reach it was to reload.
+   *
+   * Derived rather than synchronised in an effect: a setState in an effect body cascades renders,
+   * and there is nothing to synchronise here — a click simply outranks the URL.
+   */
+  const [chosenId, setChosenId] = React.useState(() => initialParam("gtpId"));
   const [pendingOrderId] = React.useState(() => initialParam("orderId"));
+  const selectedId = chosenId || (searchParams.get("gtpId") ?? "");
   const [draft, setDraft] = React.useState<Gtp | null>(null);
   const [stampName, setStampName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -165,7 +196,7 @@ export function GtpRecordsClient() {
       ? data.store.gtps.find((entry) => entry.id === order.gtpId || entry.orderId === order.id)
       : undefined;
     if (!gtp) return;
-    const handle = window.setTimeout(() => setSelectedId(gtp.id), 0);
+    const handle = window.setTimeout(() => setChosenId(gtp.id), 0);
     return () => window.clearTimeout(handle);
   }, [pendingOrderId, selectedId, data.store]);
 
@@ -174,6 +205,8 @@ export function GtpRecordsClient() {
     const handle = window.setTimeout(() => setFeedback(null), 5000);
     return () => window.clearTimeout(handle);
   }, [feedback]);
+
+
 
   const store = data.store;
   const gtps = React.useMemo(() => store?.gtps ?? [], [store]);
@@ -205,11 +238,54 @@ export function GtpRecordsClient() {
   // Client-mandated sections keep the board's exact wording — only Owner may touch them.
   // Owner-only for anything the buyer mandated. A hand-typed value carries no such weight — it
   // is the loosest provenance on the document — so it stays editable by whoever can edit at all.
-  const canEditSection = (source: GtpSectionSource) =>
+  const permittedByRole = (source: GtpSectionSource) =>
     canEdit && !selected?.isTemplate && (source !== "client-fixed" || role === "Owner");
 
+  /**
+   * Which rows a person may retype HERE, and which have to go back through the build-up.
+   *
+   * A row on a derived GTP is either an input to the dimensional chain, a result of it, or
+   * neither. Typing over a result is what the client reported on 23 Sept: changing a diameter
+   * from 300 to 260 moved that one printed row and left the insulation, the sheaths, the armour
+   * and the mass all describing the 300 — a document that contradicted itself and said nothing
+   * about it. Typing over an INPUT is worse, because the sheet then names a cable none of its own
+   * numbers describe; the builder already refuses that, and this screen was the way round it.
+   *
+   * So a chain row is read-only here and routes to "Edit & recalculate", which reopens the same
+   * record in the builder where changing it moves everything downstream. Rows with no build-up
+   * behind them — what a board mandated, what an operator typed, and every row on the older
+   * order-driven records that have no `builderInputs` at all — stay editable exactly as before.
+   * Nothing that was editable and safe has become read-only.
+   */
+  function derivedField(key: string): GtpDerivedField | undefined {
+    // Not memoised: `selected` is owned by the store and mutated in place on save, so a memo
+    // keyed on it is exactly the stale-dependency the compiler refuses to optimise. Thirty
+    // fields is a linear scan nobody will ever measure.
+    return selected?.derivedFields?.find((field) => field.key === key);
+  }
+
+  function chainLockFor(section: GtpSection): string | null {
+    // Only records that carry their inputs can be re-derived; without them the builder cannot
+    // reopen this cable, so free text is the only editing available and locking would just
+    // remove the ability to correct a typo.
+    if (!selected?.builderInputs) return null;
+    if (CHAIN_INPUT_FIELD_KEYS.includes(section.id)) return chainInputOverrideMessage(section.label);
+    // `editable` is the engine's own answer to this question — LOOKUP and CALC are locked
+    // because they are results of the build-up, and anything it marks editable (a choice, a
+    // customer quirk, the licence number) is not. Reading the flag rather than re-deciding from
+    // the tag keeps one definition: core identification is a LOOKUP the engine deliberately lets
+    // an operator set, and locking it here would contradict the builder two clicks away.
+    const field = derivedField(section.id);
+    if (!field || field.editable) return null;
+    return (
+      `"${section.label}" is calculated from the construction — ${field.trace}. Retyping it here ` +
+      "would change this one row and leave the rest of the sheet describing the previous cable. " +
+      "Use Edit & recalculate so the whole build-up follows."
+    );
+  }
+
   function choose(gtpId: string) {
-    setSelectedId(gtpId);
+    setChosenId(gtpId);
     setDraft(null);
     setStampName("");
     if (typeof window !== "undefined") {
@@ -291,7 +367,7 @@ export function GtpRecordsClient() {
       setFeedback({ tone: "danger", text: "Select a GTP with a linked cable spec before downloading the PDF." });
       return;
     }
-    downloadPdf(`${selected.id}.pdf`, gtpPdfDocument(selected, selectedSpec));
+    downloadOnLetterhead(`${selected.id}.pdf`, gtpPdfDocument(selected, selectedSpec));
   }
 
   if (!canView) {
@@ -518,6 +594,14 @@ export function GtpRecordsClient() {
                         )}
                       </Button>
                     ) : null}
+                    {canEdit && !selected.isTemplate && selected.builderInputs ? (
+                      <Button type="button" variant="outline" size="sm" asChild>
+                        <Link href={`/gtp/new?editGtpId=${selected.id}`}>
+                          <PencilIcon className="mr-2 size-4" />
+                          Edit &amp; recalculate
+                        </Link>
+                      </Button>
+                    ) : null}
                     {canEdit && !selected.isTemplate ? (
                       <Button
                         type="button"
@@ -634,7 +718,9 @@ export function GtpRecordsClient() {
                 <div className="flex items-center justify-between">
                   <h3 className="font-medium">Technical particulars</h3>
                   <span className="text-xs text-muted-foreground print:hidden">
-                    Client-mandated rows keep the board&apos;s wording (Owner-only edits)
+                    {selected.builderInputs
+                      ? "Calculated rows change through Edit & recalculate; the rest are editable here"
+                      : "Client-mandated rows keep the board\u2019s wording (Owner-only edits)"}
                   </span>
                 </div>
                 <div className="mt-3 space-y-2">
@@ -655,16 +741,29 @@ export function GtpRecordsClient() {
                           {SECTION_SOURCE_LABEL[section.source]}
                         </Badge>
                       </div>
-                      {canEditSection(section.source) ? (
-                        <textarea
-                          aria-label={section.label}
-                          className="min-h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          value={section.value}
-                          onChange={(event) => patchSection(index, event.target.value)}
-                        />
-                      ) : (
-                        <p className="text-sm">{section.value}</p>
-                      )}
+                      {(() => {
+                        const chainLock = chainLockFor(section);
+                        if (chainLock) {
+                          return (
+                            <div className="space-y-2">
+                              <p className="text-sm">{section.value}</p>
+                              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                                <CalculatorIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                                <span>{chainLock}</span>
+                              </p>
+                            </div>
+                          );
+                        }
+                        if (!permittedByRole(section.source)) return <p className="text-sm">{section.value}</p>;
+                        return (
+                          <textarea
+                            aria-label={section.label}
+                            className="min-h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            value={section.value}
+                            onChange={(event) => patchSection(index, event.target.value)}
+                          />
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>

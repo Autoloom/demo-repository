@@ -3,9 +3,13 @@
 import {
   DragOverlay,
   DndContext,
+  KeyboardSensor,
+  PointerSensor,
   rectIntersection,
   useDraggable,
   useDroppable,
+  useSensor,
+  useSensors,
 } from "@dnd-kit/core";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import {
@@ -31,6 +35,15 @@ const KanbanDragContext = createContext<KanbanDragState>({
 
 function useKanbanDragState() {
   return useContext(KanbanDragContext);
+}
+
+/**
+ * The id of the card currently being dragged, or null. For UI that only exists mid-drag — such as
+ * a bar of drop targets pinned to the screen so the destination is never off the edge of a board
+ * that scrolls sideways.
+ */
+export function useKanbanActiveId(): string | null {
+  return useKanbanDragState().activeId;
 }
 
 export type KanbanBoardProps = {
@@ -163,8 +176,18 @@ export function KanbanProvider({
     setActiveId(null);
   }
 
+  // A card must be CLICKABLE and hold buttons, as well as draggable. With no activation
+  // constraint dnd-kit treats the first pointer-down as a drag, so a plain click never reached
+  // the card's own handler and every button inside it had to fight the drag to be pressed.
+  // Requiring a few pixels of movement makes a click a click; a touch scroll stays a scroll.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor),
+  );
+
   return (
     <DndContext
+      sensors={sensors}
       collisionDetection={rectIntersection}
       onDragCancel={() => setActiveId(null)}
       onDragEnd={handleDragEnd}
@@ -185,5 +208,25 @@ export function KanbanProvider({
         {activeId && renderOverlay ? renderOverlay(activeId) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+/** An extra drop target, for use inside `KanbanProvider`. Its id must not collide with a column's. */
+export function KanbanDropZone({
+  id,
+  className,
+  activeClassName,
+  children,
+}: {
+  id: string;
+  className?: string;
+  activeClassName?: string;
+  children: ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id });
+  return (
+    <div ref={setNodeRef} className={cn(className, isOver && activeClassName)}>
+      {children}
+    </div>
   );
 }

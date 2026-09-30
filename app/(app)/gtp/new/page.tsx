@@ -45,6 +45,11 @@ import {
 } from "@/lib/domain/gtp/compose-size";
 import { deriveFields } from "@/lib/domain/gtp/derive";
 import { deriveLtFields } from "@/lib/domain/gtp/derive-lt-fields";
+import { CHAIN_INPUT_FIELD_KEYS, DEFAULT_HIDDEN_FIELD_KEYS, chainInputOverrideMessage } from "@/lib/domain/gtp/types";
+import { DAKSHA_CONTROL_2_5 } from "@/lib/domain/catalogue/daksha-2026";
+import { specFromAbConstruction, specFromSolarConstruction } from "@/lib/domain/gtp/spec-from-construction";
+import { deriveSolarMass, isMassGap } from "@/lib/domain/gtp/mass";
+import { conductorClassFor, solarDimensions } from "@/lib/domain/standards/is17293-2020";
 import { deriveSolarFields } from "@/lib/domain/gtp/derive-solar-fields";
 import { appendAuditEntry, reassignAuditEntries } from "@/lib/domain/gtp/audit-log";
 import { buildGtpPdfDocument, sectionSourceFor } from "@/lib/domain/gtp/pdf-document";
@@ -57,6 +62,7 @@ import {
   saveTemplate,
   templatesForProfile,
   type CustomParameter,
+  type GtpSheetInputs,
   type GtpTemplate,
 } from "@/lib/domain/gtp/templates";
 import type { ConductorMaterialCode } from "@/lib/domain/standards/is8130-2013";
@@ -69,7 +75,7 @@ import { manualTolerance } from "@/lib/domain/gtp/tolerance";
 import { TOLERANCE_NA } from "@/lib/domain/gtp/types";
 import type { ProductLine, ResolvedField } from "@/lib/domain/gtp/types";
 import { validateGtp } from "@/lib/domain/gtp/validate";
-import { downloadPdf } from "@/lib/domain/pdf";
+import { downloadOnLetterhead } from "@/lib/domain/offer/letterhead";
 import { gtpService, specsService, type Gtp } from "@/lib/services";
 import { actorFromSession } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
@@ -106,7 +112,22 @@ interface OrderDetails {
 }
 
 /** Core counts LT power and control are built in. 3.5 = three cores plus a reduced neutral. */
-const LT_CORE_OPTIONS = [1, 2, 3, 3.5, 4, 5] as const;
+/**
+ * Power cable tops out at 4 core (3½ counting the reduced neutral). Above that it is a CONTROL
+ * cable — a different type, a different standard and a copper conductor. Niraj, 13 Sept: "current
+ * system allows core count beyond 4 for power cables; needs a constraint".
+ */
+const LT_POWER_CORE_OPTIONS = [1, 2, 3, 3.5, 4] as const;
+
+/**
+ * Control cable cores, taken from the works catalogue rather than invented.
+ *
+ * The registry models control as a free number from 2, but this picker offered the POWER options
+ * (1, 2, 3, 3½, 4, 5) whatever the cable type — so "27 core × 2.5 sq mm", which the client asked
+ * for on 13 Sept and again on 22 Sept, could not actually be selected however willing the engine
+ * was. These are the core counts Daksha publishes, so every option leads to a catalogue row.
+ */
+const LT_CONTROL_CORE_OPTIONS = DAKSHA_CONTROL_2_5.rows.map((r) => r.coreCount);
 
 /** IS 17293 Table 8 ambients. Not a free number — the standard tabulates these eight. */
 const SOLAR_AMBIENT_OPTIONS = [0, 10, 20, 30, 40, 50, 60, 70] as const;
@@ -494,12 +515,28 @@ function GtpBuilderInner() {
   // AB cable is aluminium by standard (IS 14255); LT power and control offer both. Held here so
   // the choice survives template loading and flows into derivation as a quirk.
   const [conductorMaterial, setConductorMaterial] = useState<ConductorMaterialCode>("AL");
+  /** Set once the operator picks a material themselves, so the type default stops overriding. */
+  const [materialTouched, setMaterialTouched] = useState(false);
+  /**
+   * Messenger construction for AB cable. Both are IS 14255 constructions and they are materially
+   * different cables — bare drops an insulation wall, so the bundle gets lighter and thinner.
+   * Undefined means "take the customer profile's", which is how DHBVN (bare) and WBSEDCL
+   * (covered) have always differed; picking here overrides it for this GTP.
+   */
+  const [messengerConstruction, setMessengerConstruction] = useState<"bare" | "covered" | undefined>(undefined);
   /**
    * LT power / control configuration. Distinct from `selection` (the AB size pickers) because
    * these are different cables: an LT cable has no messenger and no street-light core, so the
    * two types genuinely need different inputs rather than a shared shape.
    */
-  const [ltConfig, setLtConfig] = useState<{ csaSqMm: number; coreCount: number; armoured: boolean }>({
+  const [ltConfig, setLtConfig] = useState<{
+    csaSqMm: number;
+    coreCount: number;
+    armoured: boolean;
+    /** Undefined means "whatever this cable type conventionally uses" — see effectiveArmourForm. */
+    armourForm?: "round-wire" | "formed-wire";
+    armourMethod?: "A" | "B";
+  }>({
     csaSqMm: 300,
     coreCount: 3.5,
     armoured: true,
@@ -539,6 +576,87 @@ function GtpBuilderInner() {
   // Only AB cable is derivable today; the other lines render as disabled placeholders.
   const [productLine, setProductLine] = useState<ProductLine>("AB_CABLE");
 
+  const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
+
+  /**
+   * Sizes the SELECTED line is built in, from the cable-type registry.
+   *
+   * Previously the whole IS 1554 size list, which is the standard's range for PVC cables of every
+   * kind — so control cable offered 300 sq mm, and switching from power left it there, producing
+   * a "27 core x 300 sq mm control cable" at 95,567 kg/km. Control is a 1.5/2.5 sq mm line
+   * (Niraj, 13 Sept; and the works catalogue publishes nothing else). The registry already says
+   * so; the picker just was not reading it.
+   */
+  const ltSizeOptions = useMemo(() => {
+    const field = CABLE_TYPES.find((t) => t.id === productLine)?.configSchema.find((f) => f.key === "csa");
+    if (field && "options" in field) {
+      return field.options.filter((o): o is number => typeof o === "number");
+    }
+    return productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES;
+  }, [productLine]);
+
+  const ltCoreOptions = useMemo(
+    () => (productLine === "PVC_CONTROL" ? LT_CONTROL_CORE_OPTIONS : [...LT_POWER_CORE_OPTIONS]),
+    [productLine],
+  );
+
+  /**
+   * The material actually in force, with the cable type's own default applied.
+   *
+   * The registry gives control cable `defaultValue: "Copper"` — it is a copper line, and the
+   * works catalogue only publishes copper control rows. The picker's state defaults to aluminium
+   * for AB and power, so selecting Control quietly produced an aluminium cable: 27C x 2.5 came
+   * out at 1474 kg/km against the works' 2015, and no catalogue row matched. Resolved here
+   * rather than by an effect, so switching type needs no state reset.
+   */
+  const effectiveMaterial: ConductorMaterialCode =
+    activeCableType?.fixedConductorMaterial?.material ??
+    (productLine === "PVC_CONTROL" && !materialTouched ? "CU" : conductorMaterial);
+
+  /**
+   * The LT config clamped to what the SELECTED cable type actually offers.
+   *
+   * `ltConfig` persists across a change of cable type, and the option lists do not — so choosing
+   * Control after Power left the size on 300 sq mm and the cores on 27, producing a "27 core x
+   * 300 sq mm control cable" at 95,567 kg/km. That is not a cable; control is a 1.5/2.5 sq mm
+   * line. Clamped at render rather than reset in an effect, for the same reason as
+   * `effectiveMaterial`: setState inside an effect cascades renders.
+   *
+   * Falls back to the registry's own defaultValue, so the type definition stays the one source
+   * for what each line is built in.
+   */
+  const effectiveLtConfig = useMemo(() => {
+    const fallback = (key: string, current: number, options: readonly number[]) => {
+      if (options.includes(current)) return current;
+      const field = activeCableType?.configSchema.find((f) => f.key === key);
+      const registryDefault =
+        field && "defaultValue" in field && typeof field.defaultValue === "number"
+          ? field.defaultValue
+          : undefined;
+      return registryDefault !== undefined && options.includes(registryDefault)
+        ? registryDefault
+        : options[0];
+    };
+    return {
+      ...ltConfig,
+      coreCount: fallback("coreCount", ltConfig.coreCount, ltCoreOptions),
+      csaSqMm: fallback("csa", ltConfig.csaSqMm, ltSizeOptions),
+    };
+  }, [ltConfig, ltCoreOptions, ltSizeOptions, activeCableType]);
+
+  /**
+   * Armour form, with the per-type convention applied until an operator says otherwise.
+   *
+   * XLPE power defaults to strip — the manufacturer's Sept 2026 correction, "Instead of Wire
+   * Armour used for 3.5 Core Cables the Galvanised Steel Strip Armour size 4 × 0.8 mm shall be
+   * placed". Control cable stays round wire, which is its convention and what the standard
+   * forces anyway at the diameters control cables reach. Resolved here rather than in an effect
+   * so switching cable type needs no state reset.
+   */
+  const effectiveArmourForm: "round-wire" | "formed-wire" =
+    ltConfig.armourForm ?? (productLine === "XLPE_POWER" ? "formed-wire" : "round-wire");
+  const effectiveArmourMethod: "A" | "B" = ltConfig.armourMethod ?? "A";
+
 
   /**
    * The designation for the cable ACTUALLY selected.
@@ -553,11 +671,11 @@ function GtpBuilderInner() {
       return `1Cx${solarConfig.csaSqMm} (${solarConfig.directlyConnectedToModules ? "Class 5" : "Class 2"})`;
     }
     if (productLine === "XLPE_POWER" || productLine === "PVC_CONTROL") {
-      const cores = ltConfig.coreCount === 3.5 ? "3.5" : String(ltConfig.coreCount);
-      return `${cores}Cx${ltConfig.csaSqMm}`;
+      const cores = effectiveLtConfig.coreCount === 3.5 ? "3.5" : String(effectiveLtConfig.coreCount);
+      return `${cores}Cx${effectiveLtConfig.csaSqMm}`;
     }
     return sizeInput;
-  }, [productLine, sizeInput, ltConfig, solarConfig]);
+  }, [productLine, sizeInput, effectiveLtConfig, solarConfig]);
 
   /** Full cable description for the stored record — type AND size, both following the selection. */
   const cableTypeLabel = useMemo(() => {
@@ -569,6 +687,27 @@ function GtpBuilderInner() {
   // production gate can see it.
   const searchParams = useSearchParams();
   const orderId = searchParams.get("orderId") ?? "";
+  /**
+   * Reopening a saved GTP: `?editGtpId=GTP-…` loads that record's inputs into these pickers, so
+   * every value re-derives as it is changed and Generate writes back to the same document.
+   *
+   * This is the answer to the review screen's free-text editing. A stored GTP used to be editable
+   * only as text over its own printed rows, which moved one row and left the rest describing the
+   * previous cable. There is no second recalculating engine here — it is this builder, which is
+   * the only place the build-up runs.
+   */
+  const editGtpId = searchParams.get("editGtpId") ?? "";
+  const [editing, setEditing] = useState<{
+    id: string;
+    version: number;
+    status: Gtp["status"];
+    createdAt: string;
+    orderId?: string;
+    corrections?: Gtp["corrections"];
+  } | null>(null);
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
+  /** One load per arrival — the restore writes the very state this would re-read. */
+  const editLoadStarted = useRef(false);
   const [cableSpecId] = useState(() => `SPEC-GTP-${crypto.randomUUID()}`);
   const [persistedCable, setPersistedCable] = useState<{ signature: string; id: string } | null>(null);
   const [cableSaveError, setCableSaveError] = useState<string | null>(null);
@@ -594,7 +733,7 @@ function GtpBuilderInner() {
    * only the PDF omits it. A field carrying an unresolved gap can never be hidden, because
    * hiding a known-missing value would turn a visible problem into an invisible one.
    */
-  const [hiddenFields, setHiddenFields] = useState<string[]>([]);
+  const [hiddenFields, setHiddenFields] = useState<string[]>([...DEFAULT_HIDDEN_FIELD_KEYS]);
   /**
    * Parameters the operator added by hand. Buyers ask for tender clauses and project codes that
    * no cable standard covers; the alternative to supporting them is someone editing the PDF
@@ -616,7 +755,6 @@ function GtpBuilderInner() {
   /** Locked fields the user has deliberately unlocked (two actions before editing). */
   const [unlockedFields, setUnlockedFields] = useState<string[]>([]);
 
-  const activeCableType = useMemo(() => CABLE_TYPES.find((t) => t.id === productLine), [productLine]);
   const isLtType = productLine === "XLPE_POWER" || productLine === "PVC_CONTROL";
   const isSolarType = productLine === "SOLAR_DC";
   /** IS 17293 Table 1 (class 5) runs from 1.5; Table 2 (class 2) starts at 16. */
@@ -625,10 +763,8 @@ function GtpBuilderInner() {
     [solarConfig.directlyConnectedToModules],
   );
   /** Sizes this standard actually has an insulation row for. */
-  const ltSizeOptions = useMemo(
-    () => (productLine === "PVC_CONTROL" ? IS1554_1_SIZES : IS7098_1_SIZES),
-    [productLine],
-  );
+
+
   /** Plain-language playback, per cable type — the operator confirms what they meant. */
   const cableDescription = useMemo(() => {
     if (isSolarType) {
@@ -636,11 +772,11 @@ function GtpBuilderInner() {
       return `**1 core** × **${solarConfig.csaSqMm} sq mm** tinned copper, **${klass}**, 1.5 kV DC solar.`;
     }
     if (!isLtType) return describeSelection(selection);
-    const cores = ltConfig.coreCount === 3.5 ? "3½" : String(ltConfig.coreCount);
-    const material = (activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial) === "AL" ? "aluminium" : "copper";
+    const cores = effectiveLtConfig.coreCount === 3.5 ? "3½" : String(effectiveLtConfig.coreCount);
+    const material = effectiveMaterial === "AL" ? "aluminium" : "copper";
     const kind = productLine === "XLPE_POWER" ? "XLPE insulated" : "PVC insulated";
-    return `**${cores} core** × **${ltConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
-  }, [isLtType, isSolarType, selection, ltConfig, solarConfig, productLine, conductorMaterial, activeCableType]);
+    return `**${cores} core** × **${effectiveLtConfig.csaSqMm} sq mm** ${material}, ${kind}, ${ltConfig.armoured ? "**armoured**" : "**unarmoured**"}.`;
+  }, [isLtType, isSolarType, selection, ltConfig, solarConfig, productLine, effectiveMaterial, activeCableType, effectiveLtConfig]);
 
   // Moment 2 — built directly from the pickers — no string parsing, so no role guessing (see compose-size).
   const construction = useMemo(() => constructionFromSelection(selection), [selection]);
@@ -663,10 +799,12 @@ function GtpBuilderInner() {
               ? deriveLtFields(
                   {
                     standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-                    csaSqMm: ltConfig.csaSqMm,
-                    coreCount: ltConfig.coreCount,
-                    material: conductorMaterial,
+                    csaSqMm: effectiveLtConfig.csaSqMm,
+                    coreCount: effectiveLtConfig.coreCount,
+                    material: effectiveMaterial,
                     armoured: ltConfig.armoured,
+                    armourForm: effectiveArmourForm,
+                    armourMethod: effectiveArmourMethod,
                   },
                   { quirks: p.quirks },
                 )
@@ -678,7 +816,7 @@ function GtpBuilderInner() {
       }
     }
     return counts;
-  }, [productLine, construction, ltConfig, solarConfig, conductorMaterial]);
+  }, [productLine, construction, ltConfig, effectiveLtConfig, solarConfig, effectiveMaterial, effectiveArmourForm, effectiveArmourMethod]);
 
 
   // Moment 4 — derive the full field map as soon as a customer is chosen, then lay any manual
@@ -694,7 +832,7 @@ function GtpBuilderInner() {
     // The order's drum length overrides the customer's default — it's the more specific layer.
     // A standard-pinned material always wins over the picker state — the operator cannot
     // choose copper for an AB cable, so the engine must never be told they did.
-    const material = activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial;
+    const material = effectiveMaterial;
 
     // Route by cable type. These are DIFFERENT SCHEDULES, not the same fields with different
     // numbers: an LT GTP has an armour and an inner sheath where an AB GTP has a messenger and
@@ -722,10 +860,12 @@ function GtpBuilderInner() {
         derived = deriveLtFields(
           {
             standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-            csaSqMm: ltConfig.csaSqMm,
-            coreCount: ltConfig.coreCount,
+            csaSqMm: effectiveLtConfig.csaSqMm,
+            coreCount: effectiveLtConfig.coreCount,
             material,
             armoured: ltConfig.armoured,
+            armourForm: effectiveArmourForm,
+            armourMethod: effectiveArmourMethod,
           },
           { customerName: profile.name, quirks: profile.quirks },
         );
@@ -749,6 +889,7 @@ function GtpBuilderInner() {
         ...profile.quirks,
         drumLengthM: orderDetails.drumLengthM || profile.quirks.drumLengthM,
         conductorMaterial: material,
+        messengerConstruction: messengerConstruction ?? profile.quirks.messengerConstruction,
       });
     }
     // Hand-added parameters join the derived list rather than living beside it, so hide/show,
@@ -815,13 +956,54 @@ function GtpBuilderInner() {
         },
       };
     });
-  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, conductorMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters]);
+  }, [profile, construction, overrides, overrideReasons, toleranceOverrides, toleranceReasons, orderDetails.drumLengthM, effectiveMaterial, activeCableType, productLine, ltConfig, solarConfig, customParameters, messengerConstruction, effectiveArmourForm, effectiveArmourMethod, effectiveLtConfig]);
 
   const cableCandidate = useMemo(() => {
+    // AB and solar build their spec from their own construction — see spec-from-construction.ts.
+    // Until this existed, both derived a perfect GTP and then could not be quoted at all.
+    if (productLine === "AB_CABLE") {
+      if (!construction) return null;
+      try {
+        return specFromAbConstruction({
+          specId: cableSpecId, designation, construction, fields,
+          messengerConstruction: messengerConstruction ?? profile?.quirks.messengerConstruction ?? "covered",
+        });
+      } catch (error) {
+        return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (productLine === "SOLAR_DC") {
+      try {
+        const { klass } = conductorClassFor(solarConfig.directlyConnectedToModules);
+        const dims = solarDimensions(solarConfig.csaSqMm, klass);
+        const conductorDiaMm =
+          dims.values.meanOverallDiaMm - 2 * (dims.values.insulationThicknessMm + dims.values.sheathThicknessMm);
+        const mass = deriveSolarMass({
+          csaSqMm: solarConfig.csaSqMm,
+          insulationThicknessMm: dims.values.insulationThicknessMm,
+          sheathThicknessMm: dims.values.sheathThicknessMm,
+          conductorDiaMm,
+        });
+        if (isMassGap(mass)) return { gap: true as const, reason: mass.missing };
+        return specFromSolarConstruction({
+          specId: cableSpecId, designation, fields,
+          csaSqMm: solarConfig.csaSqMm,
+          directlyConnectedToModules: solarConfig.directlyConnectedToModules,
+          insulationThicknessMm: dims.values.insulationThicknessMm,
+          sheathThicknessMm: dims.values.sheathThicknessMm,
+          conductorDiaMm,
+          overallDiaMm: dims.values.meanOverallDiaMm,
+          massKgPerKm: mass.totalKgPerKm,
+        });
+      } catch (error) {
+        return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (productLine !== "XLPE_POWER" && productLine !== "PVC_CONTROL") return null;
     const config: LtCableConfig = {
-      ...ltConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
-      material: conductorMaterial, conductorClass: "Class 2",
+      ...effectiveLtConfig, standard: productLine === "XLPE_POWER" ? "IS7098-1" : "IS1554-1",
+      material: effectiveMaterial, conductorClass: "Class 2",
+      armourForm: effectiveArmourForm, armourMethod: effectiveArmourMethod,
     };
     try {
       return specFromFields({ specId: cableSpecId, productLine, config,
@@ -829,7 +1011,7 @@ function GtpBuilderInner() {
     } catch (error) {
       return { gap: true as const, reason: error instanceof Error ? error.message : String(error) };
     }
-  }, [productLine, ltConfig, conductorMaterial, cableSpecId, fields, designation]);
+  }, [productLine, ltConfig, effectiveLtConfig, effectiveMaterial, cableSpecId, fields, designation, effectiveArmourForm, effectiveArmourMethod, construction, messengerConstruction, profile, solarConfig]);
 
   /**
    * Identity of the cable by VALUE, not by object reference.
@@ -857,6 +1039,80 @@ function GtpBuilderInner() {
     return () => { cancelled = true; };
   }, [cableCandidate, cableSignature]);
   const readySpecId = cableSignature && persistedCable?.signature === cableSignature ? persistedCable.id : null;
+
+  /**
+   * Load a saved GTP's inputs when arriving at `?editGtpId=…`.
+   *
+   * Restores the pickers only — nothing derived. Everything on the sheet below is then computed
+   * afresh from the live IS tables, which is exactly what happens for a new GTP, so an edit to
+   * the conductor area moves the insulation, the sheaths, the armour, the diameters and the mass
+   * with it. That is the behaviour the review screen's free-text fields could not have.
+   *
+   * A record with no stored inputs cannot be reopened this way and says so rather than opening a
+   * blank builder that looks like the GTP but is a different cable.
+   */
+  useEffect(() => {
+    if (!editGtpId || editLoadStarted.current) return;
+    editLoadStarted.current = true;
+    void gtpService
+      .get(editGtpId)
+      .then((record) => {
+        if (!record) {
+          setEditLoadError(`${editGtpId} could not be found.`);
+          return;
+        }
+        if (!record.builderInputs) {
+          setEditLoadError(
+            `${editGtpId} was not built here, so its build-up cannot be re-run. ` +
+              "Edit its rows on the review screen, or start a new GTP for this cable.",
+          );
+          return;
+        }
+        const p = record.customerId ? findProfile(record.customerId) : undefined;
+        if (!p) {
+          setEditLoadError(
+            `${editGtpId} names a customer this build no longer has a profile for, so its ` +
+              "customer-specific rows cannot be re-derived.",
+          );
+          return;
+        }
+        applySheetInputs(record.builderInputs, p);
+        if (record.orderQuantities) {
+          setOrderDetails({
+            totalLengthM: record.orderQuantities.totalLengthM,
+            drumLengthM: record.orderQuantities.drumLengthM,
+            poReference: record.tenderNo ?? "",
+          });
+        } else if (record.tenderNo) {
+          setOrderDetails((current) => ({ ...current, poReference: record.tenderNo ?? "" }));
+        }
+        setEditing({
+          id: record.id,
+          version: record.version,
+          status: record.status,
+          createdAt: record.createdAt,
+          orderId: record.orderId,
+          corrections: record.corrections,
+        });
+        setFieldsOpen(true);
+        setSavedNotice(
+          `Editing ${record.id} (v${record.version}). Every value below has been re-derived from ` +
+            "the current IS tables — change the construction and the whole build-up follows.",
+        );
+      })
+      .catch((error: unknown) => {
+        setEditLoadError(error instanceof Error ? error.message : "Could not open that GTP.");
+      });
+    // No cancellation flag, deliberately. Pairing one with the one-shot ref guard is a trap in
+    // development: StrictMode mounts, runs this, unmounts — cancelling the in-flight load — then
+    // remounts and finds the ref already set, so the record silently never arrived and the
+    // builder sat there looking like a new GTP. The ref alone gives the same "load once" and a
+    // late setState on an unmounted component is a no-op.
+    //
+    // The guard also makes this a one-shot load, so re-running on any other dependency would be
+    // wrong rather than merely wasteful — it would discard whatever the operator has since
+    // changed.
+  }, [editGtpId]);
 
   /**
    * What actually prints. A hidden field is dropped from the PDF but never from `fields`, so
@@ -1062,41 +1318,89 @@ function GtpBuilderInner() {
     setSelection((current) => ({ ...current, ...patch }));
   }
 
+  /**
+   * Restore the INPUTS of a sheet, so everything below re-derives from the live IS tables.
+   *
+   * One function for the two things that need it — starting from a saved template, and reopening
+   * a saved GTP to edit it. They restore identically on purpose: a stored GTP is the same kind of
+   * object as a template (`GtpSheetInputs`), and an edit that restored a different subset would
+   * silently drop whichever inputs it forgot. Armour method is the standing example: it was
+   * missing from the template type while the builder wrote it anyway.
+   *
+   * Nothing derived is restored. That is the whole mechanism behind "editing recalculates".
+   */
+  function applySheetInputs(inputs: GtpSheetInputs, p: CustomerProfile) {
+    setProfile(p);
+    // Restore the cable type FIRST — it decides which engine runs and which inputs are shown.
+    // Records saved before cable types existed have none, and were AB.
+    const line = inputs.productLine ?? "AB_CABLE";
+    setProductLine(line);
+    // Recover the picker state. Only AB round-trips through a designation string; LT and solar
+    // keep their own config, so a sheet for those restores the type and the customer and
+    // leaves the current construction rather than forcing a wrong one.
+    if (line === "AB_CABLE") {
+      setSelection(selectionFromSizeString(inputs.sizeInput) ?? defaultSelection());
+    }
+    // LT and solar keep their own config — a designation string cannot express armour, ambient
+    // or conductor class, so those round-trip as objects.
+    if (inputs.ltConfig) setLtConfig(inputs.ltConfig);
+    if (inputs.solarConfig) setSolarConfig(inputs.solarConfig);
+    // Material and messenger construction are choices in their own right, not implied by the
+    // size. Restoring the size without them reopened a copper control cable as aluminium.
+    if (inputs.conductorMaterial) {
+      setConductorMaterial(inputs.conductorMaterial);
+      setMaterialTouched(true);
+    }
+    setMessengerConstruction(inputs.messengerConstruction);
+
+    // Restore the SHAPE of the sheet, which is the point of saving one.
+    setHiddenFields(inputs.hiddenFields ?? []);
+    setCustomParameters(inputs.customParameters ?? []);
+    const savedOverrides = inputs.overrides ?? {};
+    setOverrides(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.value])));
+    setOverrideReasons(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.reason])));
+    // Overrides restored here are already justified; unlock them so they are visible as edits
+    // rather than appearing to be derived values.
+    setUnlockedFields(Object.keys(savedOverrides));
+    const savedTolerances = inputs.toleranceOverrides ?? {};
+    setToleranceOverrides(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.value])));
+    setToleranceReasons(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.reason])));
+    setUnlockedTolerances(Object.keys(savedTolerances));
+    setAckWarnings(false);
+  }
+
+  /** The inputs currently in the pickers, in the shape a template or a GTP record stores. */
+  function currentSheetInputs(): GtpSheetInputs {
+    return {
+      productLine,
+      sizeInput: designation,
+      // The armour form and method as they were RESOLVED, not as they were left unset. Both are
+      // conventions applied at render when nobody chooses (strip/method A for XLPE power, round
+      // wire for control), so storing the blanks would make a reopened record depend on what the
+      // convention happens to be that day rather than on what this cable actually was.
+      ltConfig: { ...ltConfig, armourForm: effectiveArmourForm, armourMethod: effectiveArmourMethod },
+      solarConfig,
+      conductorMaterial: effectiveMaterial,
+      messengerConstruction,
+      hiddenFields: [...hiddenFields],
+      customParameters,
+      overrides: Object.fromEntries(
+        Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
+      ),
+      // A tolerance a customer demands is a decision about this buyer, so it travels with the
+      // sheet exactly as a value override does — otherwise it has to be retyped every order.
+      toleranceOverrides: Object.fromEntries(
+        Object.entries(toleranceOverrides).map(([k, v]) => [k, { value: v, reason: toleranceReasons[k] ?? "" }]),
+      ),
+    };
+  }
+
   /** Start from a saved template: restore its inputs, then re-derive from live IS tables. */
   function startFromTemplate(template: GtpTemplate) {
     const p = findProfile(template.profileId);
     if (!p) return;
-    setProfile(p);
-    // Restore the cable type FIRST — it decides which engine runs and which inputs are shown.
-    // Templates saved before cable types existed have none, and were AB.
-    const line = template.productLine ?? "AB_CABLE";
-    setProductLine(line);
-    // Recover the picker state. Only AB round-trips through a designation string; LT and solar
-    // keep their own config, so a template for those restores the type and the customer and
-    // leaves the current construction rather than forcing a wrong one.
-    if (line === "AB_CABLE") {
-      setSelection(selectionFromSizeString(template.sizeInput) ?? defaultSelection());
-    }
-    // LT and solar keep their own config — a designation string cannot express armour, ambient
-    // or conductor class, so those round-trip as objects.
-    if (template.ltConfig) setLtConfig(template.ltConfig);
-    if (template.solarConfig) setSolarConfig(template.solarConfig);
-
-    // Restore the SHAPE of the sheet, which is the point of a template.
-    setHiddenFields(template.hiddenFields ?? []);
-    setCustomParameters(template.customParameters ?? []);
-    const savedOverrides = template.overrides ?? {};
-    setOverrides(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.value])));
-    setOverrideReasons(Object.fromEntries(Object.entries(savedOverrides).map(([k, v]) => [k, v.reason])));
-    // Overrides restored from a template are already justified; unlock them so they are visible
-    // as edits rather than appearing to be derived values.
-    setUnlockedFields(Object.keys(savedOverrides));
-    const savedTolerances = template.toleranceOverrides ?? {};
-    setToleranceOverrides(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.value])));
-    setToleranceReasons(Object.fromEntries(Object.entries(savedTolerances).map(([k, v]) => [k, v.reason])));
-    setUnlockedTolerances(Object.keys(savedTolerances));
+    applySheetInputs(template, p);
     setChoices(template.choices ?? null);
-    setAckWarnings(false);
     recordTemplateUse(template.id);
     setVersion((v) => v + 1);
     setSavedNotice(`Started from "${template.name}". Every value below was re-derived from the current IS tables.`);
@@ -1166,19 +1470,37 @@ function GtpBuilderInner() {
         // What actually printed, so the stored record knows its own shape without recomputing
         // it from a template that may since have changed.
         hiddenFields: [...hiddenFields],
+        // The inputs, so this record can be reopened here and re-derived rather than edited as
+        // free text over its own results. This is what makes "change the size and everything
+        // recalculates" true of a SAVED GTP and not only of an unsaved one.
+        builderInputs: currentSheetInputs(),
         status: "Draft",
         signOffs: [],
         version: 1,
         createdAt: now,
         updatedAt: now,
       };
+      // Reopened for editing: this is the SAME document, so it keeps its id, its order link and
+      // its creation date — and it becomes a NEW VERSION, every time, drafts included. The
+      // version is what a quote records when it is priced (`gtpVersionAtQuote`), and the quote
+      // builder warns when the two disagree. Keeping a draft at v1 through an edit meant a quote
+      // priced from the 300 sq mm draft stayed silent after the draft became 240: the one warning
+      // built for exactly this case never fired. Any stamps are cleared by status "Draft" above,
+      // because they applied to content that has just changed.
+      if (editing) {
+        gtp.id = editing.id;
+        gtp.createdAt = editing.createdAt;
+        gtp.orderId = editing.orderId ?? gtp.orderId;
+        gtp.version = editing.version + 1;
+        gtp.corrections = editing.corrections;
+      }
       await gtpService.save(gtp, actorFromSession());
       // The trail was recorded against the draft id because the GTP did not exist yet. Point it
       // at the real one, or the history detaches from the document it describes.
       reassignAuditEntries(draftId, gtp.id);
       // The document is the deliverable — hand it over as part of generating, not as a
       // separate step the user has to discover.
-      downloadPdf(
+      downloadOnLetterhead(
         `${gtp.id}-${profile.name.replace(/\s+/g, "-")}`,
         buildGtpPdfDocument(printedFields, {
           gtpId: gtp.id,
@@ -1212,24 +1534,7 @@ function GtpBuilderInner() {
     // A template is the SHEET, not just the size: which fields print, what was added by hand,
     // and what was overridden and why. Saving only the designation gave you a differently-shaped
     // document when you reloaded it.
-    saveTemplate({
-      name,
-      profileId: profile.id,
-      productLine,
-      sizeInput: designation,
-      ltConfig,
-      solarConfig,
-      hiddenFields,
-      customParameters,
-      overrides: Object.fromEntries(
-        Object.entries(overrides).map(([k, v]) => [k, { value: v, reason: overrideReasons[k] ?? "" }]),
-      ),
-      // A tolerance a customer demands is a decision about this buyer, so it belongs in their
-      // template exactly as a value override does — otherwise it has to be retyped every order.
-      toleranceOverrides: Object.fromEntries(
-        Object.entries(toleranceOverrides).map(([k, v]) => [k, { value: v, reason: toleranceReasons[k] ?? "" }]),
-      ),
-    });
+    saveTemplate({ ...currentSheetInputs(), name, profileId: profile.id });
     setVersion((v) => v + 1);
     setTemplateName("");
     setSavedNotice(`Saved "${name}" as a template. It'll appear next time you start a GTP.`);
@@ -1252,6 +1557,15 @@ function GtpBuilderInner() {
       row.focus({ preventScroll: true });
     });
   }
+
+  // An override on a CHAIN INPUT blocks generation. The override mechanism replaces a printed
+  // value without re-running the build-up, so overriding "Nominal conductor area" left every
+  // dimension and the mass describing the previous cable on a sheet that named a new one. The
+  // chain cannot be re-run from the overridden value either — a size the picker does not offer
+  // has no row in IS 10462 Table 1 — so the honest answer is to send the operator to the picker.
+  const overriddenInputs = fields.filter(
+    (f) => overrides[f.key] !== undefined && CHAIN_INPUT_FIELD_KEYS.includes(f.key),
+  );
 
   // An override of a locked (LOOKUP/CALC) value without a written reason blocks generation —
   // otherwise the "reason required" rule would be decorative.
@@ -1277,6 +1591,7 @@ function GtpBuilderInner() {
     validation?.passesHardGate &&
     (validation.warningCount === 0 || ackWarnings) &&
     missingReasons.length === 0 &&
+    overriddenInputs.length === 0 &&
     emptyTolerances.length === 0;
   const canSaveTemplate = Boolean(profile && choices && templateName.trim());
 
@@ -1284,15 +1599,34 @@ function GtpBuilderInner() {
     <main className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6">
       <header className="space-y-1">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">New GTP</h1>
-          <Link href="/gtp" className="text-sm text-muted-foreground underline-offset-4 hover:underline">
-            All GTPs
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            {editing ? `Edit ${editing.id}` : "New GTP"}
+          </h1>
+          <Link
+            href={editing ? `/gtp/review?gtpId=${editing.id}` : "/gtp"}
+            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            {editing ? "Back to the record" : "All GTPs"}
           </Link>
         </div>
         <p className="text-sm text-muted-foreground">
-          Answer a few questions — the rest fills itself in from the IS standards and this
-          customer&rsquo;s profile, and shows its working.
+          {editing
+            ? "Change anything here and the whole build-up recalculates — insulation, sheaths, armour, diameters and mass follow the construction, from the current IS tables."
+            : "Answer a few questions — the rest fills itself in from the IS standards and this customer\u2019s profile, and shows its working."}
         </p>
+        {editing ? (
+          <p className="flex items-center gap-1.5 text-sm text-primary">
+            <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+            {editing.status === "Draft"
+              ? `Saving makes this v${editing.version + 1}. Any quote priced from v${editing.version} will say it needs repricing.`
+              : `This GTP is ${editing.status.toLowerCase()} — saving reopens it as v${editing.version + 1} draft and clears the stamps.`}
+          </p>
+        ) : null}
+        {editLoadError ? (
+          <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 p-3 text-sm text-danger">
+            {editLoadError}
+          </p>
+        ) : null}
         {orderId ? (
           <p className="flex items-center gap-1.5 text-sm text-primary">
             <LinkIcon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1561,9 +1895,9 @@ function GtpBuilderInner() {
 
                 <div className="ml-auto border-l border-border pl-4">
                   <MaterialControl
-                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    value={effectiveMaterial}
                     fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                    onChange={setConductorMaterial}
+                    onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                   />
                 </div>
               </div>
@@ -1589,8 +1923,8 @@ function GtpBuilderInner() {
                 <SizePicker
                   id="lt-cores"
                   label="Cores"
-                  value={ltConfig.coreCount}
-                  options={LT_CORE_OPTIONS}
+                  value={effectiveLtConfig.coreCount}
+                  options={ltCoreOptions}
                   format={(v) => (v === 3.5 ? "3½" : String(v))}
                   onChange={(v) => setLtConfig((c) => ({ ...c, coreCount: v }))}
                 />
@@ -1598,7 +1932,7 @@ function GtpBuilderInner() {
                 <SizePicker
                   id="lt-size"
                   label="Conductor size"
-                  value={ltConfig.csaSqMm}
+                  value={effectiveLtConfig.csaSqMm}
                   options={ltSizeOptions}
                   onChange={(v) => setLtConfig((c) => ({ ...c, csaSqMm: v }))}
                 />
@@ -1619,11 +1953,52 @@ function GtpBuilderInner() {
                   </select>
                 </div>
 
+                {/* Armour form and practice. Only meaningful on an armoured cable, and the
+                    standard overrides the choice below 13 mm calculated diameter — the derived
+                    schedule shows which it actually used. */}
+                {ltConfig.armoured ? (
+                  <>
+                    <div className="flex flex-col gap-1 pl-2">
+                      <Label htmlFor="lt-armour-form" className="text-xs text-muted-foreground">
+                        Armour form
+                      </Label>
+                      <select
+                        id="lt-armour-form"
+                        value={effectiveArmourForm}
+                        onChange={(e) =>
+                          setLtConfig((c) => ({ ...c, armourForm: e.target.value as "round-wire" | "formed-wire" }))
+                        }
+                        className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="formed-wire">GI strip (formed wire)</option>
+                        <option value="round-wire">GI round wire</option>
+                      </select>
+                    </div>
+
+                    {effectiveArmourForm === "formed-wire" ? (
+                      <div className="flex flex-col gap-1 pl-2">
+                        <Label htmlFor="lt-armour-method" className="text-xs text-muted-foreground">
+                          Strip size
+                        </Label>
+                        <select
+                          id="lt-armour-method"
+                          value={effectiveArmourMethod}
+                          onChange={(e) => setLtConfig((c) => ({ ...c, armourMethod: e.target.value as "A" | "B" }))}
+                          className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="A">4.0 × 0.8 mm (Table 6, method A)</option>
+                          <option value="B">Banded (Table 6, method B)</option>
+                        </select>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
                 <div className="ml-auto border-l border-border pl-4">
                   <MaterialControl
-                    value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                    value={effectiveMaterial}
                     fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                    onChange={setConductorMaterial}
+                    onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                   />
                 </div>
               </div>
@@ -1688,14 +2063,35 @@ function GtpBuilderInner() {
               />
               <span className="pb-2 text-sm text-muted-foreground">sq mm</span>
 
+              {/* Bare or covered messenger — IS 14255 covers both, and they weigh differently. */}
+              <div className="flex flex-col gap-1 pl-2">
+                <Label htmlFor="messenger-construction" className="text-xs text-muted-foreground">
+                  Messenger
+                </Label>
+                <select
+                  id="messenger-construction"
+                  value={messengerConstruction ?? "profile"}
+                  onChange={(e) =>
+                    setMessengerConstruction(
+                      e.target.value === "profile" ? undefined : (e.target.value as "bare" | "covered"),
+                    )
+                  }
+                  className="h-11 rounded-md border border-input bg-background px-3 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="profile">As per customer</option>
+                  <option value="covered">Covered / insulated</option>
+                  <option value="bare">Bare Al-Mg-Si</option>
+                </select>
+              </div>
+
               {/* Conductor material. Driven by the registry, not hardcoded: AB pins aluminium
                   (IS 14255), so this shows as a read-only fact; LT power and control leave it
                   open and this becomes a live picker the moment those types ship. */}
               <div className="ml-auto border-l border-border pl-4">
                 <MaterialControl
-                  value={activeCableType?.fixedConductorMaterial?.material ?? conductorMaterial}
+                  value={effectiveMaterial}
                   fixedBy={activeCableType?.fixedConductorMaterial?.ref}
-                  onChange={setConductorMaterial}
+                  onChange={(m) => { setMaterialTouched(true); setConductorMaterial(m); }}
                 />
               </div>
             </div>
@@ -1841,9 +2237,11 @@ function GtpBuilderInner() {
           </button>
           {fieldsOpen ? (
             <div className="overflow-x-auto border-t border-border">
-              <table className="w-full text-left text-sm">
+              {/* Outside the <table>: a <div> is not a valid child of one, and React's hydration
+                  refuses it. It only ever rendered when something was hidden, so it stayed quiet
+                  until armour thickness and width started defaulting to hidden. */}
               {hiddenFields.length > 0 ? (
-                <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+                <div className="m-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
                   <span className="text-sm text-foreground">
                     {hiddenFields.length} field{hiddenFields.length === 1 ? "" : "s"} hidden from the printed GTP.
                   </span>
@@ -1859,6 +2257,7 @@ function GtpBuilderInner() {
                   </button>
                 </div>
               ) : null}
+              <table className="w-full text-left text-sm">
                 <thead className="bg-muted text-xs text-muted-foreground">
                   <tr>
                     <th className="p-3 font-medium">Field</th>
@@ -2138,13 +2537,22 @@ function GtpBuilderInner() {
             </span>
             <Button type="button" disabled={!canGenerate || generating} onClick={() => void handleGenerate()}>
               <FileText className="mr-2 h-4 w-4" aria-hidden="true" />
-              {generating ? "Saving…" : "Generate GTP"}
+              {generating ? "Saving…" : editing ? `Save ${editing.id}` : "Generate GTP"}
             </Button>
           </div>
           {!canGenerate && validation.errorCount > 0 ? (
             <p className="mt-2 text-xs text-danger">
               Fix the errors above before generating — the GTP can&rsquo;t be issued on unverified data.
             </p>
+          ) : null}
+          {overriddenInputs.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              {overriddenInputs.map((f) => (
+                <p key={f.key} className="text-xs text-danger">
+                  {chainInputOverrideMessage(f.label)}
+                </p>
+              ))}
+            </div>
           ) : null}
           {missingReasons.length > 0 ? (
             <p className="mt-2 text-xs text-danger">

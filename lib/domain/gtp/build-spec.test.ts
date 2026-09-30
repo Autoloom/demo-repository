@@ -6,7 +6,7 @@ import { specFromFields, type GtpSpecSource } from "./spec-from-fields";
 import { annulusMassKgPerKm, LAY_UP_FACTOR, MATERIAL_DENSITY } from "./mass";
 import { deriveLtCable } from "./derive-lt";
 import { costCable } from "./quote-costing";
-import { defaultMarginByCategory } from "@/lib/domain/costing";
+import { DEFAULT_COST_BUILD_UP } from "@/lib/domain/costing";
 import { seedData } from "@/lib/seed/data";
 
 const config = { standard: "IS7098-1" as const, coreCount: 3.5, csaSqMm: 240, material: "AL" as const, armoured: true };
@@ -41,7 +41,7 @@ test("mass reduction is exactly the changed annulus, including the shared lay-up
 });
 test("quotation prices built layer masses, survives JSON reload, and uses buyer flame compound rates", () => {
   const spec = specFromFields({ ...source, specId: "S", designation: "3.5C x 240" }); assert.ok(!("gap" in spec));
-  const commercial = { lengthM: 1000, marginPctByCategory: defaultMarginByCategory(12), metalRatePerKg: 250, overheadPerM: 18 };
+  const commercial = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 250, overheadPerM: 18 };
   const build = buildSpecFromFields("S", source, { "lt.insulation": 1.5 });
   const nominal = costCable(spec, commercial, seedData.materials);
   const built = costCable(spec, commercial, seedData.materials, build);
@@ -66,7 +66,7 @@ test("construction edits re-derive mass and reset the old cable's build decision
 });
 test("buyer FRLS selects its own entered compound rate, never invents one", () => {
   const spec = specFromFields({ ...source, specId: "S", designation: "3.5C x 240" }); assert.ok(!("gap" in spec));
-  const commercial = { lengthM: 1000, marginPctByCategory: defaultMarginByCategory(12), metalRatePerKg: 250, overheadPerM: 18 };
+  const commercial = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 250, overheadPerM: 18 };
   const frls = { ...spec, flameClass: "FRLS" as const, sheath: "FRLS PVC" as const };
   assert.throws(() => costCable(frls, commercial, seedData.materials), /Enter a FRLS sheath compound rate/);
   const materials = [...seedData.materials, { ...seedData.materials.find((m) => m.category === "Sheath")!, id: "TEST-FRLS", name: "FRLS PVC", ratePerKg: 180 }];

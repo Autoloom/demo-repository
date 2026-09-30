@@ -62,11 +62,22 @@ export const IS10462_1_1983: StandardsDataset = {
     "in scope is paper-insulated.",
 };
 
-/** Human-readable restatement of §0.4, for surfacing in the UI next to any fictitious value. */
-export const fictitiousDiameterCaveat =
-  "Fictitious diameter (IS 10462 Part 1). Used only to select rows in the sheath and armour " +
-  "tables — it ignores conductor shape and compactness by design (§0.3) and is not the actual " +
-  "cable diameter (§0.4).";
+/**
+ * What a calculated diameter is, in words that belong on a GTP.
+ *
+ * The standard's own title calls this the "fictitious calculation method", and that word is
+ * right in code and wrong on a document a customer signs — it reads as though the number were
+ * made up. IS 7098 (Part 1) and IS 1554 (Part 1) never use it either: their table headers say
+ * "CALCULATED DIAMETER [REF IS : 10462 (PART 1)]", which is what a buyer or an inspector
+ * actually reads. So the printed vocabulary follows the tables, not the method's title.
+ *
+ * The substance is unchanged and still stated: this is the basis on which the sheath and armour
+ * thicknesses are selected, and the finished cable's diameter is a separate figure (§0.4).
+ */
+export const calculatedDiameterNote =
+  "Calculated diameter per IS 10462 (Part 1) — the basis on which IS 7098 / IS 1554 tabulate " +
+  "inner sheath, armour and outer sheath. The finished cable's overall diameter is stated " +
+  "separately.";
 
 /**
  * Round to 0.1 mm per §0.7 / IS 2:1960 (round half away from zero).
@@ -296,7 +307,7 @@ export function fictitiousChain(args: {
 
   const dLMm = fictitiousConductorDiameter(args.csaSqMm, args.flexibility ?? "fixed");
   steps.push({
-    label: `Fictitious conductor diameter (${args.csaSqMm} sq mm)`,
+    label: `Calculated conductor diameter (${args.csaSqMm} sq mm)`,
     valueMm: dLMm,
     ref: `IS 10462 (Part 1) : 1983, ${args.flexibility === "flexible" ? "Table 2" : "Table 1"}`,
   });
@@ -306,7 +317,7 @@ export function fictitiousChain(args: {
     insulationThicknessMm: args.insulationThicknessMm,
     screened: args.screened,
   });
-  steps.push({ label: "Fictitious core diameter", valueMm: dCMm, ref: "IS 10462 (Part 1) : 1983, §3.2" });
+  steps.push({ label: "Calculated core diameter", valueMm: dCMm, ref: "IS 10462 (Part 1) : 1983, §3.2" });
 
   let dFMm: number;
   if (args.halfCore) {
@@ -317,19 +328,19 @@ export function fictitiousChain(args: {
       screened: args.screened,
     });
     steps.push({
-      label: `Fictitious core diameter, reduced neutral (${args.halfCore.csaSqMm} sq mm)`,
+      label: `Calculated core diameter, reduced neutral (${args.halfCore.csaSqMm} sq mm)`,
       valueMm: halfDC,
       ref: "IS 10462 (Part 1) : 1983, §3.2",
     });
     dFMm = fictitiousLaidUpDiameter({ form: "threeAndHalf", fullCoreDMm: dCMm, halfCoreDMm: halfDC });
-    steps.push({ label: "Fictitious diameter over laid-up cores (3½ core)", valueMm: dFMm, ref: "IS 10462 (Part 1) : 1983, §3.3(b)" });
+    steps.push({ label: "Calculated diameter over laid-up cores (3½ core)", valueMm: dFMm, ref: "IS 10462 (Part 1) : 1983, §3.3(b)" });
   } else if (args.cradleSeparator) {
     dFMm = fictitiousLaidUpDiameter({ form: "cradleSeparator", cores: args.cores, dCMm, oneLayer: args.oneLayer });
-    steps.push({ label: "Fictitious diameter over laid-up cores (cradle separator)", valueMm: dFMm, ref: "IS 10462 (Part 1) : 1983, §3.3(c)" });
+    steps.push({ label: "Calculated diameter over laid-up cores (cradle separator)", valueMm: dFMm, ref: "IS 10462 (Part 1) : 1983, §3.3(c)" });
   } else {
     dFMm = fictitiousLaidUpDiameter({ form: "uniform", cores: args.cores, dCMm, oneLayer: args.oneLayer });
     steps.push({
-      label: `Fictitious diameter over laid-up cores (k = ${assemblyCoefficient(args.cores, args.oneLayer ?? false)})`,
+      label: `Calculated diameter over laid-up cores (k = ${assemblyCoefficient(args.cores, args.oneLayer ?? false)})`,
       valueMm: dFMm,
       ref: "IS 10462 (Part 1) : 1983, §3.3(a) + Table 3",
     });
@@ -338,12 +349,12 @@ export function fictitiousChain(args: {
   if (args.innerSheathThicknessMm === undefined) return { steps, dLMm, dCMm, dFMm };
 
   const dBMm = fictitiousOverInnerSheath(dFMm, args.innerSheathThicknessMm);
-  steps.push({ label: "Fictitious diameter over inner sheath (= under armour)", valueMm: dBMm, ref: "IS 10462 (Part 1) : 1983, §3.4" });
+  steps.push({ label: "Calculated diameter over inner sheath (= under armour)", valueMm: dBMm, ref: "IS 10462 (Part 1) : 1983, §3.4" });
 
   if (!args.armour) return { steps, dLMm, dCMm, dFMm, dBMm };
 
   const dXMm = fictitiousOverArmour(dBMm, args.armour.wireDiaOrStripThicknessMm, args.armour.pliableStranded);
-  steps.push({ label: "Fictitious diameter over armour", valueMm: dXMm, ref: "IS 10462 (Part 1) : 1983, §3.5" });
+  steps.push({ label: "Calculated diameter over armour", valueMm: dXMm, ref: "IS 10462 (Part 1) : 1983, §3.5" });
 
   return { steps, dLMm, dCMm, dFMm, dBMm, dXMm };
 }

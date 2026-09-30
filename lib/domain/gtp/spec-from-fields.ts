@@ -1,3 +1,4 @@
+import { CORE_CONFIGS } from "@/lib/services/types";
 import type { CableSpec, CoreConfig } from "@/lib/services/types";
 import { deriveLtCable, type LtCableConfig, type LtDerivation } from "./derive-lt";
 import type { ProductLine, ResolvedField } from "./types";
@@ -28,7 +29,7 @@ export function specFromFields(input: GtpSpecSource & { specId: string; designat
     const chain = deriveLtCable(config); // also refuses unsupported combinations such as 3.5C × 16
     if (chain.armourForm !== armourForm) throw new Error("Armour form disagrees with the derived construction");
     const cores = `${config.coreCount}C` as CoreConfig;
-    if (!["1C", "2C", "3C", "3.5C", "4C", "5C", "7C", "12C", "19C", "27C", "37C"].includes(cores)) throw new Error("Core configuration cannot be represented by CableSpec");
+    if (!CORE_CONFIGS.includes(cores)) throw new Error(`Core configuration ${cores} cannot be represented by CableSpec`);
     const xlpe = config.standard === "IS7098-1";
     if (xlpe !== (productLine === "XLPE_POWER")) throw new Error("Product line and standard disagree");
     // A dimensional override needs a new resolved build-up, not the old chain's mass.

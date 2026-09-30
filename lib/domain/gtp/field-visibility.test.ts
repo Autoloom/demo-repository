@@ -3,6 +3,7 @@
  * so they are pinned against the PDF renderer that consumes the filtered list.
  */
 import assert from "node:assert/strict";
+import { DEFAULT_COST_BUILD_UP } from "@/lib/domain/costing";
 import { test } from "node:test";
 
 import { constructionFromSelection, defaultSelection } from "./compose-size";
@@ -147,8 +148,7 @@ test("D10: a below-nominal build target, its reason, and the margin stay off BOT
   const reason = "INTERNAL WORKS SAVING DECISION";
   // Distinctive, unlikely-to-collide margins per category so a leak into any printed number is
   // detectable — each material can carry its own margin, and none of them may ever print.
-  const marginPctByCategory = { Conductor: 37.31, Insulation: 41.17, Armour: 22.53, Sheath: 33.89, Labour: 19.71 };
-  const commercial = { lengthM: 1000, marginPctByCategory, metalRatePerKg: 0, overheadPerM: 18 };
+  const commercial = { lengthM: 1000, buildUp: { ...DEFAULT_COST_BUILD_UP }, metalRatePerKg: 0, overheadPerM: 18 };
   const costing = costCable(spec, commercial, seedData.materials);
   const line = { ...seedData.quotes[0].lines[0], specId: spec.id, marginPct: costing.blendedMarginPct, buildSpec: { ...buildSpec, reason }, specSnapshot: spec, lineTotalInr: costing.lineTotalInr };
   const gtpDocument = buildGtpPdfDocument(fields, { ...meta, designation: spec.designation });

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   FileCheckIcon,
+  KanbanSquareIcon,
   LogOutIcon,
   MoonIcon,
   PanelLeftCloseIcon,
@@ -34,6 +35,9 @@ const navGroups: Array<{
     items: [
       { href: "/gtp", label: "GTP Generator", resource: "gtp", icon: FileCheckIcon },
       { href: "/quote", label: "Quotation", resource: "quote", icon: ReceiptIcon },
+      // The one board the client asked for (13 Sept): what is due, what is running, what is
+      // stuck, and the documents behind each order. The rest of the Order Board era stays gone.
+      { href: "/orders", label: "Order board", resource: "order", icon: KanbanSquareIcon },
     ],
   },
 ];
