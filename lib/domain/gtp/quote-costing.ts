@@ -1,4 +1,4 @@
-import { computeLine, ratesForSpec, type CostBuildUp, type CostingResult } from "@/lib/domain/costing";
+import { commercialProblems, computeLine, ratesForSpec, type CostBuildUp, type CostingResult } from "@/lib/domain/costing";
 import type { CableSpec, Material } from "@/lib/services/types";
 import { buildSpecFromFields, constructionKey, lineMassFromDerived, targetsFromBuild, type BuildSpec } from "./build-spec";
 import { derivedLineMassFromLegacySpec, isBridgeGap, ltConfigFromLegacySpec } from "./legacy-bridge";
@@ -47,6 +47,11 @@ export function quoteBuild(spec: CableSpec, previous?: BuildSpec): { source: Gtp
 }
 
 export function costCable(spec: CableSpec, commercial: { lengthM: number; buildUp: CostBuildUp; metalRatePerKg: number; overheadPerM: number }, materials: Material[], build?: BuildSpec): CostingResult {
+  // Refuse nonsense before pricing it: a zero or negative length, a negative rate, a margin of
+  // 10,000%. Thrown, so every caller — the quote page's error panel, the offer, the tests — treats
+  // it as "cannot price this" rather than being handed a plausible-looking number.
+  const problems = commercialProblems(commercial);
+  if (problems.length > 0) throw new Error(problems[0]);
   let mass;
   // AB and solar have their own derivation chains and no `gtpSource` — their constructions do not
   // fit LtCableConfig. Routed by family so the shared engine keeps one branch per FAMILY rather

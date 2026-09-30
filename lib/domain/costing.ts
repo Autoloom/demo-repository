@@ -458,3 +458,39 @@ export function computeGst(subtotalInr: number, customerStateCode?: string): Gst
   const half = Math.round(gstInr / 2);
   return { interstate, gstInr, cgstInr: half, sgstInr: gstInr - half };
 }
+
+/**
+ * What is wrong with the numbers a quote is being priced with, in words. Empty means they are fit
+ * to price.
+ *
+ * None of this existed. The price was a plain product of whatever had been typed, so a length of 0
+ * gave a ₹0 quote, a length of -500 a NEGATIVE price (-₹4,92,405 on a 3½ × 240), a negative metal
+ * rate a negative total, and a margin of 10,000% was accepted and saved. A costing tool that
+ * quietly produces a number for nonsense is worse than one that refuses.
+ *
+ * Bounds are deliberately wide: they exist to catch a slipped decimal point or a stray minus, not
+ * to second-guess a commercial decision. A metal rate of 0 is allowed — it means "use the rate in
+ * the Materials table" — and so is a 0% margin.
+ */
+export function commercialProblems(c: {
+  lengthM: number;
+  metalRatePerKg: number;
+  overheadPerM: number;
+  buildUp: CostBuildUp;
+}): string[] {
+  const problems: string[] = [];
+  const finite = (n: number) => Number.isFinite(n);
+  if (!finite(c.lengthM) || c.lengthM <= 0) problems.push("Length must be more than 0 m.");
+  if (!finite(c.metalRatePerKg) || c.metalRatePerKg < 0) problems.push("The metal rate cannot be negative.");
+  if (!finite(c.overheadPerM) || c.overheadPerM < 0) problems.push("The flat overhead cannot be negative.");
+  const pct = (label: string, value: number) => {
+    if (!finite(value) || value < 0 || value > 100) problems.push(`${label} must be between 0% and 100%.`);
+  };
+  pct("Manufacturing & overhead", c.buildUp.conversionPct);
+  pct("Wastage", c.buildUp.wastagePct);
+  pct("Cost of finance", c.buildUp.financePct);
+  pct("Margin", c.buildUp.marginPct);
+  if (!finite(c.buildUp.drumCostInr) || c.buildUp.drumCostInr < 0) problems.push("The drum cost cannot be negative.");
+  if (!finite(c.buildUp.freightInr) || c.buildUp.freightInr < 0) problems.push("Freight cannot be negative.");
+  return problems;
+}

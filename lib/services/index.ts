@@ -5,6 +5,7 @@ import { can } from "@/lib/rbac";
 import { adapter } from "@/lib/adapters/mock-adapter";
 import { now } from "@/lib/domain/clock";
 import { defaultPromisedDate, gtpToAdopt, orderTitleFor, transitionBlockers } from "@/lib/domain/board";
+import { nextQuoteId } from "@/lib/domain/quote-number";
 import { buildGtpSections, findReusableGtp, gtpForOrder } from "@/lib/domain/gtp";
 import { inspectionCallBlockers, inspectorEtaFrom } from "@/lib/domain/inspection";
 import { COMPUTED_SIGNAL_TYPES, computeSalesSignals } from "@/lib/domain/signals";
@@ -317,9 +318,26 @@ export const quotesService = {
   get: (quoteId: string) => get("quotes", quoteId),
   /** Ready-made common cables for the wizard's "pick a cable" step (page plan §2a/§3). */
   listPresets: async (): Promise<CablePreset[]> => cablePresets,
-  saveDraft: (quote: Quote, actor: Actor) =>
+  /**
+   * The next free quote number, read from what is actually stored.
+   *
+   * The page used to invent one at random, which could land on a number already in use and — since
+   * a save replaces whatever has its id — silently overwrite that quote. See lib/domain/quote-number.ts.
+   */
+  nextId: async () => {
+    const store = await readStore();
+    return nextQuoteId(store.quotes.map((item) => item.id), now());
+  },
+  /**
+   * `isNew` says the caller believes this is a NEW quote. If the id is already taken, that belief is
+   * wrong and saving would destroy someone else's quote, so it refuses rather than replace it.
+   */
+  saveDraft: (quote: Quote, actor: Actor, options: { isNew?: boolean } = {}) =>
     mutateStore((store) => {
       const existing = store.quotes.findIndex((item) => item.id === quote.id);
+      if (existing >= 0 && options.isNew) {
+        throw new Error(`${quote.id} already exists — a new quote cannot replace it. Nothing was saved.`);
+      }
       if (existing >= 0) store.quotes[existing] = quote;
       else store.quotes.unshift(quote);
       addActivity(store, {

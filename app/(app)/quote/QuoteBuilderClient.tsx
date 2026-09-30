@@ -111,11 +111,6 @@ function validUntilIso(): string {
   return date.toISOString().slice(0, 10);
 }
 
-function nextQuoteId(): string {
-  const stamp = now().toISOString();
-  return `Q-${stamp.slice(2, 4)}${stamp.slice(5, 7)}-${Math.floor(100 + Math.random() * 900)}`;
-}
-
 /** The inputs a save writes, serialised identically at load and on every render. */
 function signatureOf(commercial: Commercial, customerId?: string, specId?: string): string {
   return JSON.stringify({ commercial, customerId: customerId ?? null, specId: specId ?? null });
@@ -889,11 +884,61 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
       setMaterials(updated);
       const rates = ratesForSpec(spec, updated);
       if (rates.conductorPerKg) setCommercial((current) => ({ ...current, metalRatePerKg: rates.conductorPerKg }));
-      setFeedback({ tone: "info", message: "Market metal rate refreshed from MCX." });
+      // Not "refreshed from MCX". There is no market feed: this puts back the rate held in the
+      // Materials table — two fixed demo figures — and the message used to say it had fetched
+      // the day's price. On a costing screen that is a claim someone will price a tender on.
+      setFeedback({
+        tone: "info",
+        message: `Reset to the rate in the Materials table (₹${rates.conductorPerKg}/kg). No live market feed is connected — type today's rate if it differs.`,
+      });
     } catch {
       setFeedback({ tone: "danger", message: "Could not refresh the market rate." });
     } finally {
       setRefreshingRate(false);
+    }
+  }
+
+  /**
+   * Bring the quote up to the GTP as it now stands.
+   *
+   * The 22 Sept notes: when a customer pushes back on price, reduce the conductor size and the
+   * costing recalculates. Editing the GTP does recalculate the GTP — but the quote priced the cable
+   * as it was, and the warning told you to "reopen it from Quotation to reprice", which could not be
+   * done: a GTP that has been quoted is no longer offered there, and reopening the quote just loads
+   * its old cable again. So the quote showed 300 sq mm at the old price after the GTP became 240.
+   *
+   * This takes the GTP's CURRENT cable and keeps everything commercial — length, rates, cost
+   * build-up — so the only thing that moves is what the cable is. It is not saved until the person
+   * saves, so they see the new price first. The metal rate is re-seeded only if the METAL changed
+   * (aluminium ↔ copper); otherwise the rate they typed stands.
+   */
+  async function repriceFromGtp() {
+    if (!gtp || onBoard || !spec) return;
+    try {
+      const store = await dataService.read();
+      const fresh = store.gtps.find((entry) => entry.id === gtp.id);
+      const freshSpec = fresh ? store.specs.find((entry) => entry.id === fresh.specId) : undefined;
+      if (!fresh || !freshSpec) throw new Error(`${gtp.id} no longer has a cable to price.`);
+      if (freshSpec.gtpSource?.fields.some((field) => field.gap)) {
+        throw new Error(`${fresh.id} has an unresolved parameter — resolve it on the GTP before repricing.`);
+      }
+      const metalChanged = freshSpec.conductorMaterial !== spec.conductorMaterial;
+      const rates = ratesForSpec(freshSpec, materials);
+      setGtp(fresh);
+      setSpec(freshSpec);
+      setGtpChangedSinceQuote(false);
+      setCommercial((current) => ({
+        ...current,
+        metalRatePerKg: metalChanged ? rates.conductorPerKg || current.metalRatePerKg : current.metalRatePerKg,
+        // A below-nominal manufacturing target chosen for the old cable never carries to a new one.
+        buildSpec: undefined,
+      }));
+      setFeedback({
+        tone: "info",
+        message: `Repriced from ${fresh.id} v${fresh.version} — ${freshSpec.designation}. Check the price, then save the quote to keep it.`,
+      });
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not reprice from the GTP." });
     }
   }
 
@@ -904,8 +949,9 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
     setSaving(true);
     try {
       await specsService.upsert(spec);
+      const isNew = !existingQuoteId;
       const quoteRecord: Quote = {
-        id: existingQuoteId ?? nextQuoteId(),
+        id: existingQuoteId ?? (await quotesService.nextId()),
         gtpId: gtp?.id,
         gtpVersionAtQuote: gtp?.version,
         customerId: customer?.id ?? PENDING_CUSTOMER_ID,
@@ -918,7 +964,7 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         marginReviewRequired: marginGate,
         createdAt: now().toISOString(),
       };
-      const saved = await quotesService.saveDraft(quoteRecord, actor);
+      const saved = await quotesService.saveDraft(quoteRecord, actor, { isNew });
       setExistingQuoteId(saved.id);
       setStatus(saved.status);
       setSavedAt(new Date());
@@ -928,8 +974,8 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
         message: nextStatus === "Review" ? `${saved.id} saved and sent for owner review.` : `${saved.id} saved as a draft.`,
       });
       if (!quoteId) router.replace(`/quote/${saved.id}`);
-    } catch {
-      setFeedback({ tone: "danger", message: "Could not save the quote." });
+    } catch (err) {
+      setFeedback({ tone: "danger", message: err instanceof Error ? err.message : "Could not save the quote." });
     } finally {
       setSaving(false);
     }
@@ -1121,9 +1167,18 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
             </div>
           ) : null}
           {gtpChangedSinceQuote && gtp ? (
-            <div role="alert" className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+            <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
               <ShieldAlertIcon className="size-4 shrink-0" />
-              {gtp.id} has changed since this quote was priced — the cable below may no longer match what the GTP now declares. Reopen it from Quotation to reprice against the current values.
+              <span className="flex-1">
+                {gtp.id} has changed since this quote was priced — the cable below is the one it was priced with, not what the GTP now
+                declares.
+              </span>
+              {!onBoard && !readOnly ? (
+                <Button type="button" size="sm" variant="outline" onClick={() => void repriceFromGtp()}>
+                  <RefreshCwIcon className="mr-2 size-4" />
+                  Reprice from the current GTP
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1290,12 +1345,12 @@ export function QuoteBuilderClient({ quoteId }: { quoteId?: string }) {
                     />
                     <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">₹/kg</span>
                   </div>
-                  <Button type="button" variant="outline" size="icon" disabled={readOnly || refreshingRate} onClick={() => void refreshMarketRate()} title={`Refresh ${spec.conductorMaterial} market rate`}>
+                  <Button type="button" variant="outline" size="icon" disabled={readOnly || refreshingRate} onClick={() => void refreshMarketRate()} title={`Reset to the ${spec.conductorMaterial.toLowerCase()} rate in the Materials table (no live feed)`}>
                     <RefreshCwIcon className={cn("size-4", refreshingRate && "animate-spin")} />
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  This cable&apos;s conductor is {spec.conductorMaterial.toLowerCase()} — the price per kg for that metal, seeded from the Materials table.
+                  This cable&apos;s conductor is {spec.conductorMaterial.toLowerCase()} — the price per kg for that metal. It starts from the Materials table, which holds a fixed rate, not today&apos;s market price: type the rate you are buying at.
                 </p>
               </div>
               {/* Only on a line that was already priced with a flat per-metre overhead. Removing
