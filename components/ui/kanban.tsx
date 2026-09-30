@@ -37,6 +37,15 @@ function useKanbanDragState() {
   return useContext(KanbanDragContext);
 }
 
+/**
+ * The id of the card currently being dragged, or null. For UI that only exists mid-drag — such as
+ * a bar of drop targets pinned to the screen so the destination is never off the edge of a board
+ * that scrolls sideways.
+ */
+export function useKanbanActiveId(): string | null {
+  return useKanbanDragState().activeId;
+}
+
 export type KanbanBoardProps = {
   id: string;
   children: ReactNode;
@@ -199,5 +208,25 @@ export function KanbanProvider({
         {activeId && renderOverlay ? renderOverlay(activeId) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+/** An extra drop target, for use inside `KanbanProvider`. Its id must not collide with a column's. */
+export function KanbanDropZone({
+  id,
+  className,
+  activeClassName,
+  children,
+}: {
+  id: string;
+  className?: string;
+  activeClassName?: string;
+  children: ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id });
+  return (
+    <div ref={setNodeRef} className={cn(className, isOver && activeClassName)}>
+      {children}
+    </div>
   );
 }

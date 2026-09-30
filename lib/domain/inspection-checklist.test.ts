@@ -19,6 +19,8 @@ import {
   evaluateChecklist,
   inspectionBlockers,
   isInspectable,
+  markUnanswered,
+  restoreDraftRows,
   type ChecklistDraftRow,
 } from "./inspection-checklist";
 import { addDaysIso, inspectionCallBlockers } from "./inspection";
@@ -331,4 +333,48 @@ test("an unstamped GTP is stated as such on the sheet rather than implied to be 
   const gtp = stampedGtp({ signOffs: [], status: "Draft" });
   const doc = inspectionChecklistDocument({ gtp, orderId: "O", customerName: "C", cables: [], items: [], companyName: "X" });
   assert.ok(JSON.stringify(doc).includes("Not yet stamped"));
+});
+
+// ── Not losing a half-finished inspection ─────────────────────────────────────
+
+test("answers already entered are laid back over the GTP's parameters, by key", () => {
+  const items = checklistFromGtp(stampedGtp());
+  const draft = [
+    { key: "lt.insulation", measured: "1.66 mm", result: "Pass" as const },
+    { key: "fin.totalMass", measured: "4300", result: "Fail" as const },
+  ];
+  const rows = restoreDraftRows(items, draft);
+  assert.equal(rows.length, items.length);
+  assert.deepEqual(rows.find((row) => row.key === "lt.insulation") && [rows.find((row) => row.key === "lt.insulation")!.measured, rows.find((row) => row.key === "lt.insulation")!.result], ["1.66 mm", "Pass"]);
+  assert.equal(rows.find((row) => row.key === "fin.totalMass")?.result, "Fail");
+  assert.equal(rows.filter((row) => row.result === "Pending").length, items.length - 2);
+});
+
+test("a saved answer for a parameter the GTP no longer has is dropped, not attached to another row", () => {
+  const items = checklistFromGtp(stampedGtp());
+  const rows = restoreDraftRows(items, [{ key: "lt.no-such-row", measured: "x", result: "Pass" }]);
+  assert.ok(rows.every((row) => row.result === "Pending" && row.measured === ""));
+  assert.equal(rows.length, items.length);
+});
+
+test("nothing saved, or garbage saved, gives a clean form", () => {
+  const items = checklistFromGtp(stampedGtp());
+  assert.ok(restoreDraftRows(items, undefined).every((row) => row.result === "Pending"));
+  const rows = restoreDraftRows(items, [{ key: items[0].key, measured: 5 as unknown as string, result: "Definitely" as never }]);
+  assert.equal(rows[0].result, "Pending", "an unrecognised answer is never trusted");
+  assert.equal(rows[0].measured, "");
+});
+
+test("'mark the rest Pass' answers only the unanswered rows and never overrides a Fail or an N/A", () => {
+  const rows = blankRows(checklistFromGtp(stampedGtp()));
+  rows[0] = { ...rows[0], result: "Fail", measured: "wrong" };
+  rows[1] = { ...rows[1], result: "N/A" };
+  rows[2] = { ...rows[2], result: "Pass", measured: "ok" };
+  const marked = markUnanswered(rows, "Pass");
+  assert.equal(marked[0].result, "Fail");
+  assert.equal(marked[1].result, "N/A");
+  assert.equal(marked[2].measured, "ok");
+  assert.ok(marked.slice(3).every((row) => row.result === "Pass" && row.measured === ""), "measurements are never invented");
+  // A failure still fails the inspection after the shortcut.
+  assert.equal(evaluateChecklist(marked).outcome, "Failed");
 });

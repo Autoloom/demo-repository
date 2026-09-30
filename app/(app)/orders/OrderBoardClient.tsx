@@ -24,8 +24,10 @@ import {
   KanbanBoard,
   KanbanCard,
   KanbanCards,
+  KanbanDropZone,
   KanbanHeader,
   KanbanProvider,
+  useKanbanActiveId,
 } from "@/components/ui/kanban";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
@@ -197,8 +199,12 @@ function OrderBoard() {
    * this board exists to remove.
    */
   async function requestMove(orderId: string, target: OrderStage) {
-    if (!store || !canMove || busy) return;
-    const order = store.orders.find((entry) => entry.id === orderId);
+    if (!canMove || busy) return;
+    // Read the store afresh. This is called straight after a save (QC recorded, then the card
+    // moved), and the copy in this closure is the one from when the button was drawn — which would
+    // refuse, on the strength of a gate the save had only just cleared.
+    const current = await dataService.read();
+    const order = current.orders.find((entry) => entry.id === orderId);
     if (!order || order.stage === target) return;
     if (!isAdjacentMove(order.stage, target)) {
       setFeedback({
@@ -207,8 +213,9 @@ function OrderBoard() {
       });
       return;
     }
-    const check = transitionBlockers(store, order, target);
+    const check = transitionBlockers(current, order, target);
     if (check.blockers.length > 0) {
+      setStore(current);
       setFeedback({ tone: "danger", text: `${orderId} can't move yet — ${check.blockers.join(" ")}` });
       return;
     }
@@ -353,8 +360,11 @@ function OrderBoard() {
               ) : null}
               <KanbanProvider
                 onDragEnd={(event) => {
-                  const target = event.over?.id;
-                  if (target) void requestMove(String(event.active.id), String(target) as OrderStage);
+                  const over = event.over?.id;
+                  if (!over) return;
+                  // Dropped on a column, or on one of the pinned targets (id "zone:<stage>").
+                  const target = String(over).replace(/^zone:/, "");
+                  void requestMove(String(event.active.id), target as OrderStage);
                 }}
                 renderOverlay={(id) => {
                   const card = allColumns.flatMap((column) => column.cards).find((entry) => entry.orderId === id);
@@ -369,6 +379,7 @@ function OrderBoard() {
                 // reflows to a 2 × 3 grid stops reading left-to-right as a pipeline.
                 className="grid-flow-col grid-cols-none auto-cols-[minmax(17rem,1fr)] overflow-x-auto pb-3 md:grid-cols-none xl:grid-cols-none"
               >
+                <MoveTargets cards={allColumns.flatMap((column) => column.cards)} stages={allColumns} />
                 {columns.map((column) => (
                   <KanbanBoard key={column.stage} id={column.stage} className="snap-start">
                     <div className="space-y-0.5">
@@ -424,6 +435,51 @@ function OrderBoard() {
           ) : null}
         </SheetContent>
       </Sheet>
+    </div>
+  );
+}
+
+// ── Where a dragged card can go ───────────────────────────────────────────────
+
+/**
+ * While a card is being dragged, the only two places it may go — the next stage and the previous
+ * one — as large targets pinned to the bottom of the screen.
+ *
+ * The board scrolls sideways, and at an ordinary laptop width the column you need is half off the
+ * edge or not on screen at all ("Ready for dispatch" starts past the right-hand side of a 1100 px
+ * window), so a drop that has to land in the column itself depends on auto-scrolling while a mouse
+ * button is held. Cards only ever move one stage, so there are only ever two answers, and they can
+ * always be in view. The columns still accept drops as before.
+ */
+function MoveTargets({ cards, stages }: { cards: BoardCard[]; stages: { stage: OrderStage; title: string }[] }) {
+  const activeId = useKanbanActiveId();
+  const card = activeId ? cards.find((entry) => entry.orderId === activeId) : undefined;
+  if (!card) return null;
+  const targets = [
+    card.previousStage && { stage: card.previousStage, back: true },
+    card.nextStage && { stage: card.nextStage, back: false },
+  ].filter((entry): entry is { stage: OrderStage; back: boolean } => Boolean(entry));
+
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center gap-4 px-4">
+      {targets.map(({ stage, back }) => {
+        const blocked = !back && card.nextBlockers.length > 0;
+        return (
+          <KanbanDropZone
+            key={stage}
+            id={`zone:${stage}`}
+            className={cn(
+              "pointer-events-auto w-full max-w-64 rounded-lg border-2 border-dashed bg-card p-4 text-center shadow-lg transition-colors",
+              blocked ? "border-warning/60" : "border-primary/60",
+            )}
+            activeClassName={blocked ? "border-warning bg-warning/10" : "border-primary bg-primary/10"}
+          >
+            <p className="text-xs text-muted-foreground">{back ? "Move back to" : "Move to"}</p>
+            <p className="text-sm font-semibold">{stageTitle(stage, stages)}</p>
+            {blocked ? <p className="mt-1 text-xs text-warning">Not yet — {card.nextBlockers[0]}</p> : null}
+          </KanbanDropZone>
+        );
+      })}
     </div>
   );
 }
@@ -596,6 +652,45 @@ function OrderPanel({
   const gtp = orderGtp(store, order);
   const gated = card.nextBlockers.length > 0;
 
+  // The QC entries live HERE, not inside the QC form, so that moving the order can save them.
+  // They used to be local to the form and saved only by their own button — so a person who filled
+  // in every row and then pressed "Move to In production" was refused with "QC has not been
+  // recorded", on a screen where they had just recorded it.
+  const existingQc = store.rawMaterialChecks.find((entry) => entry.orderId === card.orderId);
+  const baseQc: RawMaterialCheck = existingQc ?? blankIncomingQc(store, order);
+  const [qcResults, setQcResults] = React.useState<QcResults>(() =>
+    Object.fromEntries(baseQc.checks.map((check) => [check.id, check.result])),
+  );
+  const [qcSaving, setQcSaving] = React.useState(false);
+  const qcDirty = baseQc.checks.some((check) => qcResults[check.id] !== check.result);
+
+  async function saveQc(): Promise<boolean> {
+    setQcSaving(true);
+    try {
+      await rawMaterialQcService.save(
+        { ...baseQc, checks: baseQc.checks.map((check) => ({ ...check, result: qcResults[check.id] })) },
+        actorFromSession(),
+      );
+      await onChanged(
+        Object.values(qcResults).every((result) => result === "Pass")
+          ? `Incoming QC passed on ${card.orderId} — that gate is clear.`
+          : `Incoming QC saved on ${card.orderId}.`,
+      );
+      return true;
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Could not save the QC record.");
+      return false;
+    } finally {
+      setQcSaving(false);
+    }
+  }
+
+  /** Save anything entered but not yet saved, then move — one press does what was meant. */
+  async function moveTo(target: OrderStage) {
+    if (qcDirty && !(await saveQc())) return;
+    onMove(target);
+  }
+
   return (
     <>
       <SheetHeader>
@@ -699,12 +794,20 @@ function OrderPanel({
                     <LockKeyholeIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
                     <span>
                       {blocker}
-                      {/GTP/.test(blocker) && gtp ? (
+                      {/GTP/.test(blocker) ? (
                         <>
                           {" "}
-                          <Link href={`/gtp/review?gtpId=${gtp.id}`} className="font-medium underline underline-offset-2">
-                            Open {gtp.id}
-                          </Link>
+                          {gtp ? (
+                            <Link href={`/gtp/review?gtpId=${gtp.id}`} className="font-medium underline underline-offset-2">
+                              Open {gtp.id}
+                            </Link>
+                          ) : (
+                            // The blocker says "create one in the GTP Generator" and used to offer no
+                            // way to. The builder takes the order, so the GTP it makes is this order's.
+                            <Link href={`/gtp/new?orderId=${order.id}`} className="font-medium underline underline-offset-2">
+                              Create the GTP for {order.id}
+                            </Link>
+                          )}
                         </>
                       ) : null}
                     </span>
@@ -725,25 +828,27 @@ function OrderPanel({
 
         {card.stage === "Won" || card.stage === "In Production" ? (
           <IncomingQc
-            key={`${card.orderId}-${store.rawMaterialChecks.find((entry) => entry.orderId === card.orderId)?.passedAt ?? "open"}`}
-            store={store}
-            orderId={card.orderId}
+            base={baseQc}
+            existing={existingQc}
+            results={qcResults}
+            onResults={setQcResults}
+            dirty={qcDirty}
+            saving={qcSaving}
             canEdit={canEdit}
-            onSaved={onChanged}
-            onError={onError}
+            onSave={() => void saveQc()}
           />
         ) : null}
 
         {canMove ? (
           <div className="flex gap-2 border-t pt-4">
             {card.previousStage ? (
-              <Button type="button" variant="outline" disabled={busy} onClick={() => onMove(card.previousStage!)}>
+              <Button type="button" variant="outline" disabled={busy || qcSaving} onClick={() => void moveTo(card.previousStage!)}>
                 <ArrowLeftIcon className="mr-2 size-4" />
                 Back to {stageTitle(card.previousStage, stages)}
               </Button>
             ) : null}
             {card.nextStage ? (
-              <Button type="button" className="flex-1" variant={gated ? "outline" : "default"} disabled={busy} onClick={() => onMove(card.nextStage!)}>
+              <Button type="button" className="flex-1" variant={gated && !qcDirty ? "outline" : "default"} disabled={busy || qcSaving} onClick={() => void moveTo(card.nextStage!)}>
                 Move to {stageTitle(card.nextStage, stages)}
                 <ArrowRightIcon className="ml-2 size-4" />
               </Button>
@@ -802,6 +907,7 @@ function DeliveryDate({
 }
 
 const QC_RESULTS = ["Pending", "Pass", "Fail"] as const;
+type QcResults = Record<string, (typeof QC_RESULTS)[number]>;
 
 /**
  * Incoming raw-material QC, recorded where the gate that needs it is shown.
@@ -810,36 +916,38 @@ const QC_RESULTS = ["Pending", "Pass", "Fail"] as const;
  * this build has no other screen for it — so without this an order could never leave "Won". Kept
  * to the five checks the plant already runs; a failed check is escalated to the Owner by the
  * service, which is said here because the person ticking "Fail" should know it will be seen.
+ *
+ * Controlled by the panel: the entries are the panel's so that pressing Move can save them.
  */
 function IncomingQc({
-  store,
-  orderId,
+  base,
+  existing,
+  results,
+  onResults,
+  dirty,
+  saving,
   canEdit,
-  onSaved,
-  onError,
+  onSave,
 }: {
-  store: CableStore;
-  orderId: string;
+  base: RawMaterialCheck;
+  existing?: RawMaterialCheck;
+  results: QcResults;
+  onResults: (next: QcResults) => void;
+  dirty: boolean;
+  saving: boolean;
   canEdit: boolean;
-  onSaved: (text: string) => Promise<void>;
-  onError: (text: string) => void;
+  onSave: () => void;
 }) {
-  const order = store.orders.find((entry) => entry.id === orderId)!;
-  const existing = store.rawMaterialChecks.find((entry) => entry.orderId === orderId);
-  const base: RawMaterialCheck = existing ?? blankIncomingQc(store, order);
-  const [results, setResults] = React.useState<Record<string, (typeof QC_RESULTS)[number]>>(
-    Object.fromEntries(base.checks.map((check) => [check.id, check.result])),
-  );
-  const [saving, setSaving] = React.useState(false);
   const passed = base.checks.every((check) => check.result === "Pass");
-  const changed = base.checks.some((check) => results[check.id] !== check.result);
   const failed = Object.values(results).includes("Fail");
 
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-medium">Incoming raw material QC</h3>
-        {passed && existing?.approvedBy ? (
+        {dirty ? (
+          <Pill className={TRAY_TONE.waiting}>Not saved yet</Pill>
+        ) : passed && existing?.approvedBy ? (
           <Pill className={TRAY_TONE.ok}>Passed · {existing.approvedBy}</Pill>
         ) : (
           <Pill className={existing ? TRAY_TONE.waiting : TRAY_TONE.missing}>{existing ? "In progress" : "Not recorded"}</Pill>
@@ -854,7 +962,7 @@ function IncomingQc({
               aria-label={`${check.label} result`}
               disabled={!canEdit || saving}
               value={results[check.id]}
-              onChange={(event) => setResults((current) => ({ ...current, [check.id]: event.target.value as (typeof QC_RESULTS)[number] }))}
+              onChange={(event) => onResults({ ...results, [check.id]: event.target.value as (typeof QC_RESULTS)[number] })}
               className={cn(
                 "h-8 rounded-md border border-input bg-background px-2 text-xs",
                 results[check.id] === "Pass" && "text-success",
@@ -875,30 +983,13 @@ function IncomingQc({
           {failed ? (
             <p className="text-xs text-danger">A failed check is escalated to the Owner and keeps production gated.</p>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={!changed || saving}
-            onClick={async () => {
-              setSaving(true);
-              try {
-                await rawMaterialQcService.save(
-                  { ...base, checks: base.checks.map((check) => ({ ...check, result: results[check.id] })) },
-                  actorFromSession(),
-                );
-                await onSaved(
-                  Object.values(results).every((result) => result === "Pass")
-                    ? `Incoming QC passed on ${orderId} — that gate is clear.`
-                    : `Incoming QC saved on ${orderId}.`,
-                );
-              } catch (err) {
-                onError(err instanceof Error ? err.message : "Could not save the QC record.");
-              } finally {
-                setSaving(false);
-              }
-            }}
-          >
+          {dirty ? (
+            <p role="status" className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning">
+              <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              You have changed these results but not saved them. Press Save QC — or just move the order, and they are saved with it.
+            </p>
+          ) : null}
+          <Button type="button" size="sm" variant={dirty ? "default" : "secondary"} disabled={!dirty || saving} onClick={onSave}>
             <SaveIcon className="mr-2 size-4" />
             Save QC
           </Button>

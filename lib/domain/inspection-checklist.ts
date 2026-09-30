@@ -169,3 +169,44 @@ export function buildInspectionReport(input: ReportInput): ReportResult {
     },
   };
 }
+
+// ── A half-finished inspection is not lost ────────────────────────────────────
+
+/** What is kept of an inspection form that has been started and not yet recorded. */
+export interface InspectionDraft {
+  rows: { key: string; measured: string; result: ChecklistResult }[];
+  inspectorName: string;
+  inspectorOrg: string;
+  inspectedOn: string;
+  drums: string;
+  clearance: boolean;
+  diRef: string;
+}
+
+const VALID_RESULTS: ChecklistResult[] = ["Pending", "Pass", "Fail", "N/A"];
+
+/**
+ * The form's rows, with anything previously entered laid back over the GTP's current parameters.
+ *
+ * Matched by key rather than by position, and only for rows the GTP still has: a checklist is 17
+ * to 30 rows filled in over a visit, and closing the panel — or the GTP being edited underneath —
+ * must not throw the answers away or attach them to the wrong parameter. An unrecognised answer is
+ * dropped to Pending rather than trusted.
+ */
+export function restoreDraftRows(items: ChecklistItem[], saved: InspectionDraft["rows"] | undefined): ChecklistDraftRow[] {
+  const byKey = new Map((saved ?? []).map((row) => [row.key, row]));
+  return items.map((item) => {
+    const kept = byKey.get(item.key);
+    const result = kept && VALID_RESULTS.includes(kept.result) ? kept.result : "Pending";
+    return { ...item, measured: kept && typeof kept.measured === "string" ? kept.measured : "", result };
+  });
+}
+
+/**
+ * Mark every row not yet answered as `result`, leaving the answered ones — including every Fail and
+ * N/A — exactly as they were. A convenience for the common case of a clean inspection; it does not
+ * fill in measurements, and the form still has to be recorded by a person.
+ */
+export function markUnanswered(rows: ChecklistDraftRow[], result: "Pass"): ChecklistDraftRow[] {
+  return rows.map((row) => (row.result === "Pending" ? { ...row, result } : row));
+}

@@ -11,12 +11,14 @@ import { now } from "@/lib/domain/clock";
 import { formatDate } from "@/lib/domain/format";
 import { inspectionCallBlockers } from "@/lib/domain/inspection";
 import {
-  blankRows,
   buildInspectionReport,
   checklistFromGtp,
   evaluateChecklist,
   inspectionBlockers,
+  markUnanswered,
+  restoreDraftRows,
   type ChecklistDraftRow,
+  type InspectionDraft,
   type ChecklistResult,
 } from "@/lib/domain/inspection-checklist";
 import { inspectionChecklistDocument } from "@/lib/domain/inspection-pdf";
@@ -26,6 +28,36 @@ import { actorFromSession } from "@/lib/store/session";
 import { cn } from "@/lib/utils";
 
 const RESULTS: ChecklistResult[] = ["Pending", "Pass", "Fail", "N/A"];
+
+/** Browser storage can be absent, full or corrupt; none of that may stop the form working. */
+function readDraft(key: string): InspectionDraft | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? (parsed as InspectionDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(key: string, draft: InspectionDraft) {
+  try {
+    // Nothing worth keeping until something has been entered.
+    const started = draft.rows.some((row) => row.result !== "Pending" || row.measured) || draft.inspectorName || draft.inspectorOrg;
+    if (started) window.localStorage.setItem(key, JSON.stringify(draft));
+    else window.localStorage.removeItem(key);
+  } catch {
+    // Storage full or blocked: the form still works, it just cannot be resumed.
+  }
+}
+
+function clearDraft(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // As above.
+  }
+}
 
 /**
  * Inspection, where the order is: the call, the document the inspector carries, and the result.
@@ -297,15 +329,34 @@ function RecordResult({
   onChanged: (text: string) => Promise<void>;
   onError: (text: string) => void;
 }) {
-  const [rows, setRows] = React.useState<ChecklistDraftRow[]>(() => blankRows(items));
-  const [inspectorName, setInspectorName] = React.useState("");
-  const [inspectorOrg, setInspectorOrg] = React.useState("");
-  const [inspectedOn, setInspectedOn] = React.useState(() => defaultPromisedDate(now(), 0));
-  const [drums, setDrums] = React.useState(drumHint);
-  const [clearance, setClearance] = React.useState(false);
-  const [diRef, setDiRef] = React.useState("");
+  // A checklist is 17–30 rows filled in over a visit. Closing the panel — or moving on to look at
+  // something else — used to throw all of it away, so it is kept, per order and per GTP version,
+  // until the result is actually recorded.
+  const draftKey = `cableos2:v1:inspection-draft:${orderId}:${gtp.id}:v${gtp.version}`;
+  const [draft] = React.useState<InspectionDraft | null>(() => readDraft(draftKey));
+  const [rows, setRows] = React.useState<ChecklistDraftRow[]>(() => restoreDraftRows(items, draft?.rows));
+  const [inspectorName, setInspectorName] = React.useState(draft?.inspectorName ?? "");
+  const [inspectorOrg, setInspectorOrg] = React.useState(draft?.inspectorOrg ?? "");
+  const [inspectedOn, setInspectedOn] = React.useState(() => draft?.inspectedOn || defaultPromisedDate(now(), 0));
+  const [drums, setDrums] = React.useState(draft?.drums ?? drumHint);
+  const [clearance, setClearance] = React.useState(draft?.clearance ?? false);
+  const [diRef, setDiRef] = React.useState(draft?.diRef ?? "");
   const [problem, setProblem] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
+  /** Set when a pass with no clearance has been submitted once and is waiting to be confirmed. */
+  const [confirmNoClearance, setConfirmNoClearance] = React.useState(false);
+
+  React.useEffect(() => {
+    writeDraft(draftKey, {
+      rows: rows.map((row) => ({ key: row.key, measured: row.measured, result: row.result })),
+      inspectorName,
+      inspectorOrg,
+      inspectedOn,
+      drums,
+      clearance,
+      diRef,
+    });
+  }, [draftKey, rows, inspectorName, inspectorOrg, inspectedOn, drums, clearance, diRef]);
 
   const evaluation = evaluateChecklist(rows);
   const answered = rows.length - evaluation.pending;
@@ -313,6 +364,7 @@ function RecordResult({
   function setRow(index: number, patch: Partial<ChecklistDraftRow>) {
     setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
     setProblem(null);
+    setConfirmNoClearance(false);
   }
 
   async function save() {
@@ -331,9 +383,17 @@ function RecordResult({
       setProblem(built.problem);
       return;
     }
+    // A pass with the clearance box left empty is the easy mistake: everything is filled in, the
+    // result is recorded as passed, and the order then refuses to move because it has no clearance.
+    // Ask once, in words, rather than let it happen quietly.
+    if (built.report.result === "Passed" && !built.report.clearanceIssued && !confirmNoClearance) {
+      setConfirmNoClearance(true);
+      return;
+    }
     setSaving(true);
     try {
       await inspectionService.logReport(built.report, actorFromSession());
+      clearDraft(draftKey);
       const r = built.report;
       await onChanged(
         r.result === "Failed"
@@ -377,10 +437,16 @@ function RecordResult({
           </div>
         </div>
 
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>
             {answered} of {rows.length} answered
+            {answered > 0 ? " · kept if you close this, until you record it" : ""}
           </span>
+          {evaluation.pending > 0 ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => setRows(markUnanswered(rows, "Pass"))}>
+              Mark the {evaluation.pending} unanswered Pass
+            </Button>
+          ) : null}
           <span
             className={cn(
               "font-medium",
@@ -437,7 +503,10 @@ function RecordResult({
               type="checkbox"
               checked={clearance && evaluation.outcome === "Passed"}
               disabled={evaluation.outcome !== "Passed"}
-              onChange={(event) => setClearance(event.target.checked)}
+              onChange={(event) => {
+                setClearance(event.target.checked);
+                setConfirmNoClearance(false);
+              }}
             />
             Dispatch clearance issued
           </label>
@@ -459,9 +528,18 @@ function RecordResult({
             {problem}
           </p>
         ) : null}
-        <Button type="button" disabled={saving} onClick={() => void save()}>
+        {confirmNoClearance ? (
+          <p role="alert" className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <span>
+              This will be recorded as passed, but <strong>Dispatch clearance issued</strong> is not ticked — so the order will stay in
+              production until a clearance is recorded. Tick it above if the inspector issued one, or record it as it is.
+            </span>
+          </p>
+        ) : null}
+        <Button type="button" disabled={saving} variant={confirmNoClearance ? "outline" : "default"} onClick={() => void save()}>
           <SaveIcon className="mr-2 size-4" />
-          Record inspection
+          {confirmNoClearance ? "Record without clearance" : "Record inspection"}
         </Button>
       </div>
     </details>
